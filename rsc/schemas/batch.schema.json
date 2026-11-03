@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rsc.local/schemas/batch.schema.json",
+  "title": "RSC ingest batch",
+  "description": "Manifest written by `rsc ingest` for a file or directory input.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"type": "string", "minLength": 1},
+    "batch_id": {"type": "string", "minLength": 1},
+    "input_root": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "rsc_version": {"type": "string", "minLength": 1},
+    "command": {"type": "array", "items": {"type": "string"}},
+    "documents": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/document"}
+    },
+    "summary": {"$ref": "#/$defs/summary"}
+  },
+  "required": [
+    "schema_version",
+    "batch_id",
+    "input_root",
+    "created_at",
+    "rsc_version",
+    "command",
+    "documents",
+    "summary"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "document": {
+      "type": "object",
+      "properties": {
+        "doc_id": {"type": "string", "minLength": 1},
+        "input_path": {"type": "string", "minLength": 1},
+        "format": {"enum": ["txt", "html", "xml", "unknown"]},
+        "input_sha256": {"type": "string", "pattern": "^([0-9a-f]{64})?$"},
+        "status": {"enum": ["ok", "failed", "skipped", "unchanged", "planned"]},
+        "document": {"type": ["string", "null"]},
+        "report": {"type": ["string", "null"]},
+        "counts": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "error": {"type": ["string", "null"]}
+      },
+      "required": [
+        "doc_id",
+        "input_path",
+        "format",
+        "input_sha256",
+        "status",
+        "document",
+        "report",
+        "counts",
+        "error"
+      ],
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "total": {"type": "integer", "minimum": 0},
+        "ok": {"type": "integer", "minimum": 0},
+        "failed": {"type": "integer", "minimum": 0},
+        "skipped": {"type": "integer", "minimum": 0},
+        "unchanged": {"type": "integer", "minimum": 0},
+        "planned": {"type": "integer", "minimum": 0}
+      },
+      "required": ["total", "ok", "failed", "skipped", "unchanged"],
+      "additionalProperties": false
+    }
+  }
+}

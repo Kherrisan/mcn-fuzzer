@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rfc number="9999">
+  <front><title>XML Sample Protocol</title></front>
+  <middle>
+    <section title="1. Introduction">
+      <t>The client MUST send a request.</t>
+      <section title="1.1 Message">
+        <t>The message contains a field.</t>
+        <list><li>The first value.</li><li>The second value.</li></list>
+        <artwork>message = type length body</artwork>
+      </section>
+    </section>
+  </middle>
+</rfc>

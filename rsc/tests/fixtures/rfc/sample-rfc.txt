@@ -1,0 +1,54 @@
+RFC 9999                     Sample Protocol                    January 2026
+
+
+                     Sample Protocol Specification
+
+Abstract
+
+   This document is a fixture for RSC ingest tests.
+
+Table of Contents
+
+   1. Introduction .................................................. 2
+   2. Messages ...................................................... 3
+      2.1. Header .................................................. 3
+
+1. Introduction
+
+   The client MUST send a request that
+[Page 1]
+
+RFC 9999                     Sample Protocol                    January 2026
+
+   contains a field.  The field is defined as follows:
+
+   o  The first value.
+
+   o  The second value.
+
+2. Messages
+
+   The following fields are defined:
+
+   +------------------+------------------+
+   | Field            | Meaning          |
+   +------------------+------------------+
+   | type             | message type     |
+   +------------------+------------------+
+
+   The grammar is:
+
+   message = type length body
+   type = 1*2DIGIT
+
+        0                   1
+        0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5
+       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+       |     Type      |     Length    |
+       +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+2.1. Header
+
+   The header MUST be present.
+
+[Page 2]

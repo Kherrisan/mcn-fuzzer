@@ -1,0 +1,382 @@
+{
+  "dataset": "ProFuzzBench",
+  "source_repo": "https://github.com/profuzzbench/profuzzbench",
+  "source_commit": "8573ec81d68f2c1ffc8f5e605dfdd9c61fbeb074",
+  "retrieved_at": "2026-10-18T13:02:47.173890+00:00",
+  "notes": "RFC documents from rfc-editor.org. DAAP and DICOM are not IETF RFCs and have no RFC files in this set.",
+  "protocols": [
+    {
+      "protocol": "DAAP",
+      "targets": [
+        "forked-daapd"
+      ],
+      "status": "no_rfc",
+      "rfcs": [],
+      "note": "Apple DAAP has no IETF RFC."
+    },
+    {
+      "protocol": "DICOM",
+      "targets": [
+        "Dcmtk"
+      ],
+      "status": "no_rfc",
+      "rfcs": [],
+      "note": "DICOM is a NEMA standard (PS3), not an IETF RFC."
+    },
+    {
+      "protocol": "DNS",
+      "targets": [
+        "Dnsmasq"
+      ],
+      "status": "ok",
+      "rfcs": [
+        {
+          "rfc": "RFC 1034",
+          "number": 1034,
+          "file": "DNS/rfc1034.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc1034.html",
+          "bytes": 142381,
+          "sha256": "b836375d9ce5b9d3565c8f4c55066764d8572bcad65d7a1af53d3662c94fd59e",
+          "title": "DOMAIN NAMES - CONCEPTS AND FACILITIES"
+        },
+        {
+          "rfc": "RFC 1035",
+          "number": 1035,
+          "file": "DNS/rfc1035.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc1035.html",
+          "bytes": 140476,
+          "sha256": "2d604f2c272b41983f98cecf5f9ccc101f2eda690e255c2e95121462f3373cf9",
+          "title": "DOMAIN NAMES - IMPLEMENTATION AND SPECIFICATION"
+        },
+        {
+          "rfc": "RFC 2181",
+          "number": 2181,
+          "file": "DNS/rfc2181.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc2181.html",
+          "bytes": 44298,
+          "sha256": "f99b395467cc7145d685f6bdf1c527b6437c6c74108252d53e99e6eb78ffad32",
+          "title": "Clarifications to the DNS Specification"
+        },
+        {
+          "rfc": "RFC 2308",
+          "number": 2308,
+          "file": "DNS/rfc2308.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc2308.html",
+          "bytes": 46858,
+          "sha256": "613de9d15f9db4556f4a245dc0a1efa927cca7e02c605dcb080e778965c407ed",
+          "title": "Negative Caching of DNS Queries (DNS NCACHE)"
+        },
+        {
+          "rfc": "RFC 6891",
+          "number": 6891,
+          "file": "DNS/rfc6891.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc6891.html",
+          "bytes": 42300,
+          "sha256": "c790af0cf255e5ab75ac56a7fa3863ca5f4898a791a022a6cb946d15b6be7dee",
+          "title": "Extension Mechanisms for DNS (EDNS(0))"
+        }
+      ]
+    },
+    {
+      "protocol": "DTLS",
+      "targets": [
+        "TinyDTLS"
+      ],
+      "status": "ok",
+      "rfcs": [
+        {
+          "rfc": "RFC 6347",
+          "number": 6347,
+          "file": "DTLS/rfc6347.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc6347.html",
+          "bytes": 91560,
+          "sha256": "dc97c157c41b78bbcfeb1d6619b6fea8b6d42136aa19e777c973afa61064cc0a",
+          "title": "Datagram Transport Layer Security Version 1.2"
+        },
+        {
+          "rfc": "RFC 9147",
+          "number": 9147,
+          "file": "DTLS/rfc9147.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc9147.html",
+          "bytes": 264583,
+          "sha256": "0cac86bdd5e1f37d85d56f43119f01d2a2d802ecbaeeb56439dc6618b3ab4f69",
+          "title": "RFC 9147: The Datagram Transport Layer Security (DTLS) Protocol Version 1.3"
+        },
+        {
+          "rfc": "RFC 9147",
+          "number": 9147,
+          "file": "DTLS/rfc9147.xml",
+          "format": "xml",
+          "url": "https://www.rfc-editor.org/rfc/rfc9147.xml",
+          "bytes": 250802,
+          "sha256": "906bf3fb9662359001533d9a02b714ee76b52b5f7b490aec3c31342320e2066a",
+          "title": "ChaCha20 and Poly1305 for IETF Protocols"
+        }
+      ]
+    },
+    {
+      "protocol": "FTP",
+      "targets": [
+        "BFTPD",
+        "LightFTP",
+        "ProFTPD",
+        "PureFTPD"
+      ],
+      "status": "ok",
+      "rfcs": [
+        {
+          "rfc": "RFC 959",
+          "number": 959,
+          "file": "FTP/rfc959.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc959.html",
+          "bytes": 157689,
+          "sha256": "f09b1ddf51678bc82db463173f40666c43e6ac03f9a47e873cfefd89b39c2462",
+          "title": "FILE TRANSFER PROTOCOL (FTP)"
+        },
+        {
+          "rfc": "RFC 3659",
+          "number": 3659,
+          "file": "FTP/rfc3659.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc3659.html",
+          "bytes": 164428,
+          "sha256": "19fe4f3421d4f047aa7d75099eece1422062f1088a513f1a57cbc9da125abf50",
+          "title": "Extensions to FTP"
+        }
+      ]
+    },
+    {
+      "protocol": "RTSP",
+      "targets": [
+        "Live555"
+      ],
+      "status": "ok",
+      "rfcs": [
+        {
+          "rfc": "RFC 2326",
+          "number": 2326,
+          "file": "RTSP/rfc2326.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc2326.html",
+          "bytes": 230732,
+          "sha256": "736b001f78a52f08bec94427cf3858336f18eb79e7b4d6c34d18e0ddb7b1145a",
+          "title": "Real Time Streaming Protocol (RTSP)"
+        },
+        {
+          "rfc": "RFC 7826",
+          "number": 7826,
+          "file": "RTSP/rfc7826.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc7826.html",
+          "bytes": 894879,
+          "sha256": "e9de5e513c0fd3aeb83a9bd5a745d2980797af7b147f2bd9caf4122b0e70daf7",
+          "title": "Real-Time Streaming Protocol Version 2.0"
+        }
+      ]
+    },
+    {
+      "protocol": "SIP",
+      "targets": [
+        "Kamailio"
+      ],
+      "status": "ok",
+      "rfcs": [
+        {
+          "rfc": "RFC 3261",
+          "number": 3261,
+          "file": "SIP/rfc3261.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc3261.html",
+          "bytes": 764462,
+          "sha256": "1e7447e4df613e6ba8904bb6512e9b9eec73fea116068a1dc6097c674332102f",
+          "title": "SIP: Session Initiation Protocol"
+        },
+        {
+          "rfc": "RFC 3262",
+          "number": 3262,
+          "file": "SIP/rfc3262.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc3262.html",
+          "bytes": 35575,
+          "sha256": "12145e329b13c6393a8d61b79a2e70b08e1464d9b90783b290ccfc2910554716",
+          "title": "Reliability of Provisional Responses"
+        },
+        {
+          "rfc": "RFC 3264",
+          "number": 3264,
+          "file": "SIP/rfc3264.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc3264.html",
+          "bytes": 71390,
+          "sha256": "16eff04c7fbbff8d3e1b737f4c67e698e0d8e4d0620098f3586e587fe6c7ae36",
+          "title": "An Offer/Answer Model with the Session Description Protocol (SDP)"
+        },
+        {
+          "rfc": "RFC 3311",
+          "number": 3311,
+          "file": "SIP/rfc3311.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc3311.html",
+          "bytes": 34658,
+          "sha256": "ddfa3e80070e20c2f02011dbf5a099dba38406595fb7782ac1b470569b37d75a",
+          "title": "The Session Initiation Protocol (SIP) UPDATE Method"
+        },
+        {
+          "rfc": "RFC 3326",
+          "number": 3326,
+          "file": "SIP/rfc3326.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc3326.html",
+          "bytes": 19236,
+          "sha256": "dd8a7f5996e1462b74cc4daf2e31dc713b35d7e4d75c1d3288ea1cade932ba15",
+          "title": "The Reason Header Field for the Session Initiation Protocol (SIP)"
+        }
+      ]
+    },
+    {
+      "protocol": "SMTP",
+      "targets": [
+        "Exim"
+      ],
+      "status": "ok",
+      "rfcs": [
+        {
+          "rfc": "RFC 5321",
+          "number": 5321,
+          "file": "SMTP/rfc5321.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc5321.html",
+          "bytes": 278948,
+          "sha256": "5df422fb9940f2659fbf468d2a9f78fc8aebc2eec63f92a9dc598b4630ad48aa",
+          "title": "Simple Mail Transfer Protocol"
+        },
+        {
+          "rfc": "RFC 5322",
+          "number": 5322,
+          "file": "SMTP/rfc5322.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc5322.html",
+          "bytes": 152198,
+          "sha256": "f56811068b3c14a15e52ebd800ba7a03e7c10ef68eb9a2e07dee96d7cba0a261",
+          "title": "Internet Message Format"
+        },
+        {
+          "rfc": "RFC 1869",
+          "number": 1869,
+          "file": "SMTP/rfc1869.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc1869.html",
+          "bytes": 28746,
+          "sha256": "c42ac8faed9a5e514914304c0bbd84ee22895a65753e4c7463563e22fc7d0fb3",
+          "title": "SMTP Service Extensions"
+        },
+        {
+          "rfc": "RFC 4954",
+          "number": 4954,
+          "file": "SMTP/rfc4954.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc4954.html",
+          "bytes": 57609,
+          "sha256": "d6c89bd3e631e2704c86ff97201a258f30661f22e6cc6c49d1ec03fa60b46217",
+          "title": "SMTP Service Extension for Authentication"
+        },
+        {
+          "rfc": "RFC 3207",
+          "number": 3207,
+          "file": "SMTP/rfc3207.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc3207.html",
+          "bytes": 22513,
+          "sha256": "c6973698b4df124ad4efc23a23d57e54ca71ced03615b17fabfa0df203db23a3",
+          "title": "SMTP Service Extension for"
+        }
+      ]
+    },
+    {
+      "protocol": "SSH",
+      "targets": [
+        "OpenSSH"
+      ],
+      "status": "ok",
+      "rfcs": [
+        {
+          "rfc": "RFC 4251",
+          "number": 4251,
+          "file": "SSH/rfc4251.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc4251.html",
+          "bytes": 89400,
+          "sha256": "c72cbe6e89097b80c4762b489246c279f32213ae11627a46def865ddb907de94",
+          "title": "The Secure Shell (SSH) Protocol Architecture"
+        },
+        {
+          "rfc": "RFC 4252",
+          "number": 4252,
+          "file": "SSH/rfc4252.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc4252.html",
+          "bytes": 42912,
+          "sha256": "1ba53296d30273a9c2b10f99b13807d865b471b9feb338903dcf4eb199ffa43a",
+          "title": "The Secure Shell (SSH) Authentication Protocol"
+        },
+        {
+          "rfc": "RFC 4253",
+          "number": 4253,
+          "file": "SSH/rfc4253.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc4253.html",
+          "bytes": 86134,
+          "sha256": "3499e9194fd10f3f14c706d7d58cacb1d6038e268bf5fe3dcab5487f3c7f31ee",
+          "title": "The Secure Shell (SSH) Transport Layer Protocol"
+        },
+        {
+          "rfc": "RFC 4254",
+          "number": 4254,
+          "file": "SSH/rfc4254.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc4254.html",
+          "bytes": 62219,
+          "sha256": "0eb5b2bdf2f5386a4ed92a0c48c8a764ad3fbc250c2a1f804ca04c14ae04962c",
+          "title": "The Secure Shell (SSH) Connection Protocol"
+        }
+      ]
+    },
+    {
+      "protocol": "TLS",
+      "targets": [
+        "OpenSSL"
+      ],
+      "status": "ok",
+      "rfcs": [
+        {
+          "rfc": "RFC 5246",
+          "number": 5246,
+          "file": "TLS/rfc5246.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc5246.html",
+          "bytes": 268261,
+          "sha256": "a6102891f08ad01933fdce6891c0045432b699c917db12903cfa694372b5e86a",
+          "title": "The Transport Layer Security (TLS) Protocol"
+        },
+        {
+          "rfc": "RFC 8446",
+          "number": 8446,
+          "file": "TLS/rfc8446.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc8446.html",
+          "bytes": 419115,
+          "sha256": "370ed8c0e6da22c8b8f4ad0230b6c12e6ec8ae807eca034220070828f25684fb",
+          "title": "The Transport Layer Security (TLS) Protocol Version 1.3"
+        }
+      ]
+    }
+  ]
+}

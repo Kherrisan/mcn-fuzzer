@@ -1,0 +1,174 @@
+{
+  "protocol": "RTSP/1.0",
+  "rfc_fixture": "RTSP/rfc2326.html",
+  "objects": {
+    "parties": [
+      {
+        "name": "client",
+        "description": "RTSP media client"
+      },
+      {
+        "name": "server",
+        "description": "RTSP media server"
+      }
+    ],
+    "messages": [
+      {
+        "name": "SETUP request",
+        "associated_fields": [
+          {
+            "name": "CSeq"
+          }
+        ]
+      },
+      {
+        "name": "SETUP response",
+        "associated_fields": [
+          {
+            "name": "CSeq"
+          },
+          {
+            "name": "Session"
+          }
+        ]
+      },
+      {
+        "name": "PLAY request",
+        "associated_fields": [
+          {
+            "name": "CSeq"
+          },
+          {
+            "name": "Session"
+          }
+        ]
+      },
+      {
+        "name": "PLAY response",
+        "associated_fields": [
+          {
+            "name": "CSeq"
+          },
+          {
+            "name": "Session"
+          }
+        ]
+      }
+    ],
+    "channels": [
+      {
+        "name": "UDP control",
+        "description": "UDP control",
+        "transport": "UDP",
+        "connection": "connectionless",
+        "endpoint_party_names": [
+          "client",
+          "server"
+        ],
+        "initiator_party_name": null,
+        "acceptor_party_name": null,
+        "endpoint_sources": []
+      }
+    ],
+    "unresolved": []
+  },
+  "interactions": {
+    "steps": [
+      {
+        "id": "s-setup",
+        "name": "send SETUP request",
+        "message_name": "SETUP request",
+        "channel_name": "UDP control",
+        "sender_name": "client",
+        "receiver_name": "server",
+        "condition": ""
+      },
+      {
+        "id": "s-setup-ok",
+        "name": "send SETUP response",
+        "message_name": "SETUP response",
+        "channel_name": "UDP control",
+        "sender_name": "server",
+        "receiver_name": "client",
+        "condition": ""
+      },
+      {
+        "id": "s-play",
+        "name": "send PLAY request",
+        "message_name": "PLAY request",
+        "channel_name": "UDP control",
+        "sender_name": "client",
+        "receiver_name": "server",
+        "condition": ""
+      },
+      {
+        "id": "s-play-ok",
+        "name": "send PLAY response",
+        "message_name": "PLAY response",
+        "channel_name": "UDP control",
+        "sender_name": "server",
+        "receiver_name": "client",
+        "condition": ""
+      }
+    ],
+    "step_dependencies": [
+      {
+        "prior_step": "send SETUP request",
+        "dependent_step": "send SETUP response",
+        "condition": "response to this request",
+        "field_relations": [
+          {
+            "prior_field": "CSeq",
+            "dependent_field": "CSeq"
+          }
+        ]
+      },
+      {
+        "prior_step": "send PLAY request",
+        "dependent_step": "send PLAY response",
+        "condition": "response to this request",
+        "field_relations": [
+          {
+            "prior_field": "CSeq",
+            "dependent_field": "CSeq"
+          }
+        ]
+      },
+      {
+        "prior_step": "send SETUP request",
+        "dependent_step": "send PLAY request",
+        "condition": "PLAY is the next distinct request after SETUP; excluding retransmissions",
+        "field_relations": [
+          {
+            "prior_field": "CSeq",
+            "dependent_field": "CSeq"
+          }
+        ]
+      },
+      {
+        "prior_step": "send PLAY request",
+        "dependent_step": "send PLAY request",
+        "condition": "request repeated because of lack of acknowledgement on UDP",
+        "field_relations": [
+          {
+            "prior_field": "CSeq",
+            "dependent_field": "CSeq"
+          }
+        ]
+      },
+      {
+        "prior_step": "send SETUP response",
+        "dependent_step": "send PLAY request",
+        "condition": "client received Session; subsequent request relates to that session",
+        "field_relations": [
+          {
+            "prior_field": "Session",
+            "dependent_field": "Session"
+          }
+        ]
+      }
+    ],
+    "unresolved": []
+  },
+  "scope": "Hand-annotated acceptance subset, not an exhaustive RFC model."
+}

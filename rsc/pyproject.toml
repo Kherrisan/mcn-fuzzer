@@ -1,0 +1,78 @@
+[project]
+name = "rsc"
+version = "0.1.0"
+description = "RFC protocol interaction model compiler"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "Proprietary"}
+authors = [{name = "RSC contributors"}]
+keywords = ["rfc", "protocol", "fuzzing", "semantic-extraction", "llm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = [
+  "anthropic==1.17.0",
+  "openai==3.41.0",
+  "httpx2==2.16.0",
+  "jsonschema>=4.22",
+  "logfire==5.4.0",
+  "pydantic-ai-slim[openai,anthropic]==2.64.0",
+  "tiktoken==0.14.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=5",
+  "ruff>=0.6",
+  "mypy>=1.11",
+]
+
+[project.scripts]
+rsc = "rsc.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rsc*"]
+
+[tool.setuptools.package-data]
+rsc = ["py.typed"]
+
+[tool.setuptools.data-files]
+"share/rsc/schemas" = ["schemas/*.schema.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.coverage.run]
+source = ["rsc"]
+branch = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rsc"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["rsc"]
+warn_unused_configs = true
+ignore_missing_imports = true

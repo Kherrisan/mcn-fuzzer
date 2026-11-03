@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rsc.local/schemas/document.schema.json",
+  "title": "RSC document structure",
+  "description": "Output of the ingest stage: a section tree, block tree and original-span map.",
+  "type": "object",
+  "properties": {
+    "meta": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"type": "string", "minLength": 1},
+        "rfc": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "source_id": {"type": "string", "minLength": 1},
+        "source_path": {"type": "string", "minLength": 1},
+        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "format": {"enum": ["txt", "html", "xml", "pdf"]},
+        "input_set": {"type": "array", "items": {"type": "string"}},
+        "series": {"type": ["string", "null"]},
+        "updates": {"type": "array", "items": {"type": "string"}},
+        "obsoletes": {"type": "array", "items": {"type": "string"}},
+        "published": {"type": ["string", "null"]},
+        "normative_references": {"type": "array", "items": {"type": "string"}},
+        "generated_at": {"type": "string"},
+        "generator": {"type": "string"}
+      },
+      "required": [
+        "schema_version",
+        "rfc",
+        "title",
+        "source_id",
+        "source_path",
+        "input_sha256",
+        "format"
+      ],
+      "additionalProperties": false
+    },
+    "sections": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/section"}
+    },
+    "blocks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/block"}
+    },
+    "span_map": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/span_map_entry"}
+    }
+  },
+  "required": ["meta", "sections", "blocks"],
+  "additionalProperties": false,
+  "$defs": {
+    "section": {
+      "type": "object",
+      "properties": {
+        "section_id": {"type": "string", "minLength": 1},
+        "path": {"$ref": "common.schema.json#/$defs/section_path"},
+        "title": {"type": "string"},
+        "level": {"type": "integer", "minimum": 1},
+        "span": {"$ref": "common.schema.json#/$defs/span"},
+        "parent_section_id": {"type": ["string", "null"]}
+      },
+      "required": ["section_id", "path", "title", "level", "span"],
+      "additionalProperties": false
+    },
+    "block": {
+      "type": "object",
+      "properties": {
+        "block_id": {"type": "string", "minLength": 1},
+        "section_path": {"$ref": "common.schema.json#/$defs/section_path"},
+        "block_type": {
+          "enum": [
+            "heading",
+            "paragraph",
+            "list_item",
+            "table",
+            "grammar",
+            "diagram",
+            "blockquote",
+            "preamble",
+            "other"
+          ]
+        },
+        "text": {"type": "string"},
+        "original_span": {"$ref": "common.schema.json#/$defs/span"},
+        "parent_block": {"type": ["string", "null"]},
+        "lead_in_block_id": {"type": ["string", "null"]},
+        "order": {"type": "integer", "minimum": 0},
+        "attrs": {"type": "object"}
+      },
+      "required": [
+        "block_id",
+        "section_path",
+        "block_type",
+        "text",
+        "original_span",
+        "order"
+      ],
+      "additionalProperties": false
+    },
+    "span_map_entry": {
+      "type": "object",
+      "description": "Maps a normalized-text range back to the original source range. When block_id is present, normalized offsets are within that block's text.",
+      "properties": {
+        "block_id": {"type": ["string", "null"]},
+        "normalized_start": {"type": "integer", "minimum": 0},
+        "normalized_end": {"type": "integer", "minimum": 0},
+        "source_start": {"type": "integer", "minimum": 0},
+        "source_end": {"type": "integer", "minimum": 0},
+        "transform": {
+          "enum": [
+            "identity",
+            "unwrap",
+            "dehyphenate",
+            "strip_header",
+            "strip_footer",
+            "html",
+            "xml",
+            "pdf"
+          ]
+        }
+      },
+      "required": [
+        "normalized_start",
+        "normalized_end",
+        "source_start",
+        "source_end"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

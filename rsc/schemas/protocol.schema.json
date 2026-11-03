@@ -1,0 +1,456 @@
+{
+  "$defs": {
+    "field": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Protocol field name. Do not invent a hash or sequence.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "AssociatedField",
+      "type": "object"
+    },
+    "channel": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Reusable channel name; specialize only for a supported connection distinction.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "description": "One short phrase for this connection.",
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "transport": {
+          "description": "Underlying transport stated by the source, such as TCP or UDP.",
+          "minLength": 1,
+          "title": "Transport",
+          "type": "string"
+        },
+        "connection": {
+          "enum": [
+            "connection_oriented",
+            "connectionless"
+          ],
+          "title": "Connection",
+          "type": "string"
+        },
+        "endpoint_party_names": {
+          "description": "Names of the actual communication endpoints.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Endpoint Party Names",
+          "type": "array"
+        },
+        "initiator_party_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Party establishing the connection; null when unknown or inapplicable.",
+          "title": "Initiator Party Name"
+        },
+        "acceptor_party_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Party accepting the connection; null when unknown or inapplicable.",
+          "title": "Acceptor Party Name"
+        },
+        "endpoint_sources": {
+          "description": "Sources of endpoint parameters; additional detail alone does not define another channel.",
+          "items": {
+            "$ref": "#/$defs/endpoint_source"
+          },
+          "title": "Endpoint Sources",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "transport",
+        "connection",
+        "endpoint_party_names",
+        "initiator_party_name",
+        "acceptor_party_name",
+        "endpoint_sources"
+      ],
+      "title": "Channel",
+      "type": "object"
+    },
+    "endpoint_source": {
+      "additionalProperties": false,
+      "properties": {
+        "party_name": {
+          "minLength": 1,
+          "title": "Party Name",
+          "type": "string"
+        },
+        "parameter": {
+          "minLength": 1,
+          "title": "Parameter",
+          "type": "string"
+        },
+        "from": {
+          "description": "Field name, constant, or a short source phrase. Example: PASV response.port.",
+          "minLength": 1,
+          "title": "From",
+          "type": "string"
+        }
+      },
+      "required": [
+        "party_name",
+        "parameter",
+        "from"
+      ],
+      "title": "EndpointSource",
+      "type": "object"
+    },
+    "relation": {
+      "additionalProperties": false,
+      "properties": {
+        "prior_field": {
+          "description": "Field name, optionally qualified as Message.field.",
+          "minLength": 1,
+          "title": "Prior Field",
+          "type": "string"
+        },
+        "dependent_field": {
+          "description": "Field name, optionally qualified as Message.field.",
+          "minLength": 1,
+          "title": "Dependent Field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prior_field",
+        "dependent_field"
+      ],
+      "title": "FieldRelation",
+      "type": "object"
+    },
+    "issue": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "object_names": {
+          "description": "Names of affected objects or fields. Empty when none apply.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Object Names",
+          "type": "array"
+        }
+      },
+      "required": [
+        "description",
+        "object_names"
+      ],
+      "title": "Issue",
+      "type": "object"
+    },
+    "party": {
+      "additionalProperties": false,
+      "description": "A direct communication role; retain a container separately only for a distinct role.",
+      "properties": {
+        "name": {
+          "description": "Reuse the existing name for the same communication role; otherwise use an RFC term.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "description": "One short phrase stating the direct communication role.",
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "title": "Party",
+      "type": "object"
+    },
+    "message": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Short protocol term. Reuse the same message's name. A message is an actual protocol message or RFC-defined independently exchanged transfer unit. Grammar productions and table classification labels do not automatically constitute messages. Abstract categories, command groups, fields and syntax components are not independent message types. Ordinary message types need not carry associated fields. A concrete response code defines a separate message type only when its response carries associated fields needed in later interactions for correlation, connection setup, branching or interaction state. The response code itself or free-form reply wording alone does not justify a separate type; otherwise reuse an actually exchanged, source-supported shared response form, not a response-code family or classification label.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "associated_fields": {
+          "description": "Attach a field only to the message that actually transmits it. Retain only fields needed for cross-message correlation, connection setup, interaction branching or interaction state. A message that triggers another message does not inherit that message's fields. Do not extract complete wire layouts or ordinary payload details.",
+          "items": {
+            "$ref": "#/$defs/field"
+          },
+          "title": "Associated Fields",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "associated_fields"
+      ],
+      "title": "ProtocolMessage",
+      "type": "object"
+    },
+    "meta": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "7.0.0",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "protocol": {
+          "minLength": 1,
+          "title": "Protocol",
+          "type": "string"
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean"
+        },
+        "documents": {
+          "items": {
+            "$ref": "#/$defs/source"
+          },
+          "minItems": 1,
+          "title": "Documents",
+          "type": "array"
+        }
+      },
+      "required": [
+        "schema_version",
+        "protocol",
+        "complete",
+        "documents"
+      ],
+      "title": "ProtocolMeta",
+      "type": "object"
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "doc_id": {
+          "minLength": 1,
+          "title": "Doc Id",
+          "type": "string"
+        },
+        "rfc": {
+          "minLength": 1,
+          "title": "Rfc",
+          "type": "string"
+        },
+        "input_sha256": {
+          "minLength": 1,
+          "title": "Input Sha256",
+          "type": "string"
+        },
+        "document_sha256": {
+          "minLength": 1,
+          "title": "Document Sha256",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "doc_id",
+        "rfc",
+        "input_sha256",
+        "document_sha256",
+        "path"
+      ],
+      "title": "Source",
+      "type": "object"
+    },
+    "step": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Python-assigned step identity. Not a name reference.",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "description": "Persistent step name used by dependencies.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "message_name": {
+          "minLength": 1,
+          "title": "Message Name",
+          "type": "string"
+        },
+        "channel_name": {
+          "minLength": 1,
+          "title": "Channel Name",
+          "type": "string"
+        },
+        "sender_name": {
+          "minLength": 1,
+          "title": "Sender Name",
+          "type": "string"
+        },
+        "receiver_name": {
+          "minLength": 1,
+          "title": "Receiver Name",
+          "type": "string"
+        },
+        "condition": {
+          "title": "Condition",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "message_name",
+        "channel_name",
+        "sender_name",
+        "receiver_name",
+        "condition"
+      ],
+      "title": "Step",
+      "type": "object"
+    },
+    "dependency": {
+      "additionalProperties": false,
+      "description": "A dependency on an earlier occurrence, without requiring adjacency.",
+      "properties": {
+        "prior_step": {
+          "description": "Name of the earlier step.",
+          "minLength": 1,
+          "title": "Prior Step",
+          "type": "string"
+        },
+        "dependent_step": {
+          "description": "Name of the later step.",
+          "minLength": 1,
+          "title": "Dependent Step",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Short dependency condition, or an empty string.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "field_relations": {
+          "items": {
+            "$ref": "#/$defs/relation"
+          },
+          "title": "Field Relations",
+          "type": "array"
+        }
+      },
+      "required": [
+        "prior_step",
+        "dependent_step",
+        "condition",
+        "field_relations"
+      ],
+      "title": "StepDependency",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "meta": {
+      "$ref": "#/$defs/meta"
+    },
+    "parties": {
+      "items": {
+        "$ref": "#/$defs/party"
+      },
+      "title": "Parties",
+      "type": "array"
+    },
+    "messages": {
+      "items": {
+        "$ref": "#/$defs/message"
+      },
+      "title": "Messages",
+      "type": "array"
+    },
+    "channels": {
+      "items": {
+        "$ref": "#/$defs/channel"
+      },
+      "title": "Channels",
+      "type": "array"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/step"
+      },
+      "title": "Steps",
+      "type": "array"
+    },
+    "step_dependencies": {
+      "items": {
+        "$ref": "#/$defs/dependency"
+      },
+      "title": "Step Dependencies",
+      "type": "array"
+    },
+    "unresolved": {
+      "items": {
+        "$ref": "#/$defs/issue"
+      },
+      "title": "Unresolved",
+      "type": "array"
+    }
+  },
+  "required": [
+    "meta",
+    "parties",
+    "messages",
+    "channels",
+    "steps",
+    "step_dependencies",
+    "unresolved"
+  ],
+  "title": "Protocol interaction model",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rsc.local/schemas/protocol.schema.json"
+}

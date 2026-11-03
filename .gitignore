@@ -1,0 +1,64 @@
+# Local reference checkouts and their upstream Git metadata.
+/third-party/fizzle/
+/third-party/LibAFL/
+/third-party/protocolguard/
+/third-party/LibAFLstar/.git.upstream/
+
+# SUTs and target-specific files are maintained locally.
+targets/
+/third-party/LibAFLstar/case_studies/
+
+# Fuzzing, acceptance, benchmark, and coverage results.
+capture-bench/
+/third-party/LibAFLstar/benchmark/
+corpus/
+crashes/
+work/
+coverage/
+htmlcov/
+test-results/
+test-reports/
+cases.jsonl
+results.jsonl
+*.pcap
+*.pcapng
+*.log
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+.coverage
+.coverage.*
+core
+core.[0-9]*
+
+# Build products, downloaded build dependencies, and package caches.
+target/
+build/
+dist/
+.deps/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+.cur_input_*
+
+# Local editor, agent, and credential configuration.
+/.agents/
+/.codex/
+/.aws/
+.env
+.env.*
+!.env.example
+.DS_Store

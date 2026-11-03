@@ -1,0 +1,157 @@
+{
+  "protocol": "FTP/RFC959",
+  "rfc_fixture": "FTP/rfc959.html",
+  "objects": {
+    "parties": [
+      {
+        "name": "user-PI",
+        "description": "User protocol interpreter"
+      },
+      {
+        "name": "server-PI",
+        "description": "Server protocol interpreter"
+      },
+      {
+        "name": "user-DTP",
+        "description": "User data transfer process"
+      },
+      {
+        "name": "server-DTP",
+        "description": "Server data transfer process"
+      }
+    ],
+    "messages": [
+      {
+        "name": "PORT",
+        "associated_fields": [
+          {
+            "name": "host"
+          },
+          {
+            "name": "port"
+          }
+        ]
+      },
+      {
+        "name": "PASV",
+        "associated_fields": []
+      },
+      {
+        "name": "227",
+        "associated_fields": [
+          {
+            "name": "host"
+          },
+          {
+            "name": "port"
+          }
+        ]
+      }
+    ],
+    "channels": [
+      {
+        "name": "control",
+        "description": "control",
+        "transport": "TCP",
+        "connection": "connection_oriented",
+        "endpoint_party_names": [
+          "user-PI",
+          "server-PI"
+        ],
+        "initiator_party_name": "user-PI",
+        "acceptor_party_name": "server-PI",
+        "endpoint_sources": []
+      },
+      {
+        "name": "active data",
+        "description": "active data",
+        "transport": "TCP",
+        "connection": "connection_oriented",
+        "endpoint_party_names": [
+          "user-DTP",
+          "server-DTP"
+        ],
+        "initiator_party_name": "server-DTP",
+        "acceptor_party_name": "user-DTP",
+        "endpoint_sources": [
+          {
+            "party_name": "user-DTP",
+            "parameter": "address",
+            "from": "address advertised in PORT"
+          },
+          {
+            "party_name": "user-DTP",
+            "parameter": "port",
+            "from": "port advertised in PORT"
+          }
+        ]
+      },
+      {
+        "name": "passive data",
+        "description": "passive data",
+        "transport": "TCP",
+        "connection": "connection_oriented",
+        "endpoint_party_names": [
+          "user-DTP",
+          "server-DTP"
+        ],
+        "initiator_party_name": "user-DTP",
+        "acceptor_party_name": "server-DTP",
+        "endpoint_sources": [
+          {
+            "party_name": "server-DTP",
+            "parameter": "address",
+            "from": "address advertised in 227"
+          },
+          {
+            "party_name": "server-DTP",
+            "parameter": "port",
+            "from": "port advertised in 227"
+          }
+        ]
+      }
+    ],
+    "unresolved": []
+  },
+  "interactions": {
+    "steps": [
+      {
+        "id": "send-port",
+        "name": "send PORT",
+        "message_name": "PORT",
+        "channel_name": "control",
+        "sender_name": "user-PI",
+        "receiver_name": "server-PI",
+        "condition": ""
+      },
+      {
+        "id": "send-pasv",
+        "name": "send PASV",
+        "message_name": "PASV",
+        "channel_name": "control",
+        "sender_name": "user-PI",
+        "receiver_name": "server-PI",
+        "condition": ""
+      },
+      {
+        "id": "send-227",
+        "name": "send 227",
+        "message_name": "227",
+        "channel_name": "control",
+        "sender_name": "server-PI",
+        "receiver_name": "user-PI",
+        "condition": ""
+      }
+    ],
+    "step_dependencies": [
+      {
+        "prior_step": "send PASV",
+        "dependent_step": "send 227",
+        "condition": "PASV succeeds",
+        "field_relations": []
+      }
+    ],
+    "unresolved": []
+  },
+  "scope": "Hand-annotated acceptance subset, not an exhaustive RFC model."
+}

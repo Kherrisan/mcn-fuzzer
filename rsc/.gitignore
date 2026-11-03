@@ -1,0 +1,20 @@
+.rsc-cache/
+config.json
+config.local.json
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# Generated RFC runs
+work/
+
+# Local provider keys
+config.deepseek.local.json
+config.luna.local.json
+
+.venv/
