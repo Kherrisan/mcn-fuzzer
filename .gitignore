@@ -15,6 +15,7 @@ corpus/
 crashes/
 work/
 coverage/
+source-coverage/
 htmlcov/
 test-results/
 test-reports/

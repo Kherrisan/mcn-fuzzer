@@ -15,6 +15,9 @@ targets/openssl/crashes/
 targets/openssl/cases.jsonl
 targets/openssl/accept-*/
 targets/openssl/generator.log
+source-coverage/
+targets/lightftp/build-cov/
+targets/openssl/build-cov/
 capture-bench/*/trial-*/
 .cur_input_*
 __pycache__/

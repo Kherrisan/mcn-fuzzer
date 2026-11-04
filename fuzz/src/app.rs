@@ -14,6 +14,7 @@ use std::{
 
 use crate::{
     backend::{AbortReason, ForkserverBackend, TargetBackend},
+    coverage::LlvmCoverageStage,
     capture::PcapToMetadataFeedback,
     config::Campaign,
     executor::{CaseExecutor, CoverageFeedback},
@@ -70,8 +71,18 @@ struct Session {
 
 impl Session {
     fn open(campaign: &Campaign) -> Result<Self, Error> {
-        fs::create_dir_all(&campaign.campaign.corpus)?;
-        fs::create_dir_all(&campaign.campaign.crashes)?;
+        fs::create_dir_all(&campaign.campaign.corpus).map_err(|error| {
+            Error::unknown(format!(
+                "creating corpus {}: {error}",
+                campaign.campaign.corpus.display()
+            ))
+        })?;
+        fs::create_dir_all(&campaign.campaign.crashes).map_err(|error| {
+            Error::unknown(format!(
+                "creating crashes {}: {error}",
+                campaign.campaign.crashes.display()
+            ))
+        })?;
         let (executor, coverage) = CaseExecutor::launch(campaign)?;
         let engine = executor.capture_engine();
         let mut feedback: CampaignFeedback =
@@ -125,8 +136,15 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
         &mut session.mgr,
         &[campaign.campaign.seeds.clone()],
     )?;
+    let mut coverage = LlvmCoverageStage::from_campaign(campaign);
+    if campaign.source_coverage.enabled {
+        coverage.replay_now(&mut session.executor, &mut session.state)?;
+    }
     let iterations = iterations.unwrap_or(campaign.campaign.iterations);
-    let mut stages = tuple_list!(StdMutationalStage::new(GeneratorMutator::new()));
+    let mut stages = tuple_list!(
+        StdMutationalStage::new(GeneratorMutator::new()),
+        coverage
+    );
     session.fuzzer.fuzz_loop_for(
         &mut stages,
         &mut session.executor,
@@ -134,6 +152,10 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
         &mut session.mgr,
         iterations,
     )?;
+    if campaign.source_coverage.enabled {
+        LlvmCoverageStage::from_campaign(campaign)
+            .replay_now(&mut session.executor, &mut session.state)?;
+    }
     let occupied = interesting_indexes(&session.executor.edge_indexes()).len();
     println!(
         "last case coverage_map_occupancy entries {occupied}/{}; corpus {}; crashes {}. \
@@ -200,6 +222,7 @@ pub fn doctor() -> Result<(), Error> {
             iterations: 1,
         },
         capture: crate::config::CaptureConfig::default(),
+        source_coverage: crate::config::SourceCoverageConfig::default(),
         base: tmp.clone(),
     };
     let mut backend = ForkserverBackend::spawn(&campaign, 0)?;

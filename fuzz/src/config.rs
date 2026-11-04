@@ -184,6 +184,62 @@ impl Default for CaptureConfig {
     }
 }
 
+fn default_coverage_interval() -> u64 {
+    100
+}
+
+fn default_llvm_profdata() -> String {
+    "llvm-profdata-18".to_string()
+}
+
+fn default_llvm_cov() -> String {
+    "llvm-cov-18".to_string()
+}
+
+fn default_coverage_output() -> PathBuf {
+    PathBuf::from("source-coverage")
+}
+
+/// Optional LLVM source-coverage replay. Omitted or `enabled = false` leaves PCGUARD fuzz unchanged.
+#[derive(Clone, Debug, Deserialize)]
+pub struct SourceCoverageConfig {
+    /// Replay saved inputs through a forkserver-only coverage binary.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Coverage-built SUT. Relative paths are resolved from the campaign file.
+    #[serde(default)]
+    pub binary: PathBuf,
+    /// Directory that receives snapshots and checkpoints.
+    #[serde(default = "default_coverage_output")]
+    pub output: PathBuf,
+    /// Run one replay batch after this many fuzz rounds.
+    #[serde(default = "default_coverage_interval")]
+    pub interval: u64,
+    /// `llvm-profdata` executable. LLVM 18 on this machine.
+    #[serde(default = "default_llvm_profdata")]
+    pub llvm_profdata: String,
+    /// `llvm-cov` executable.
+    #[serde(default = "default_llvm_cov")]
+    pub llvm_cov: String,
+    /// Runtime-only CLI override. Full JSON export is off unless requested on the command line.
+    #[serde(skip)]
+    pub export_json: bool,
+}
+
+impl Default for SourceCoverageConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            binary: PathBuf::new(),
+            output: default_coverage_output(),
+            interval: default_coverage_interval(),
+            llvm_profdata: default_llvm_profdata(),
+            llvm_cov: default_llvm_cov(),
+            export_json: false,
+        }
+    }
+}
+
 /// One campaign file.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Campaign {
@@ -193,6 +249,9 @@ pub struct Campaign {
     /// PCAP capture. Missing from the file keeps the historical no-capture path.
     #[serde(default)]
     pub capture: CaptureConfig,
+    /// LLVM source coverage replay. Missing from the file keeps it off.
+    #[serde(default)]
+    pub source_coverage: SourceCoverageConfig,
     /// Directory that contained the TOML file. Not read from the file.
     #[serde(skip)]
     pub base: PathBuf,
@@ -219,6 +278,10 @@ impl Campaign {
         campaign.campaign.crashes = resolve(&base, &campaign.campaign.crashes);
         campaign.campaign.python = resolve(&base, &campaign.campaign.python);
         campaign.campaign.pythonpath = resolve(&base, &campaign.campaign.pythonpath);
+        if !campaign.source_coverage.binary.as_os_str().is_empty() {
+            campaign.source_coverage.binary = resolve(&base, &campaign.source_coverage.binary);
+        }
+        campaign.source_coverage.output = resolve(&base, &campaign.source_coverage.output);
         campaign.base = base;
         Ok(campaign)
     }

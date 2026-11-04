@@ -218,6 +218,17 @@ impl CaseExecutor {
         self.backend.forkserver_pid()
     }
 
+    /// Resident Python server. Coverage cleanup must not signal it.
+    pub fn generator_server_pid(&self) -> i32 {
+        self.generator.server_pid() as i32
+    }
+
+    /// Prefix of the PCGUARD map. Coverage replay must leave it unchanged.
+    pub fn map_prefix(&self) -> Vec<u8> {
+        let map = self.backend.map();
+        map[..map.len().min(64)].to_vec()
+    }
+
     /// Path of the JSONL case log.
     pub fn report_path(&self) -> &Path {
         &self.report_path
@@ -947,7 +958,7 @@ fn proc_ppid(pid: i32) -> Option<i32> {
     })
 }
 
-fn pick_port(requested: u16) -> Result<u16, Error> {
+pub(crate) fn pick_port(requested: u16) -> Result<u16, Error> {
     if requested != 0 {
         return Ok(requested);
     }
@@ -960,7 +971,7 @@ fn pick_port(requested: u16) -> Result<u16, Error> {
     Ok(port)
 }
 
-fn restore_tree(fixture: &Path, workdir: &Path) -> Result<(), Error> {
+pub(crate) fn restore_tree(fixture: &Path, workdir: &Path) -> Result<(), Error> {
     if !fixture.is_dir() {
         return Err(Error::illegal_argument(format!(
             "fixture {} is missing",
@@ -988,7 +999,7 @@ fn copy_tree(from: &Path, to: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn write_server_config(
+pub(crate) fn write_server_config(
     template: &Path,
     destination: &Path,
     placeholders: &crate::config::TargetPlaceholders,

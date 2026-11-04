@@ -1391,6 +1391,36 @@ NoNewPrivs:\t1
     }
 
     #[test]
+    fn cleanup_keeps_main_and_coverage_residents_and_refuses_outside_pid_1() {
+        let procs = vec![
+            ProcInfo { pid: 1, ppid: 0, starttime: 1, state: 'S' },
+            ProcInfo { pid: 2, ppid: 1, starttime: 2, state: 'S' },
+            ProcInfo { pid: 3, ppid: 1, starttime: 3, state: 'S' },
+            ProcInfo { pid: 4, ppid: 1, starttime: 4, state: 'S' },
+            ProcInfo { pid: 5, ppid: 1, starttime: 5, state: 'S' },
+            ProcInfo { pid: 6, ppid: 4, starttime: 6, state: 'S' },
+            ProcInfo { pid: 7, ppid: 5, starttime: 7, state: 'R' },
+            ProcInfo { pid: 8, ppid: 1, starttime: 8, state: 'Z' },
+        ];
+        let mut residents = HashSet::new();
+        for pid in [1, 2, 3, 4, 5] {
+            residents.insert(pid);
+        }
+        let signals = signal_targets(&procs, &residents);
+        let signal_pids: Vec<i32> = signals.iter().map(|proc| proc.pid).collect();
+        assert_eq!(signal_pids, vec![6, 7, 8]);
+        let waits = adopted(&procs, &residents, 1);
+        assert_eq!(waits.iter().map(|proc| proc.pid).collect::<Vec<_>>(), vec![8]);
+        if std::process::id() != 1 {
+            let error = cleanup_namespace(&residents).unwrap_err();
+            assert!(
+                format!("{error:?}").contains("not PID 1"),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
     fn directed_pidfd_wait_collects_our_child() {
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);

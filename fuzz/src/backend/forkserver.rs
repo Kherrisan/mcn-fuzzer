@@ -73,7 +73,12 @@ impl ForkserverBackend {
         }
         reject_reserved_target_env(&campaign.target.extra_env)?;
         scrub_forkserver_only_env();
-        fs::create_dir_all(&campaign.target.workdir)?;
+        fs::create_dir_all(&campaign.target.workdir).map_err(|error| {
+            Error::unknown(format!(
+                "creating workdir {}: {error}",
+                campaign.target.workdir.display()
+            ))
+        })?;
         let mut provider = UnixShMemProvider::new()?;
         let shmem = provider.new_shmem(allocated)?;
         // Safety: this process is single-threaded while the forkserver starts.
@@ -138,6 +143,113 @@ impl ForkserverBackend {
         let forkserver_pid = find_child_pid(binary).unwrap_or(0);
         log::info!(
             "pcguard forkserver pid {forkserver_pid}, map {reported}/{allocated}, control port {port}"
+        );
+        Ok(Self {
+            executor,
+            shmem,
+            _shmem_provider: provider,
+            map_len: reported,
+            child_pid: None,
+            forkserver_pid,
+            cleanup_signal: None,
+            start_pending: false,
+            status_owed: false,
+            alive: true,
+        })
+    }
+
+    /// Start a forkserver-only coverage binary.
+    ///
+    /// The compatibility map is a new shared memory passed only on the child
+    /// command. The process-global `__AFL_SHM_ID` that the PCGUARD forkserver
+    /// uses is left unchanged.
+    pub fn spawn_coverage(campaign: &Campaign, port: u16, profile_file: &str) -> Result<Self, Error> {
+        let binary = &campaign.target.binary;
+        if !binary.is_file() {
+            return Err(Error::illegal_argument(format!(
+                "coverage binary {} is missing",
+                binary.display()
+            )));
+        }
+        let allocated = campaign.target.map_size;
+        if allocated < 64 || allocated % 64 != 0 {
+            return Err(Error::illegal_argument(
+                "target.map_size must be a multiple of 64 and at least 64".to_string(),
+            ));
+        }
+        reject_reserved_target_env(&campaign.target.extra_env)?;
+        fs::create_dir_all(&campaign.target.workdir).map_err(|error| {
+            Error::unknown(format!(
+                "creating workdir {}: {error}",
+                campaign.target.workdir.display()
+            ))
+        })?;
+        let main_shm = std::env::var("__AFL_SHM_ID").unwrap_or_default();
+        let mut provider = UnixShMemProvider::new()?;
+        let shmem = provider.new_shmem(allocated)?;
+        let coverage_shm = shmem.id().to_string();
+        if !main_shm.is_empty() && coverage_shm == main_shm {
+            return Err(Error::unknown(
+                "coverage compatibility map reused the main PCGUARD __AFL_SHM_ID".to_string(),
+            ));
+        }
+        let placeholders = campaign.placeholders(port);
+        let rendered: Vec<String> = campaign
+            .target
+            .args
+            .iter()
+            .map(|arg| placeholders.apply(arg))
+            .collect();
+        let mut builder = ForkserverExecutor::builder()
+            .program(binary)
+            .args(rendered.iter().map(String::as_str))
+            .coverage_map_size(allocated)
+            .is_persistent(false)
+            .fsrv_only(true)
+            .timeout(Duration::from_millis(campaign.timeouts.case_ms))
+            .debug_child(false)
+            .current_dir(campaign.target.workdir.clone())
+            .env("__AFL_SHM_ID", &coverage_shm)
+            .env("__AFL_SHM_ID_SIZE", shmem.len().to_string())
+            .env("LLVM_PROFILE_FILE", profile_file);
+        let input_path = campaign.target.workdir.join(".cur_input_coverage");
+        let file = libafl_bolts::fs::InputFile::create(&input_path).map_err(|error| {
+            Error::unknown(format!("coverage AFL input file: {error}"))
+        })?;
+        {
+            use libafl_bolts::target_args::StdTargetArgs;
+            StdTargetArgs::inner_mut(&mut builder).input_location =
+                libafl_bolts::InputLocation::StdIn {
+                    input_file: Some(file),
+                };
+        }
+        for (key, value) in &campaign.target.extra_env {
+            if key == "AFL_LLVM_ONLY_FSRV"
+                || key == "AFL_GCC_ONLY_FSRV"
+                || key == "__AFL_SHM_ID"
+                || key == "__AFL_SHM_ID_SIZE"
+                || key == "AFL_MAP_SIZE"
+            {
+                continue;
+            }
+            builder = builder.env(key, placeholders.apply(value));
+        }
+        let executor = builder.build(tuple_list!()).map_err(|error| {
+            Error::unknown(format!(
+                "coverage forkserver handshake with {} failed: {error:?}",
+                binary.display()
+            ))
+        })?;
+        let reported = executor.coverage_map_size().unwrap_or(allocated);
+        if reported == 0 || reported > allocated {
+            return Err(Error::illegal_argument(format!(
+                "coverage target {} reported map {reported}, allocation is {allocated}",
+                binary.display()
+            )));
+        }
+        let forkserver_pid = find_child_pid(binary).unwrap_or(0);
+        log::info!(
+            "coverage forkserver pid {forkserver_pid}, compatibility map {reported}/{allocated}, port {port}"
         );
         Ok(Self {
             executor,
@@ -481,6 +593,7 @@ mod tests {
                 iterations: 1,
             },
             capture: crate::config::CaptureConfig::default(),
+            source_coverage: crate::config::SourceCoverageConfig::default(),
             base: PathBuf::from("/tmp"),
         }
     }

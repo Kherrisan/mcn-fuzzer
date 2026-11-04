@@ -24,6 +24,8 @@ sudo ./target/release/mcn-fuzz run --campaign targets/lightftp/campaign.toml
 sudo ./target/release/mcn-fuzz replay --campaign targets/lightftp/campaign.toml --input targets/lightftp/corpus/<file>
 ```
 
+When LLVM source coverage is enabled in the campaign, full JSON export is off by default. Add `--source-coverage-json` to save the detailed JSON in snapshots. Without the flag, the stage uses `llvm-cov export --summary-only` for coverage deltas and saves profdata snapshots and metadata.
+
 `setup-capture.sh` checks Linux, pkg-config, and libpcap, then builds the Release binary with the stats feature. It does not call sudo or setcap.
 
 `replay` reads the corpus input file. LibAFL also writes `.metadata` sidecars; those are not generator inputs.

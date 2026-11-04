@@ -48,6 +48,10 @@ enum Command {
         campaign: PathBuf,
         #[arg(long)]
         iterations: Option<u64>,
+        /// Save the full llvm-cov JSON for source-coverage snapshots.
+        /// Disabled by default; summary-only data is still used for coverage deltas.
+        #[arg(long)]
+        source_coverage_json: bool,
     },
     /// Execute one saved generator input.
     Replay {
@@ -150,7 +154,11 @@ fn main() -> ExitCode {
         Command::Run {
             campaign,
             iterations,
-        } => load(campaign).and_then(|campaign| app::run(&campaign, *iterations)),
+            source_coverage_json,
+        } => load(campaign).and_then(|mut campaign| {
+            campaign.source_coverage.export_json = *source_coverage_json;
+            app::run(&campaign, *iterations)
+        }),
         Command::Replay { campaign, input } => {
             load(&campaign).and_then(|campaign| app::replay(&campaign, &input))
         }

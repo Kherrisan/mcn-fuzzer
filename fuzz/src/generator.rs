@@ -67,11 +67,23 @@ pub struct GeneratorClient {
     python: String,
     pythonpath: String,
     log_path: PathBuf,
+    /// Distinguishes a coverage replay server from the main fuzz server.
+    ipc_suffix: String,
 }
 
 impl GeneratorClient {
     /// Spawn `python -m generator_server` and wait until `ping` succeeds.
     pub fn spawn(python: &Path, pythonpath: &Path, log_path: &Path) -> Result<Self, Error> {
+        Self::spawn_tagged(python, pythonpath, log_path, "")
+    }
+
+    /// Spawn a server whose iceoryx2 service name does not collide with the main fuzzer.
+    pub fn spawn_tagged(
+        python: &Path,
+        pythonpath: &Path,
+        log_path: &Path,
+        ipc_suffix: &str,
+    ) -> Result<Self, Error> {
         let node = node_builder()
             .create::<ipc::Service>()
             .map_err(|error| Error::unknown(format!("iceoryx2 node: {error}")))?;
@@ -93,6 +105,7 @@ impl GeneratorClient {
             python: python.display().to_string(),
             pythonpath: pythonpath.display().to_string(),
             log_path: log_path.to_path_buf(),
+            ipc_suffix: ipc_suffix.to_string(),
         };
         client.respawn()?;
         Ok(client)
@@ -296,8 +309,9 @@ impl GeneratorClient {
         self.kill_group();
         self.service_serial = self.service_serial.wrapping_add(1);
         let service = format!(
-            "mcn-fuzz/w{}n{}",
+            "mcn-fuzz/w{}{}n{}",
             crate::runtime::worker_id()?.label(),
+            self.ipc_suffix,
             self.service_serial
         );
         if let Some(parent) = self.log_path.parent() {
