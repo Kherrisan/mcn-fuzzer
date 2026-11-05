@@ -47,7 +47,7 @@ extra_env = [
 - 启动前检查库路径及 seed 格式，错误时在首个 case 前报错。
 - seed 的解析和字节编码必须稳定，不依赖 Rust 默认哈希、机器地址或宿主环境。
 
-对应入口为 `fuzz/src/backend/forkserver.rs` 中的 `ForkserverBackend::spawn`。
+对应入口为 `fuzz/src/runtime/backend/forkserver.rs` 中的 `ForkserverBackend::spawn`。
 
 ## 3. 固定 seed 与每 case 状态
 

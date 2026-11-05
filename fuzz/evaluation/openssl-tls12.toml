@@ -1,0 +1,45 @@
+# Five manually curated TLS 1.2 traces; see openssl-tls12.md.
+campaign = "openssl-tls12-campaign.toml"
+ready_ms = 3000
+sut_exit_ms = 1500
+term_grace_ms = 300
+
+[binding]
+sut = ["TLS server"]
+generator = ["TLS client"]
+
+[[cases]]
+name = "server-flight"
+steps = [
+  "send ClientHello", "receive ServerHello", "receive Certificate",
+  "receive ServerKeyExchange", "receive ServerHelloDone",
+]
+
+[[cases]]
+name = "handshake-close"
+steps = [
+  "send ClientHello", "receive ServerHello", "receive Certificate",
+  "receive ServerKeyExchange", "receive ServerHelloDone",
+  "send ClientKeyExchange", "send client ChangeCipherSpec", "send client Finished",
+  "receive server ChangeCipherSpec", "receive server Finished",
+  "send client close_notify", "receive server close_notify",
+]
+
+[[cases]]
+name = "https-roundtrip"
+steps = [
+  "send ClientHello", "receive ServerHello", "receive Certificate",
+  "receive ServerKeyExchange", "receive ServerHelloDone",
+  "send ClientKeyExchange", "send client ChangeCipherSpec", "send client Finished",
+  "receive server ChangeCipherSpec", "receive server Finished",
+  "send HTTP request in ApplicationData", "receive HTTP response in ApplicationData",
+  "receive server close_notify", "send client close_notify",
+]
+
+[[cases]]
+name = "unsupported-cipher-alert"
+steps = ["send ClientHello without a shared cipher", "receive handshake_failure"]
+
+[[cases]]
+name = "duplicate-extension-alert"
+steps = ["send ClientHello with duplicate supported_groups", "receive illegal_parameter"]

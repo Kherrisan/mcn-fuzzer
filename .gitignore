@@ -15,6 +15,9 @@ corpus/
 crashes/
 work/
 coverage/
+# Track the Rust coverage module.
+!/fuzz/src/coverage/
+!/fuzz/src/coverage/**
 source-coverage/
 htmlcov/
 test-results/

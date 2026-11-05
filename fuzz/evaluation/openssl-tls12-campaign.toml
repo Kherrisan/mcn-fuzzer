@@ -1,0 +1,51 @@
+# Dedicated evaluation configuration; the normal fuzz campaign is independent.
+[target]
+binary = "../targets/openssl/build/tree/apps/openssl"
+source_dir = "../.deps/openssl/openssl-3.5.9"
+workdir = "../targets/openssl/eval-work"
+fixture = "../targets/openssl/build/fixture"
+config_template = "../targets/openssl/openssl.cnf"
+config_output = "openssl.cnf"
+host = "127.0.0.1"
+port = 0
+map_size = 1048576
+cert = "certs/server.crt"
+key = "certs/server.key"
+extra_env = [["OPENSSL_CONF", "@CONFIG@"]]
+args = [
+  "s_server", "-accept", "127.0.0.1:@PORT@",
+  "-cert", "@CERT@", "-key", "@KEY@",
+  "-tls1_2", "-www", "-naccept", "1", "-no_cache", "-no_ticket",
+]
+
+[timeouts]
+connect_ms = 2000
+io_ms = 2000
+case_ms = 15000
+exit_grace_ms = 1500
+
+[campaign]
+seeds = "../targets/openssl/seeds"
+corpus = "../targets/openssl/eval-corpus"
+crashes = "../targets/openssl/eval-crashes"
+python = "../.venv/bin/python"
+pythonpath = "../python"
+iterations = 1
+
+[protocol_generation]
+enabled = false
+model = "fixtures/tls12/protocol.json"
+output = "../targets/openssl/eval-synthesis"
+profile = "codex"
+init_timeout_secs = 180
+task_timeout_secs = 600
+
+[parties]
+sut = ["TLS server"]
+generator = ["TLS client"]
+
+[agents.profiles.codex]
+provider = "codex"
+executable = "/home/user/.nvm/current/bin/codex"
+model = "gpt-6-luna"
+effort = "max"

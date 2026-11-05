@@ -7,7 +7,7 @@ use std::{path::PathBuf, process::ExitCode};
 use clap::{Parser, Subcommand};
 use libafl::Error;
 
-use mcn_fuzz::{app, config::Campaign, lifecycle::JobPolicy};
+use mcn_fuzz::{app, app::config::Campaign, runtime::lifecycle::JobPolicy};
 
 #[derive(Parser)]
 #[command(
@@ -122,7 +122,7 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
-    mcn_fuzz::lifecycle::install_job_policy(policy);
+    mcn_fuzz::runtime::lifecycle::install_job_policy(policy);
     if !orchestrator(&cli.command) {
         let capture = capture_requested(&cli.command);
         let identity = match mcn_fuzz::runtime::resolve_identity(cli.run_as.as_deref()) {
@@ -136,6 +136,18 @@ fn main() -> ExitCode {
             eprintln!("mcn-fuzz: {error}");
             return ExitCode::from(1);
         }
+        if let Command::Run { campaign, .. } = &cli.command {
+            if let Ok(loaded) = load(campaign) {
+                if loaded.protocol_generation.enabled {
+                    mcn_fuzz::agents::install_generation_request(
+                        mcn_fuzz::agents::GenerationRequest {
+                            hc: loaded.protocol_generation.hc_executable.clone(),
+                            output: loaded.protocol_generation.output.clone(),
+                        },
+                    );
+                }
+            }
+        }
         let job = accept_supervise_job(&cli.command);
         match mcn_fuzz::runtime::supervise(job, capture, &identity) {
             Ok(mcn_fuzz::runtime::Role::Parent(code)) => {
@@ -145,6 +157,13 @@ fn main() -> ExitCode {
                 mcn_fuzz::runtime::install_worker(worker);
             }
             Err(error) => {
+                if let Command::Run { campaign, .. } = &cli.command {
+                    if let Ok(loaded) = load(campaign) {
+                        mcn_fuzz::agents::discard_recorded_runtime(
+                            &loaded.protocol_generation.output,
+                        );
+                    }
+                }
                 eprintln!("mcn-fuzz: {error}");
                 return ExitCode::from(1);
             }
@@ -168,9 +187,7 @@ fn main() -> ExitCode {
             load(campaign).and_then(|campaign| app::accept_job(&campaign, scenario))
         }
         #[cfg(feature = "stats")]
-        Command::BenchCapture { campaign, output } => {
-            orchestrate_bench(campaign, output, &cli)
-        }
+        Command::BenchCapture { campaign, output } => orchestrate_bench(campaign, output, &cli),
         #[cfg(feature = "stats")]
         Command::BenchJob {
             campaign,
@@ -192,6 +209,11 @@ fn main() -> ExitCode {
         0
     };
     if !orchestrator(&cli.command) {
+        if let Command::Run { campaign, .. } = &cli.command {
+            if let Ok(loaded) = load(campaign) {
+                mcn_fuzz::agents::discard_recorded_runtime(&loaded.protocol_generation.output);
+            }
+        }
         mcn_fuzz::runtime::report_child_exit(code);
     }
     ExitCode::from(code as u8)
@@ -369,9 +391,7 @@ fn push_policy(command: &mut std::process::Command, cli: &Cli) {
         .arg("--timeout-failure-limit")
         .arg(cli.timeout_failure_limit.to_string());
     if let Some(value) = cli.case_timeout_ms {
-        command
-            .arg("--case-timeout-ms")
-            .arg(value.to_string());
+        command.arg("--case-timeout-ms").arg(value.to_string());
     }
     if cli.sut_grace_kill_is_timeout {
         command.arg("--sut-grace-kill-is-timeout");

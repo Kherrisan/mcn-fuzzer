@@ -46,7 +46,7 @@ class AllocationKey:
 
 def deterministic_id(key: AllocationKey) -> str:
     payload = json.dumps(asdict(key), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    return PREFIXES[key.kind] + "-" + hashlib.sha256(payload.encode()).hexdigest()[:24]
+    return PREFIXES[key.kind] + "-" + hashlib.sha256(payload.encode()).hexdigest()[:8]
 
 
 class GlobalIdAllocator:

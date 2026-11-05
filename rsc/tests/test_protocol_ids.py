@@ -5,7 +5,13 @@ from dataclasses import replace
 
 import pytest
 
-from rsc.protocol.ids import AllocationKey, GlobalIdAllocator, IdConsistencyError
+from rsc.protocol.ids import (
+    AllocationKey,
+    GlobalIdAllocator,
+    IdConsistencyError,
+    deterministic_id,
+)
+from rsc.protocol.merge import stable_id
 
 
 def key(**changes):
@@ -13,6 +19,11 @@ def key(**changes):
         AllocationKey("FTP", "steps", "interactions", "list-001", "rfc959/block-1", "local:send"),
         **changes,
     )
+
+
+def test_hash_ids_keep_the_first_eight_hex_characters():
+    assert deterministic_id(key()) == "step-1b39bfdb"
+    assert stable_id("group", ["a", "b"]) == "group-0473ef2d"
 
 
 def test_concurrent_retry_and_cross_list_ids_are_stable():

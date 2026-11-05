@@ -1,0 +1,296 @@
+{
+  "environment": "CPython 3.12 / Linux x86_64; fuzz/.venv; audited 2026-11-05",
+  "modules": [
+    {
+      "distribution": "scapy",
+      "version": "2.6.1",
+      "imports": [
+        "scapy.layers.inet",
+        "scapy.layers.dns",
+        "scapy.layers.tls.all",
+        "scapy.layers.rtp"
+      ],
+      "purpose": "Packet builders/parsers: IP/TCP/UDP/DNS/TLS/RTP; raw send is usually unnecessary."
+    },
+    {
+      "distribution": "dpkt",
+      "version": "1.9.8",
+      "imports": [
+        "dpkt",
+        "dpkt.dns",
+        "dpkt.ssl",
+        "dpkt.rtp"
+      ],
+      "purpose": "Lightweight packets, TLS records, DNS, RTP, PCAP; no dpkt.rtsp module."
+    },
+    {
+      "distribution": "construct",
+      "version": "2.10.70",
+      "imports": [
+        "construct"
+      ],
+      "purpose": "Declarative binary fields, lengths, arrays and TLVs."
+    },
+    {
+      "distribution": "bitstring",
+      "version": "5.0.0",
+      "imports": [
+        "bitstring"
+      ],
+      "purpose": "Bit-level integer/flag packing and parsing."
+    },
+    {
+      "distribution": "pyasn1",
+      "version": "0.6.5",
+      "imports": [
+        "pyasn1.codec.der.encoder",
+        "pyasn1.codec.der.decoder"
+      ],
+      "purpose": "ASN.1 DER/BER encoding and decoding."
+    },
+    {
+      "distribution": "pyasn1-modules",
+      "version": "0.4.2",
+      "imports": [
+        "pyasn1_modules.rfc5280"
+      ],
+      "purpose": "ASN.1 certificate and related RFC schemas."
+    },
+    {
+      "distribution": "asn1crypto",
+      "version": "1.5.1",
+      "imports": [
+        "asn1crypto.x509",
+        "asn1crypto.keys",
+        "asn1crypto.cms"
+      ],
+      "purpose": "X.509, PKCS and CMS structure parsing/building."
+    },
+    {
+      "distribution": "cryptography",
+      "version": "50.0.2",
+      "imports": [
+        "cryptography.x509",
+        "cryptography.hazmat.primitives.ciphers.aead"
+      ],
+      "purpose": "X.509, key exchange, signatures, KDFs and authenticated encryption."
+    },
+    {
+      "distribution": "pycryptodome",
+      "version": "4.3.0",
+      "imports": [
+        "Crypto.Cipher.AES",
+        "Crypto.Cipher.ChaCha20_Poly1305",
+        "Crypto.PublicKey.RSA"
+      ],
+      "purpose": "Additional crypto primitives; import Crypto, not Cryptodome."
+    },
+    {
+      "distribution": "pyOpenSSL",
+      "version": "26.4.0",
+      "imports": [
+        "OpenSSL.SSL",
+        "OpenSSL.crypto"
+      ],
+      "purpose": "OpenSSL TLS contexts/connections and certificate integration."
+    },
+    {
+      "distribution": "tlslite-ng",
+      "version": "0.8.2",
+      "imports": [
+        "tlslite.api",
+        "tlslite.messages",
+        "tlslite.extensions"
+      ],
+      "purpose": "TLS client/server, handshake messages and extensions; not DTLS."
+    },
+    {
+      "distribution": "python-mbedtls",
+      "version": "2.10.1",
+      "imports": [
+        "mbedtls.tls",
+        "mbedtls.pk",
+        "mbedtls.x509"
+      ],
+      "purpose": "DTLS 1.0/1.2 and TLS peers, PSKs, certificates; not DTLS 1.3."
+    },
+    {
+      "distribution": "dnspython",
+      "version": "2.9.2",
+      "imports": [
+        "dns.message",
+        "dns.query",
+        "dns.edns",
+        "dns.dnssec"
+      ],
+      "purpose": "DNS messages/queries, EDNS, TSIG and DNSSEC helpers."
+    },
+    {
+      "distribution": "dnslib",
+      "version": "0.9.26",
+      "imports": [
+        "dnslib",
+        "dnslib.server"
+      ],
+      "purpose": "DNS wire messages and configurable UDP/TCP upstream servers."
+    },
+    {
+      "distribution": "pydicom",
+      "version": "3.0.2",
+      "imports": [
+        "pydicom",
+        "pydicom.filewriter"
+      ],
+      "purpose": "DICOM datasets, UIDs and transfer-syntax codecs; not network associations."
+    },
+    {
+      "distribution": "pynetdicom",
+      "version": "3.0.4",
+      "imports": [
+        "pynetdicom",
+        "pynetdicom.pdu"
+      ],
+      "purpose": "DICOM SCU/SCP association, DIMSE and PDU support."
+    },
+    {
+      "distribution": "pyftpdlib",
+      "version": "2.2.0",
+      "imports": [
+        "pyftpdlib.handlers",
+        "pyftpdlib.authorizers",
+        "pyftpdlib.servers"
+      ],
+      "purpose": "FTP/FTPS servers, authentication and active/passive data endpoints."
+    },
+    {
+      "distribution": "aioftp",
+      "version": "0.28.3",
+      "imports": [
+        "aioftp"
+      ],
+      "purpose": "Async FTP clients and servers; not a drop-in FTPS client."
+    },
+    {
+      "distribution": "aiosmtpd",
+      "version": "1.4.6",
+      "imports": [
+        "aiosmtpd.smtp",
+        "aiosmtpd.controller"
+      ],
+      "purpose": "SMTP/LMTP servers, AUTH and STARTTLS; explicit lifecycle required."
+    },
+    {
+      "distribution": "aiosmtplib",
+      "version": "5.1.3",
+      "imports": [
+        "aiosmtplib"
+      ],
+      "purpose": "Async SMTP client and STARTTLS."
+    },
+    {
+      "distribution": "paramiko",
+      "version": "5.1.0",
+      "imports": [
+        "paramiko"
+      ],
+      "purpose": "Synchronous SSH transport, client/server, host keys and SFTP."
+    },
+    {
+      "distribution": "asyncssh",
+      "version": "2.24.1",
+      "imports": [
+        "asyncssh"
+      ],
+      "purpose": "Async SSH client/server, channels, SCP/SFTP."
+    },
+    {
+      "distribution": "pyatv",
+      "version": "0.18.0",
+      "imports": [
+        "pyatv.protocols.dmap.tags",
+        "pyatv.protocols.dmap.parser",
+        "pyatv.protocols.dmap.tag_definitions"
+      ],
+      "purpose": "DAAP/DMAP tag codecs; Apple TV client, not a complete DAAP music server."
+    },
+    {
+      "distribution": "aiohttp",
+      "version": "3.14.5",
+      "imports": [
+        "aiohttp",
+        "aiohttp.web"
+      ],
+      "purpose": "HTTP client/server for DAAP transport and HTTP upstream roles."
+    },
+    {
+      "distribution": "httpx",
+      "version": "0.28.1",
+      "imports": [
+        "httpx"
+      ],
+      "purpose": "Synchronous/async HTTP clients for DAAP; not RTSP."
+    },
+    {
+      "distribution": "aiortsp",
+      "version": "1.4.0",
+      "imports": [
+        "aiortsp.rtsp.parser",
+        "aiortsp.rtsp.connection",
+        "aiortsp.rtcp.parser"
+      ],
+      "purpose": "RTSP client and incremental request/response/interleaved RTP parser; no full media server."
+    },
+    {
+      "distribution": "Twisted",
+      "version": "26.10.0",
+      "imports": [
+        "twisted.protocols.sip",
+        "twisted.internet.asyncioreactor"
+      ],
+      "purpose": "SIP messages/parser and legacy proxy/registrar building blocks; reactor lifecycle matters."
+    },
+    {
+      "distribution": "PyNaCl",
+      "version": "1.6.2",
+      "imports": [
+        "nacl.public",
+        "nacl.signing",
+        "nacl.bindings"
+      ],
+      "purpose": "libsodium keys, signatures and encryption, also used by SSH."
+    },
+    {
+      "distribution": "zeroconf",
+      "version": "0.153.0",
+      "imports": [
+        "zeroconf",
+        "zeroconf.asyncio"
+      ],
+      "purpose": "DNS-SD/mDNS registration/discovery when DAAP setup actually requires it."
+    },
+    {
+      "distribution": "h11",
+      "version": "0.16.0",
+      "imports": [
+        "h11"
+      ],
+      "purpose": "HTTP/1.1 event/framing codec for custom HTTP peers; not RTSP."
+    },
+    {
+      "distribution": "cbor2",
+      "version": "5.6.5",
+      "imports": [
+        "cbor2"
+      ],
+      "purpose": "CBOR encoding/decoding; also the existing generator IPC dependency."
+    },
+    {
+      "distribution": "PyYAML",
+      "version": "6.0.3",
+      "imports": [
+        "yaml"
+      ],
+      "purpose": "Configuration fixture parsing; use safe_load. Not a network protocol engine."
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+# RFC-derived synthesis tasks. See lightftp-rfc.md for sources and case notes.
+# Case steps use the existing FTP protocol.json vocabulary exactly.
+campaign = "../targets/lightftp/campaign.toml"
+ready_ms = 2000
+sut_exit_ms = 1000
+term_grace_ms = 200
+prefix = [
+  "service greeting",
+  "send USER",
+  "USER intermediate",
+  "send PASS",
+  "login accepted",
+]
+suffix = ["send QUIT", "ordinary command reply"]
+
+[binding]
+sut = ["server-PI", "server-DTP"]
+generator = ["user-PI", "user-DTP"]
+
+# RFC 959 sections 4.1.1, 4.1.3, Appendix II.
+# Use webadmin with its configured password (currently ubuntu), not ubuntu's
+# upload-only account: RMD requires full access in this LightFTP build.
+[[cases]]
+name = "admin-directory-lifecycle"
+steps = [
+  "send MKD", "pathname reply",
+  "send CWD", "ordinary command reply",
+  "send PWD", "pathname reply",
+  "send CDUP", "ordinary command reply",
+  "send RMD", "ordinary command reply",
+]
+
+# RFC 959 section 4.1.3; RFC 3659 section 4.
+# RNFR's next command is RNTO. Rename hello.txt in the per-replay work copy;
+# query the new name and then delete it. Full-access webadmin login is needed.
+[[cases]]
+name = "admin-rename-delete"
+steps = [
+  "send TYPE", "TYPE accepted",
+  "send RNFR", "rename accepted",
+  "send RNTO", "ordinary command reply",
+  "send SIZE", "SIZE result",
+  "send DELE", "ordinary command reply",
+]
+
+# RFC 3659 sections 4, 5; RFC 959 sections 4.1.2, 4.1.3.
+# Set TYPE I. Negotiate PASV before REST so RETR immediately follows REST.
+# A nonzero restart offset below hello.txt's size makes this nontrivial.
+[[cases]]
+name = "passive-restart-retrieve"
+steps = [
+  "send TYPE", "TYPE accepted",
+  "send SIZE", "SIZE result",
+  "send PASV", "PASV endpoint",
+  "send REST", "restart accepted",
+  "send RETR", "transfer preliminary",
+  "retrieve stream bytes via passive", "transfer completion",
+]
+
+# RFC 959 sections 3.2, 3.3, 4.1.2, 4.1.3.
+# The generator listens on a dynamic port BEFORE PORT/RETR and receives the
+# server's outbound data connection. PORT advertises listener.port, not ctx.port.
+[[cases]]
+name = "active-retrieve"
+steps = [
+  "send TYPE", "TYPE accepted",
+  "send PORT", "PORT accepted",
+  "send RETR", "transfer preliminary",
+  "retrieve stream bytes via active", "transfer completion",
+]
+
+# RFC 959 sections 3.2, 3.3, 4.1.2, 4.1.3; RFC 3659 section 4.
+# STOR, APPE, RETR each use a fresh PASV negotiation/data connection. STOR must
+# create the file first: this LightFTP APPE implementation needs an existing file.
+# Full-access webadmin login is needed for APPE. Close each upload channel for EOF.
+[[cases]]
+name = "admin-passive-append-roundtrip"
+steps = [
+  "send TYPE", "TYPE accepted",
+  "send PASV", "PASV endpoint",
+  "send STOR", "transfer preliminary",
+  "store stream bytes via passive", "transfer completion",
+  "send PASV", "PASV endpoint",
+  "send APPE", "transfer preliminary",
+  "store stream bytes via passive", "transfer completion",
+  "send SIZE", "SIZE result",
+  "send PASV", "PASV endpoint",
+  "send RETR", "transfer preliminary",
+  "retrieve stream bytes via passive", "transfer completion",
+]

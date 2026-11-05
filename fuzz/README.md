@@ -2,6 +2,20 @@
 
 Forkserver fuzzer. Each case starts a new child for the selected target. AFL++ PCGUARD is the coverage source. The host-side Python generator speaks the target protocol over native sockets. Campaigns are included for LightFTP and OpenSSL `s_server`.
 
+## Source layout
+
+```text
+src/
+  lib.rs, main.rs    Library and CLI entrypoints
+  app/              Campaign configuration, run/replay, acceptance, benchmarks
+  engine/           Executor, generator inputs, mutation, stagnation, synthesis
+  runtime/          Supervisor, forkserver backend, generator IPC, lifecycle, reports
+  coverage/         LLVM source coverage and PCAP capture
+  agents/           Agent profiles and HC integration
+  protocol/         Protocol models, trace selection, receipts
+  evaluation/       Standalone synthesis evaluation and its CLI entrypoint
+```
+
 ## Build
 
 ```sh
@@ -29,6 +43,76 @@ When LLVM source coverage is enabled in the campaign, full JSON export is off by
 `setup-capture.sh` checks Linux, pkg-config, and libpcap, then builds the Release binary with the stats feature. It does not call sudo or setcap.
 
 `replay` reads the corpus input file. LibAFL also writes `.metadata` sidecars; those are not generator inputs.
+
+Optional `[protocol_generation]` synthesizes new `generate(ctx, params)` scripts from a schema 7.0.0 protocol model. It is off when the section is omitted. The `run` command is the only entry that starts a campaign-private HC core; replay, accept, and benchmark do not. Profiles live under `[agents.profiles.<name>]` with `provider` set to `codex`, `claude`, or `pi`. A failed synthesis task is recorded and existing corpus entries keep fuzzing.
+
+Fuzz-stage scheduling uses consecutive ordinary executions without newly occupied
+PCGUARD bitmap slots. Configure the positive threshold under `[campaign]`:
+
+```toml
+[campaign]
+bitmap_stagnation_limit = 256
+```
+
+New slots reset the streak; hitcount changes on known slots and the runtime marker
+at index 0 do not count as new coverage. Seeds and synthesized inputs update the
+bitmap baseline without increasing the streak, and invalid cases are ignored.
+Once the threshold is reached, the trigger stays set until the current mutational
+stage finishes. Source coverage then runs at the end of that round; synthesis is
+requested at the start of the next round. While an agent task is in flight,
+ordinary mutation continues and updates the bitmap baseline, but the no-growth
+streak is paused at zero and no new source-coverage/synthesis trigger is queued.
+After the main loop handles the task's result, counting restarts from zero; a
+fresh threshold is required for the next request. Synthesis stays asynchronous.
+Disabled source coverage skips collection and still releases
+the next-round request; source-coverage errors are logged and do the same.
+Disabled or paused synthesis consumes the request without launching an agent.
+Agent initialization also runs in the background: campaigns with seeds load them
+and mutate while the agent prepares. Each synthesis-stage visit checks readiness;
+while initialization is pending it skips dispatch and retains the trigger for a
+later round. Initialization failures pause synthesis while ordinary fuzzing continues.
+Seedless campaigns wait for initialization and the first generated input because
+ordinary mutation requires a schedulable corpus.
+
+Round-based `interval` settings have been removed from `[protocol_generation]`
+and `[source_coverage]`; configuring them is an error. Initial and final
+source-coverage snapshots, and first-generator bootstrap when seeds are
+absent, still run as before. With seeds present, round 1 no longer starts an agent
+task automatically. Source coverage still requires `[source_coverage].enabled=true`
+and a coverage-built binary; synthesis requires `[protocol_generation].enabled=true`.
+
+The synthesizer prompts are Markdown MiniJinja templates in `prompts/`. They are embedded in the fuzzer at build time, so rebuild after editing them.
+
+Protocol, step and trace hash IDs use the first eight lowercase hexadecimal characters of SHA-256 throughout receipts, prompts, generator origins and evaluation artifacts. Trace hashing still uses full step digests before shortening its own output. RSC-generated step and diagnostic IDs likewise use eight hash characters after their kind prefix. Document/source integrity digests retain their full SHA-256 values.
+
+`synthesis-init.md` establishes the campaign background, reference paths, party roles, workflow, and artifact contract. `synthesis-generation.md` supplies each receipt's task with the public Python API, prerequisite handling, SDK/mock guidance, worker lifecycle, and publication rules. Both receive the same read-only campaign context with absolute paths and execution budgets. Missing template variables fail rendering; completion JSON examples are serialized by Rust before injection.
+
+Both prompts also inject the absolute path to [the protocol module skill](skills/protocol-modules/SKILL.md) and require the agent to read it before selecting libraries. It covers all ten ProFuzzBench protocols, with message/packet codecs, upstream/server SDKs, crypto helpers, import names, installed versions and limitations. Keep the skill and its references accessible at runtime. Evaluation fingerprints the skill directory along with the prompt templates, so changing its contents requires preparing a new evaluation task.
+
+Receipts contain the selected trace and relevant definitions, plus an absolute `model_path` for targeted prerequisite queries. They do not embed `model_snapshot`. The skill requires the agent to run [the fixed artifact validator](skills/protocol-modules/scripts/validate_generator.py) on `result.draft.json` before atomically publishing `result.json`. The agent additionally runs its bounded import probe. Fuzzer acceptance rechecks the completion IDs, parameter schema and values, and Python syntax and entrypoint in Rust using the RustPython compiler; it does not launch Python or run the generator or SUT.
+
+The prepared environment is CPython 3.12 on Linux x86_64. Install its pinned dependencies into the campaign interpreter (the supplied campaigns use `.venv/bin/python`):
+
+```sh
+.venv/bin/python -m pip install -r python/requirements-protocols.txt
+.venv/bin/python -m pip check
+.venv/bin/python skills/protocol-modules/scripts/audit.py --network
+```
+
+The audit checks 32 cataloged distributions and runs protocol/crypto/codec probes; `--network` additionally exercises temporary loopback DNS, FTP, SMTP, DICOM, SSH and HTTP/DMAP peers. These checks verify the library environment, not interoperability with every ProFuzzBench target. Synthesis agents use installed modules and do not install dependencies themselves.
+
+Synthesizer prompts do not receive `[target].source_dir`, even when configured.
+Both prompts and the module skill prohibit reading SUT source or using SUT feature
+support or expected message acceptance to decide whether to generate. Protocol
+behavior comes from the receipt and RFCs; public generator API/SDK references and
+static artifact validation remain available. Runtime replies, failures and
+coverage are evaluated by the fuzzer after publication.
+
+`WORKSPACE` is the agent's fixed working directory (`protocol_generation.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its receipt, `generator.py`, parameter schema, initial params, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root.
+
+When synthesis is enabled, `[parties]` and `protocol_generation.model` are required. A campaign that includes `[parties]` resolves those selectors against the model before cases start, even when synthesis is disabled. A missing model is an error. `sut` and `generator` are each a non-empty list of protocol party names or `"*"`. `"*"` means every model party not named by the other side. Parties in neither set stay unavailable. The removed `protocol_generation.bindings` table is a configuration error. The LightFTP campaign assigns the server parties to the SUT and the remaining parties to the generator.
+
+
 
 Python unit tests:
 

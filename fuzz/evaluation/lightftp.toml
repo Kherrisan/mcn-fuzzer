@@ -1,0 +1,64 @@
+campaign = "../targets/lightftp/campaign.toml"
+ready_ms = 2000
+sut_exit_ms = 1000
+term_grace_ms = 200
+prefix = [
+  "service greeting",
+  "send USER",
+  "USER intermediate",
+  "send PASS",
+  "login accepted",
+]
+suffix = [
+  "send QUIT",
+  "ordinary command reply",
+]
+
+[binding]
+sut = ["server-PI", "server-DTP"]
+generator = ["user-PI", "user-DTP"]
+
+[[cases]]
+name = "login-quit"
+steps = []
+
+[[cases]]
+name = "control-commands"
+steps = ["send PWD", "pathname reply", "send NOOP", "ordinary command reply"]
+
+[[cases]]
+name = "passive-list"
+steps = [
+  "send PASV",
+  "PASV endpoint",
+  "send LIST",
+  "transfer preliminary",
+  "LIST data via passive",
+  "transfer completion",
+]
+
+[[cases]]
+name = "passive-retr"
+steps = [
+  "send TYPE",
+  "TYPE accepted",
+  "send PASV",
+  "PASV endpoint",
+  "send RETR",
+  "transfer preliminary",
+  "retrieve stream bytes via passive",
+  "transfer completion",
+]
+
+[[cases]]
+name = "active-stor"
+steps = [
+  "send TYPE",
+  "TYPE accepted",
+  "send PORT",
+  "PORT accepted",
+  "send STOR",
+  "transfer preliminary",
+  "store stream bytes via active",
+  "transfer completion",
+]

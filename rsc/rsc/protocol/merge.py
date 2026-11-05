@@ -13,7 +13,7 @@ def canonical(value) -> str:
 
 
 def stable_id(kind: str, value) -> str:
-    return kind + "-" + hashlib.sha256(canonical(value).encode()).hexdigest()[:20]
+    return kind + "-" + hashlib.sha256(canonical(value).encode()).hexdigest()[:8]
 
 
 def unique(values: list) -> list:

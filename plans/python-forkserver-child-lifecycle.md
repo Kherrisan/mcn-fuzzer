@@ -67,11 +67,11 @@ Fuzzer 同时监控 generator worker 和 SUT child，统一处理启动期限、
 
 - `fuzz/python/generator_server/server.py`：fork worker、发送 `Started`、`waitpid`、发送匹配的 `Result`；移除 Cancel 管理。
 - `fuzz/python/generator_server/worker.py`：将 generator 的成功、异常和协议错误映射为稳定退出码；详细诊断写入日志。
-- `fuzz/src/generator.rs`：支持单请求多响应、校验请求标识、增量接收 `Started`/`Result`，删除 Cancel 和固定 2 秒结果等待。
-- `fuzz/src/backend/forkserver.rs`：将 SUT 启动拆成发送 fork 请求和非阻塞/限时读取 child PID，支持和 Python 启动并行；分离 kill 与 status 收集。
-- `fuzz/src/executor.rs`：实现双启动屏障、pidfd 监控、peer grace、case deadline、Result deadline、分类和无效执行 feedback 门控。
-- `fuzz/src/config.rs`、`app.rs`、`main.rs`、`accept/`、`bench.rs`：定义并向所有入口传递 CLI 参数及 job 级累计超时失败策略。
-- `fuzz/src/report.rs`：持久化 generator 退出原因和逻辑状态，不持久化 PID。
+- `fuzz/src/runtime/generator.rs`：支持单请求多响应、校验请求标识、增量接收 `Started`/`Result`，删除 Cancel 和固定 2 秒结果等待。
+- `fuzz/src/runtime/backend/forkserver.rs`：将 SUT 启动拆成发送 fork 请求和非阻塞/限时读取 child PID，支持和 Python 启动并行；分离 kill 与 status 收集。
+- `fuzz/src/engine/executor.rs`：实现双启动屏障、pidfd 监控、peer grace、case deadline、Result deadline、分类和无效执行 feedback 门控。
+- `fuzz/src/app/config.rs`、`app/mod.rs`、`main.rs`、`app/accept/`、`app/bench.rs`：定义并向所有入口传递 CLI 参数及 job 级累计超时失败策略。
+- `fuzz/src/runtime/report.rs`：持久化 generator 退出原因和逻辑状态，不持久化 PID。
 
 ## 验收
 

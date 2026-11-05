@@ -1,0 +1,492 @@
+{
+  "$defs": {
+    "field": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Protocol name of the field actually carried by the enclosing message. Retain only information needed for correlation, connection setup, branching or interaction state.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "AssociatedField",
+      "type": "object",
+      "description": "A field actually carried by its enclosing message and needed for correlation, connection setup, interaction branching or interaction state. Fields carry names only."
+    },
+    "channel": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Reusable channel name; specialize only for a supported connection distinction.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "description": "One short phrase for this connection.",
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "transport": {
+          "description": "Underlying transport stated by the source, such as TCP or UDP.",
+          "minLength": 1,
+          "title": "Transport",
+          "type": "string"
+        },
+        "connection": {
+          "enum": [
+            "connection_oriented",
+            "connectionless"
+          ],
+          "title": "Connection",
+          "type": "string",
+          "description": "Whether the channel requires connection establishment. Connectionless channels have null initiator_party_name and acceptor_party_name."
+        },
+        "endpoint_party_names": {
+          "description": "Names of the actual communication endpoints.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Endpoint Party Names",
+          "type": "array"
+        },
+        "initiator_party_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Party establishing the connection; null when unknown or inapplicable.",
+          "title": "Initiator Party Name"
+        },
+        "acceptor_party_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Party accepting the connection; null when unknown or inapplicable.",
+          "title": "Acceptor Party Name"
+        },
+        "endpoint_sources": {
+          "description": "Sources of endpoint parameters; additional detail alone does not define another channel.",
+          "items": {
+            "$ref": "#/$defs/endpoint_source"
+          },
+          "title": "Endpoint Sources",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "transport",
+        "connection",
+        "endpoint_party_names",
+        "initiator_party_name",
+        "acceptor_party_name",
+        "endpoint_sources"
+      ],
+      "title": "Channel",
+      "type": "object",
+      "description": "A reusable connection or communication endpoint. Identity follows communication purpose, underlying transport, endpoint roles and connection establishment direction rather than payload or wording."
+    },
+    "endpoint_source": {
+      "additionalProperties": false,
+      "properties": {
+        "party_name": {
+          "minLength": 1,
+          "title": "Party Name",
+          "type": "string",
+          "description": "Name of the endpoint role whose parameter is being configured; this is not necessarily the role that sends the source message."
+        },
+        "parameter": {
+          "minLength": 1,
+          "title": "Parameter",
+          "type": "string",
+          "description": "Name of the endpoint parameter whose value is supplied by the source expression."
+        },
+        "from": {
+          "description": "A short expression identifying the source message field, default constant or other RFC-defined source. Retain any condition needed to interpret the value.",
+          "minLength": 1,
+          "title": "From",
+          "type": "string"
+        }
+      },
+      "required": [
+        "party_name",
+        "parameter",
+        "from"
+      ],
+      "title": "EndpointSource",
+      "type": "object",
+      "description": "The source of one endpoint parameter. Parameter ownership and the sender of a message carrying the value are separate concepts."
+    },
+    "relation": {
+      "additionalProperties": false,
+      "properties": {
+        "prior_field": {
+          "description": "Field carried by the prior step message, referenced by its field name or qualified message and field name.",
+          "minLength": 1,
+          "title": "Prior Field",
+          "type": "string"
+        },
+        "dependent_field": {
+          "description": "Field carried by the dependent step message, referenced by its field name or qualified message and field name.",
+          "minLength": 1,
+          "title": "Dependent Field",
+          "type": "string"
+        }
+      },
+      "required": [
+        "prior_field",
+        "dependent_field"
+      ],
+      "title": "FieldRelation",
+      "type": "object",
+      "description": "Names of the message fields involved in a dependency between two step occurrences."
+    },
+    "issue": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string",
+          "description": "A concise explanation of what remains unresolved or needs correction."
+        },
+        "object_names": {
+          "description": "Names of affected objects or fields. Empty when none apply.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Object Names",
+          "type": "array"
+        }
+      },
+      "required": [
+        "description",
+        "object_names"
+      ],
+      "title": "Issue",
+      "type": "object",
+      "description": "An unresolved question, ambiguity, conflict or incomplete extraction or link result. Runtime tracking details are stored outside the final Issue."
+    },
+    "party": {
+      "additionalProperties": false,
+      "description": "A direct communication role in the selected protocol. A containing process and its components are separate roles only when the RFC assigns distinct communication duties.",
+      "properties": {
+        "name": {
+          "description": "Reuse the existing name for the same communication role; otherwise use an RFC term.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "description": {
+          "description": "One short phrase stating the direct communication role.",
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "title": "Party",
+      "type": "object"
+    },
+    "message": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "Short protocol term. Reuse the same message's name. A message is an actual protocol message or RFC-defined independently exchanged transfer unit. Grammar productions and table classification labels do not automatically constitute messages. Abstract categories, command groups, fields and syntax components are not independent message types. Ordinary message types need not carry associated fields. A concrete response code defines a separate message type only when its response carries associated fields needed in later interactions for correlation, connection setup, branching or interaction state. The response code itself or free-form reply wording alone does not justify a separate type; otherwise reuse an actually exchanged, source-supported shared response form, not a response-code family or classification label.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "associated_fields": {
+          "description": "Attach a field only to the message that actually transmits it. Retain only fields needed for cross-message correlation, connection setup, interaction branching or interaction state. A message that triggers another message does not inherit that message's fields. Do not extract complete wire layouts or ordinary payload details.",
+          "items": {
+            "$ref": "#/$defs/field"
+          },
+          "title": "Associated Fields",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "associated_fields"
+      ],
+      "title": "ProtocolMessage",
+      "type": "object",
+      "description": "A concrete exchanged protocol message or independently exchanged transfer unit. Its associated fields describe only information needed by later protocol interactions."
+    },
+    "meta": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "const": "7.0.0",
+          "title": "Schema Version",
+          "type": "string",
+          "description": "Version of the final protocol output contract; must be 7.0.0."
+        },
+        "protocol": {
+          "minLength": 1,
+          "title": "Protocol",
+          "type": "string",
+          "description": "Protocol and version identifier selected by the caller for this RFC set."
+        },
+        "complete": {
+          "title": "Complete",
+          "type": "boolean",
+          "description": "Whether compilation completed without unresolved issues or stage failures. False also permits validated partial results."
+        },
+        "documents": {
+          "items": {
+            "$ref": "#/$defs/source"
+          },
+          "minItems": 1,
+          "title": "Documents",
+          "type": "array",
+          "description": "The selected RFC documents used to produce this protocol model, with identities, checksums and snapshot paths."
+        }
+      },
+      "required": [
+        "schema_version",
+        "protocol",
+        "complete",
+        "documents"
+      ],
+      "title": "ProtocolMeta",
+      "type": "object",
+      "description": "Protocol version, compilation completeness and the caller-selected source document set."
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "doc_id": {
+          "minLength": 1,
+          "title": "Doc Id",
+          "type": "string",
+          "description": "Identity of the source document within the selected input batch."
+        },
+        "rfc": {
+          "minLength": 1,
+          "title": "Rfc",
+          "type": "string",
+          "description": "RFC identifier of the selected source document."
+        },
+        "input_sha256": {
+          "minLength": 1,
+          "title": "Input Sha256",
+          "type": "string",
+          "description": "SHA-256 digest of the original input RFC file bytes."
+        },
+        "document_sha256": {
+          "minLength": 1,
+          "title": "Document Sha256",
+          "type": "string",
+          "description": "Digest of the parsed document snapshot, computed by the compiler document_digest function."
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string",
+          "description": "Path to the parsed document snapshot relative to the directory containing protocol.json."
+        }
+      },
+      "required": [
+        "doc_id",
+        "rfc",
+        "input_sha256",
+        "document_sha256",
+        "path"
+      ],
+      "title": "Source",
+      "type": "object",
+      "description": "Identity and checksums of one selected RFC together with the location of its parsed document snapshot."
+    },
+    "step": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Python-assigned step identity. Not a name reference.",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "description": "Persistent step name used by dependencies.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "message_name": {
+          "minLength": 1,
+          "title": "Message Name",
+          "type": "string",
+          "description": "Name of the protocol message exchanged in this step."
+        },
+        "channel_name": {
+          "minLength": 1,
+          "title": "Channel Name",
+          "type": "string",
+          "description": "Name of the channel used by this message interaction."
+        },
+        "sender_name": {
+          "minLength": 1,
+          "title": "Sender Name",
+          "type": "string",
+          "description": "Name of the role sending the message; message direction is independent of connection establishment direction."
+        },
+        "receiver_name": {
+          "minLength": 1,
+          "title": "Receiver Name",
+          "type": "string",
+          "description": "Name of the role receiving the message."
+        },
+        "condition": {
+          "title": "Condition",
+          "type": "string",
+          "description": "Short applicability condition for the interaction, or an empty string when there is no additional condition."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "message_name",
+        "channel_name",
+        "sender_name",
+        "receiver_name",
+        "condition"
+      ],
+      "title": "Step",
+      "type": "object",
+      "description": "A reusable one-way message interaction specifying the message, channel, sender, receiver and applicability condition."
+    },
+    "dependency": {
+      "additionalProperties": false,
+      "description": "A dependency on a previous step occurrence under a condition, without requiring immediate adjacency. Cycles and self-dependencies may refer to different occurrences.",
+      "properties": {
+        "prior_step": {
+          "description": "Name of the earlier step.",
+          "minLength": 1,
+          "title": "Prior Step",
+          "type": "string"
+        },
+        "dependent_step": {
+          "description": "Name of the later step.",
+          "minLength": 1,
+          "title": "Dependent Step",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Short dependency condition, or an empty string.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "field_relations": {
+          "items": {
+            "$ref": "#/$defs/relation"
+          },
+          "title": "Field Relations",
+          "type": "array",
+          "description": "Field-name pairs involved in this dependency. Use an empty list when no field association is needed."
+        }
+      },
+      "required": [
+        "prior_step",
+        "dependent_step",
+        "condition",
+        "field_relations"
+      ],
+      "title": "StepDependency",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "meta": {
+      "$ref": "#/$defs/meta",
+      "description": "Compilation metadata and selected source documents for one protocol version."
+    },
+    "parties": {
+      "items": {
+        "$ref": "#/$defs/party"
+      },
+      "title": "Parties",
+      "type": "array",
+      "description": "Named roles that directly communicate in the target protocol."
+    },
+    "messages": {
+      "items": {
+        "$ref": "#/$defs/message"
+      },
+      "title": "Messages",
+      "type": "array",
+      "description": "Concrete protocol message definitions and the associated fields actually carried by each message."
+    },
+    "channels": {
+      "items": {
+        "$ref": "#/$defs/channel"
+      },
+      "title": "Channels",
+      "type": "array",
+      "description": "Reusable connections or communication endpoints used by the protocol steps."
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/step"
+      },
+      "title": "Steps",
+      "type": "array",
+      "description": "Reusable one-way interactions referencing messages, channels and roles by name. Only steps retain Python-assigned definition IDs."
+    },
+    "step_dependencies": {
+      "items": {
+        "$ref": "#/$defs/dependency"
+      },
+      "title": "Step Dependencies",
+      "type": "array",
+      "description": "Conditional dependencies between step occurrences, referenced by step names, with optional field-name pairs."
+    },
+    "unresolved": {
+      "items": {
+        "$ref": "#/$defs/issue"
+      },
+      "title": "Unresolved",
+      "type": "array",
+      "description": "Problems that remain after extraction, link and completion. A complete model has no unresolved issues."
+    }
+  },
+  "required": [
+    "meta",
+    "parties",
+    "messages",
+    "channels",
+    "steps",
+    "step_dependencies",
+    "unresolved"
+  ],
+  "title": "Protocol interaction model",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rsc.local/schemas/protocol.schema.json",
+  "description": "Final protocol interaction model compiled from a caller-selected RFC set to guide protocol-message generator code. This is the final output contract, not a per-block Agent response schema. Names reference semantic objects; source identifiers and Python-assigned step IDs remain separate."
+}

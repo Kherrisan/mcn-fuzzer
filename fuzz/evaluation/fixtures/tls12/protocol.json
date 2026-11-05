@@ -1,0 +1,424 @@
+{
+  "meta": {
+    "schema_version": "7.0.0",
+    "protocol": "TLS 1.2 / OpenSSL s_server manually curated evaluation subset",
+    "complete": false,
+    "documents": [
+      {
+        "doc_id": "rfc5246",
+        "rfc": "RFC 5246",
+        "input_sha256": "a6102891f08ad01933fdce6891c0045432b699c917db12903cfa694372b5e86a",
+        "document_sha256": "a6102891f08ad01933fdce6891c0045432b699c917db12903cfa694372b5e86a",
+        "path": "../../../../rsc/tests/fixtures/profuzzbench-rfc/TLS/rfc5246.html"
+      }
+    ]
+  },
+  "parties": [
+    {
+      "name": "TLS client",
+      "description": "External TLS client and application peer implemented by the generator"
+    },
+    {
+      "name": "TLS server",
+      "description": "Real OpenSSL s_server implementing the TLS server and -www responder"
+    }
+  ],
+  "messages": [
+    {
+      "name": "ClientHello",
+      "associated_fields": [
+        {
+          "name": "client_version"
+        },
+        {
+          "name": "random"
+        },
+        {
+          "name": "session_id"
+        },
+        {
+          "name": "cipher_suites"
+        },
+        {
+          "name": "extensions"
+        }
+      ]
+    },
+    {
+      "name": "ServerHello",
+      "associated_fields": [
+        {
+          "name": "server_version"
+        },
+        {
+          "name": "random"
+        },
+        {
+          "name": "session_id"
+        },
+        {
+          "name": "cipher_suite"
+        },
+        {
+          "name": "extensions"
+        }
+      ]
+    },
+    {
+      "name": "Certificate",
+      "associated_fields": [
+        {
+          "name": "certificate_list"
+        }
+      ]
+    },
+    {
+      "name": "ServerKeyExchange",
+      "associated_fields": [
+        {
+          "name": "params"
+        },
+        {
+          "name": "signed_params"
+        }
+      ]
+    },
+    {
+      "name": "ServerHelloDone",
+      "associated_fields": []
+    },
+    {
+      "name": "ClientKeyExchange",
+      "associated_fields": [
+        {
+          "name": "exchange_keys"
+        }
+      ]
+    },
+    {
+      "name": "ChangeCipherSpec",
+      "associated_fields": []
+    },
+    {
+      "name": "Finished",
+      "associated_fields": [
+        {
+          "name": "verify_data"
+        }
+      ]
+    },
+    {
+      "name": "ApplicationData",
+      "associated_fields": [
+        {
+          "name": "fragment"
+        }
+      ]
+    },
+    {
+      "name": "Alert",
+      "associated_fields": [
+        {
+          "name": "level"
+        },
+        {
+          "name": "description"
+        }
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "name": "TLS TCP connection",
+      "description": "One TCP connection carrying a TLS 1.2 session",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "TLS client",
+        "TLS server"
+      ],
+      "initiator_party_name": "TLS client",
+      "acceptor_party_name": "TLS server",
+      "endpoint_sources": [
+        {
+          "party_name": "TLS server",
+          "parameter": "host",
+          "from": "ctx.host supplied by the evaluation runtime"
+        },
+        {
+          "party_name": "TLS server",
+          "parameter": "port",
+          "from": "ctx.port supplied by the evaluation runtime"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "id": "tls12-step-001",
+      "name": "send ClientHello",
+      "message_name": "ClientHello",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server",
+      "condition": "Initial TLS 1.2 ClientHello for a full ECDHE-RSA handshake: offer ECDHE-RSA-AES128-GCM-SHA256 (0xc02f), supported groups (e.g. X25519/P-256), signature algorithms and null compression. Advertise no session resumption; use ctx.host/ctx.port."
+    },
+    {
+      "id": "tls12-step-002",
+      "name": "receive ServerHello",
+      "message_name": "ServerHello",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client",
+      "condition": "After the valid ClientHello, parse TLS 1.2 ServerHello and its selected cipher; handle record/handshake fragmentation and coalescing."
+    },
+    {
+      "id": "tls12-step-003",
+      "name": "receive Certificate",
+      "message_name": "Certificate",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client",
+      "condition": "In a full authenticated handshake, receive the real server certificate chain. The local test fixture is self-signed; configure client trust explicitly for this local evaluation rather than requiring a public CA."
+    },
+    {
+      "id": "tls12-step-004",
+      "name": "receive ServerKeyExchange",
+      "message_name": "ServerKeyExchange",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client",
+      "condition": "For selected ECDHE-RSA cipher, receive server ephemeral key exchange parameters and signature; an installed TLS SDK may implement handshake cryptography."
+    },
+    {
+      "id": "tls12-step-005",
+      "name": "receive ServerHelloDone",
+      "message_name": "ServerHelloDone",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client",
+      "condition": "Consume the complete server first flight through ServerHelloDone. If the trace stops here, cleanly close owned TCP resources; completing the handshake is not required for that trace."
+    },
+    {
+      "id": "tls12-step-006",
+      "name": "send ClientKeyExchange",
+      "message_name": "ClientKeyExchange",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server",
+      "condition": "Continue full ECDHE-RSA handshake using the negotiated group and actual server key exchange parameters. A Python ssl TLS 1.2 client may execute the selected handshake steps."
+    },
+    {
+      "id": "tls12-step-007",
+      "name": "send client ChangeCipherSpec",
+      "message_name": "ChangeCipherSpec",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server",
+      "condition": "After client key exchange, activate negotiated client write keys."
+    },
+    {
+      "id": "tls12-step-008",
+      "name": "send client Finished",
+      "message_name": "Finished",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server",
+      "condition": "Send encrypted Finished with valid transcript-dependent verify_data; using an installed TLS implementation is allowed."
+    },
+    {
+      "id": "tls12-step-009",
+      "name": "receive server ChangeCipherSpec",
+      "message_name": "ChangeCipherSpec",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client",
+      "condition": "After the valid client Finished, activate negotiated server read keys."
+    },
+    {
+      "id": "tls12-step-010",
+      "name": "receive server Finished",
+      "message_name": "Finished",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client",
+      "condition": "Verify real server Finished and establish TLS 1.2; do not replace this with detecting ServerHello alone."
+    },
+    {
+      "id": "tls12-step-011",
+      "name": "send HTTP request in ApplicationData",
+      "message_name": "ApplicationData",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server",
+      "condition": "After handshake success, send an encrypted HTTP GET / HTTP/1.0 request with Host: localhost and a terminating empty line to the configured s_server -www service."
+    },
+    {
+      "id": "tls12-step-012",
+      "name": "receive HTTP response in ApplicationData",
+      "message_name": "ApplicationData",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client",
+      "condition": "Decrypt and collect bounded HTTP response bytes; require an HTTP 200 status and nonempty body from s_server -www, not just a completed handshake."
+    },
+    {
+      "id": "tls12-step-013",
+      "name": "send client close_notify",
+      "message_name": "Alert",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server",
+      "condition": "On an established session send a real encrypted close_notify. In handshake-close initiate shutdown; in https-roundtrip reply to server shutdown. Bound shutdown waits and close all sockets."
+    },
+    {
+      "id": "tls12-step-014",
+      "name": "receive server close_notify",
+      "message_name": "Alert",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client",
+      "condition": "On an established session consume actual server close_notify; it may follow the HTTP response or respond to client shutdown. Use TLS SDK orderly shutdown semantics, not plain TCP EOF as proof."
+    },
+    {
+      "id": "tls12-step-015",
+      "name": "send ClientHello without a shared cipher",
+      "message_name": "ClientHello",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server",
+      "condition": "Negative test: send a structurally valid TLS 1.2 ClientHello offering ONLY TLS_RSA_WITH_NULL_MD5 (0x0001), which this default security configuration disables. Do not offer any other real cipher. Send bytes on the wire; local SDK cipher selection rejection is not server behavior."
+    },
+    {
+      "id": "tls12-step-016",
+      "name": "receive handshake_failure",
+      "message_name": "Alert",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client",
+      "condition": "For the no-shared-cipher ClientHello receive and validate a real TLS fatal alert (level 2, description 40 handshake_failure). Expected rejection is successful test behavior; handle it without an uncaught Python exception."
+    },
+    {
+      "id": "tls12-step-017",
+      "name": "send ClientHello with duplicate supported_groups",
+      "message_name": "ClientHello",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server",
+      "condition": "Negative test: construct otherwise valid TLS 1.2 ClientHello with supported_groups extension (type 10) repeated twice. Offer a valid ECDHE-RSA cipher and valid group contents, correct record/handshake/vector lengths. Actually transmit the duplicate extensions; do not stop at local SDK validation."
+    },
+    {
+      "id": "tls12-step-018",
+      "name": "receive illegal_parameter",
+      "message_name": "Alert",
+      "channel_name": "TLS TCP connection",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client",
+      "condition": "For duplicate recognized supported_groups extensions, current OpenSSL ssl/statem/extensions.c rejects duplicates with fatal illegal_parameter (level 2, description 47). Receive and validate that actual TLS alert; expected rejection is successful test behavior."
+    }
+  ],
+  "step_dependencies": [
+    {
+      "prior_step": "send ClientHello",
+      "dependent_step": "receive ServerHello",
+      "condition": "During this full TLS 1.2 ECDHE-RSA handshake",
+      "field_relations": []
+    },
+    {
+      "prior_step": "receive ServerHello",
+      "dependent_step": "receive Certificate",
+      "condition": "During this full TLS 1.2 ECDHE-RSA handshake",
+      "field_relations": []
+    },
+    {
+      "prior_step": "receive Certificate",
+      "dependent_step": "receive ServerKeyExchange",
+      "condition": "During this full TLS 1.2 ECDHE-RSA handshake",
+      "field_relations": []
+    },
+    {
+      "prior_step": "receive ServerKeyExchange",
+      "dependent_step": "receive ServerHelloDone",
+      "condition": "During this full TLS 1.2 ECDHE-RSA handshake",
+      "field_relations": []
+    },
+    {
+      "prior_step": "receive ServerHelloDone",
+      "dependent_step": "send ClientKeyExchange",
+      "condition": "During this full TLS 1.2 ECDHE-RSA handshake",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ClientKeyExchange",
+      "dependent_step": "send client ChangeCipherSpec",
+      "condition": "During this full TLS 1.2 ECDHE-RSA handshake",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send client ChangeCipherSpec",
+      "dependent_step": "send client Finished",
+      "condition": "During this full TLS 1.2 ECDHE-RSA handshake",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send client Finished",
+      "dependent_step": "receive server ChangeCipherSpec",
+      "condition": "During this full TLS 1.2 ECDHE-RSA handshake",
+      "field_relations": []
+    },
+    {
+      "prior_step": "receive server ChangeCipherSpec",
+      "dependent_step": "receive server Finished",
+      "condition": "During this full TLS 1.2 ECDHE-RSA handshake",
+      "field_relations": []
+    },
+    {
+      "prior_step": "receive ServerKeyExchange",
+      "dependent_step": "send ClientKeyExchange",
+      "condition": "When negotiating ECDHE",
+      "field_relations": [
+        {
+          "prior_field": "params",
+          "dependent_field": "exchange_keys"
+        }
+      ]
+    },
+    {
+      "prior_step": "receive server Finished",
+      "dependent_step": "send HTTP request in ApplicationData",
+      "condition": "Only after handshake verification succeeds",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send HTTP request in ApplicationData",
+      "dependent_step": "receive HTTP response in ApplicationData",
+      "condition": "When -www handles the completed request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "receive server Finished",
+      "dependent_step": "send client close_notify",
+      "condition": "After the established session is ready for shutdown",
+      "field_relations": []
+    },
+    {
+      "prior_step": "receive server Finished",
+      "dependent_step": "receive server close_notify",
+      "condition": "After the established session is ready for shutdown",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ClientHello without a shared cipher",
+      "dependent_step": "receive handshake_failure",
+      "condition": "When all offered real ciphers are disabled",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ClientHello with duplicate supported_groups",
+      "dependent_step": "receive illegal_parameter",
+      "condition": "When OpenSSL rejects a duplicate recognized extension",
+      "field_relations": []
+    }
+  ],
+  "unresolved": []
+}
