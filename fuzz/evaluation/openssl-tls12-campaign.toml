@@ -37,7 +37,7 @@ enabled = false
 model = "fixtures/tls12/protocol.json"
 output = "../targets/openssl/eval-synthesis"
 profile = "codex"
-init_timeout_secs = 180
+init_timeout_secs = 300
 task_timeout_secs = 600
 
 [parties]

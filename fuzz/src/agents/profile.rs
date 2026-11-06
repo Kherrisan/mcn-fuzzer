@@ -15,6 +15,17 @@ pub struct CommandLine {
     pub cwd: std::path::PathBuf,
 }
 
+impl CommandLine {
+    /// Values used only to redact observations, never written to session logs.
+    pub(crate) fn secrets(&self) -> Vec<String> {
+        self.env
+            .iter()
+            .filter(|(_, value)| !value.is_empty())
+            .map(|(_, value)| value.clone())
+            .collect()
+    }
+}
+
 /// Build the interactive command for a profile. Print/exec one-shot modes are not used.
 pub fn command_line(profile: &AgentProfile, cwd: &Path) -> Result<CommandLine, libafl::Error> {
     if profile.executable.as_os_str().is_empty() {

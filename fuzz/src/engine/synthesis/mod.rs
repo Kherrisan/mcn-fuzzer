@@ -5,11 +5,8 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
-    io::Write,
+    fs,
     path::{Path, PathBuf},
-    sync::mpsc,
-    thread,
     time::{Duration, Instant},
 };
 
@@ -21,7 +18,6 @@ use libafl::{
 };
 use libafl_bolts::{impl_serdeany, rands::Rand};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{
     agents::{command_line, CommandLine},
@@ -33,13 +29,13 @@ use crate::{
     },
 };
 
+mod agent;
 mod artifacts;
 mod prompts;
 mod request;
-mod worker;
 
+use agent::Client;
 use request::GeneratorRequest;
-use worker::AgentWorker;
 
 pub use prompts::{ExecutionMode, SynthesisPromptContext};
 pub use request::ValidatedGenerator;
@@ -54,50 +50,11 @@ pub struct TraceOrigin {
 
 impl_serdeany!(TraceOrigin);
 
-/// Coarse session phase. Completion still follows `ready.json` and `result.json`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SessionPhase {
-    Initializing,
-    Ready,
-    Busy,
-    Paused,
-    Exited,
-}
-
-impl Default for SessionPhase {
-    fn default() -> Self {
-        Self::Initializing
-    }
-}
-
-/// Latest agent session. Environment values are never stored here.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentSession {
-    pub phase: SessionPhase,
-    /// `launch`, `ready`, `send`, `result`, `blocked`, `timeout`, or `stop`.
-    pub transition: String,
-    pub terminal: Option<String>,
-    /// Raw HC terminal `state`, such as `live`.
-    pub hc_state: Option<String>,
-    /// Raw HC terminal `status`. Non-strings are compact JSON.
-    pub hc_status: Option<String>,
-    /// Raw HC error or the campaign failure that accompanied it.
-    pub hc_error: Option<String>,
-}
-
-impl Default for AgentSession {
-    fn default() -> Self {
-        Self {
-            phase: SessionPhase::Initializing,
-            transition: String::new(),
-            terminal: None,
-            hc_state: None,
-            hc_status: None,
-            hc_error: None,
-        }
-    }
-}
+pub(crate) use crate::agents::redact_text;
+use crate::agents::{
+    AgentClient, AgentFailure, AgentInit, AgentOutcome, SessionInit, TerminalFact, WorkerConfig,
+};
+pub use crate::agents::{AgentSession, SessionPhase};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SynthesisProgress {
@@ -112,43 +69,8 @@ pub struct SynthesisProgress {
 
 impl_serdeany!(SynthesisProgress);
 
-/// Commands for the synthesis worker to control the campaign agent.
-enum AgentCommand {
-    Init {
-        output_dir: PathBuf,
-        prompt: String,
-        launch: CommandLine,
-    },
-    Generate {
-        request: GeneratorRequest,
-        prompt: String,
-    },
-    Stop,
-}
-
-/// One `terminal.get` observation. Values are redacted before this is stored.
-#[derive(Clone, Debug, Default)]
-struct TerminalFact {
-    terminal: Option<String>,
-    state: Option<String>,
-    status: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Debug)]
-struct AgentFailure {
-    reason: String,
-    fact: TerminalFact,
-    timeout: bool,
-}
-
-#[derive(Debug)]
-enum Outcome {
-    Launched(TerminalFact),
-    Ready(TerminalFact),
-    Artifact(Result<ReadyInput, String>, TerminalFact),
-    Failed(AgentFailure),
-}
+type AgentCommand = crate::agents::AgentCommand<SessionInit, GeneratorRequest>;
+type Outcome = AgentOutcome<(), ReadyInput>;
 
 #[derive(Debug)]
 pub(crate) struct ReadyInput {
@@ -185,9 +107,9 @@ pub struct GeneratorSynthesisStage {
     inflight: bool,
     initialization_started: bool,
     initialized: bool,
+    init_timeouts: u32,
     paused: bool,
-    commands: Option<mpsc::Sender<AgentCommand>>,
-    outcomes: Option<mpsc::Receiver<Outcome>>,
+    worker: Option<Client>,
     closed_requests: BTreeSet<String>,
     current_request: Option<String>,
     session: String,
@@ -200,6 +122,8 @@ pub struct GeneratorSynthesisStage {
     exited: bool,
     /// Env values used only to redact text before it is stored. Never written.
     secrets: Vec<String>,
+    graph: Option<std::sync::Arc<std::sync::Mutex<crate::protocol::ProtocolExplorationGraph>>>,
+    event_log: Option<crate::coverage::analysis::SharedLog>,
 }
 
 impl GeneratorSynthesisStage {
@@ -217,6 +141,9 @@ impl GeneratorSynthesisStage {
         let mut stage = Self::disabled(campaign);
         stage.enabled = true;
         stage.model = Some(context.model().clone());
+        stage.graph = Some(std::sync::Arc::new(std::sync::Mutex::new(
+            crate::protocol::ProtocolExplorationGraph::from_model(context.model()),
+        )));
         stage.binding = context.binding().clone();
         stage.config = campaign.protocol_generation.clone();
         stage.prompt_context = Some(context);
@@ -234,14 +161,9 @@ impl GeneratorSynthesisStage {
                 })?,
             &std::path::absolute(&campaign.protocol_generation.output)?,
         )?;
-        stage.secrets = launched
-            .env
-            .iter()
-            .map(|(_, value)| value.clone())
-            .filter(|value| !value.is_empty())
-            .collect();
+        stage.secrets = launched.secrets();
         stage.launch = Some(launched);
-        stage.spawn_worker(boot.socket, boot.session)?;
+        stage.spawn_worker(boot.socket)?;
         Ok(stage)
     }
 
@@ -257,9 +179,9 @@ impl GeneratorSynthesisStage {
             inflight: false,
             initialization_started: false,
             initialized: false,
+            init_timeouts: 0,
             paused: false,
-            commands: None,
-            outcomes: None,
+            worker: None,
             closed_requests: BTreeSet::new(),
             current_request: None,
             session: String::new(),
@@ -269,33 +191,34 @@ impl GeneratorSynthesisStage {
             session_state: AgentSession::default(),
             exited: false,
             secrets: Vec::new(),
+            graph: None,
+            event_log: None,
         }
     }
 
-    fn spawn_worker(&mut self, socket: PathBuf, session: String) -> Result<(), Error> {
-        let (command_tx, command_rx) = mpsc::channel();
-        let (out_tx, out_rx) = mpsc::channel();
-        let init_timeout = Duration::from_secs(self.config.init_timeout_secs.max(1));
-        let task_timeout = Duration::from_secs(self.config.task_timeout_secs.max(1));
-        let secrets = self.secrets.clone();
-        thread::Builder::new()
-            .name("mcn-synthesis".to_string())
-            .spawn(move || {
-                AgentWorker {
-                    commands: command_rx,
-                    outcomes: out_tx,
-                    socket,
-                    terminal: "generator".to_string(),
-                    init_timeout,
-                    task_timeout,
-                    session,
-                    secrets,
-                }
-                .run()
+    /// Graph shared with coverage analysis. Synthesis keeps using this instance.
+    pub fn shared_graph(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<crate::protocol::ProtocolExplorationGraph>>> {
+        self.graph.clone()
+    }
+
+    pub fn set_event_log(&mut self, log: crate::coverage::analysis::SharedLog) {
+        self.event_log = Some(log);
+    }
+
+    fn spawn_worker(&mut self, socket: PathBuf) -> Result<(), Error> {
+        self.worker = Some(
+            AgentClient::spawn(WorkerConfig {
+                thread_name: "mcn-synthesis",
+                socket,
+                terminal: "generator".into(),
+                init_timeout: Duration::from_secs(self.config.init_timeout_secs.max(1)),
+                task_timeout: Duration::from_secs(self.config.task_timeout_secs.max(1)),
+                secrets: self.secrets.clone(),
             })
-            .map_err(|error| Error::unknown(format!("starting synthesis thread: {error}")))?;
-        self.commands = Some(command_tx);
-        self.outcomes = Some(out_rx);
+            .map_err(|error| Error::unknown(format!("starting synthesis worker: {error}")))?,
+        );
         Ok(())
     }
 
@@ -306,15 +229,22 @@ impl GeneratorSynthesisStage {
         }
         let output_dir = self.output.join("init");
         fs::create_dir_all(&output_dir)?;
+        let ready = output_dir.join("ready.json");
+        if ready.exists() {
+            fs::remove_file(ready)?;
+        }
         let prompt = self.initialization_prompt(&output_dir)?;
         let launch = self.launch.clone().ok_or_else(|| {
             Error::illegal_argument("agent profile did not produce a command".to_string())
         })?;
-        self.commands
+        self.worker
             .as_ref()
             .ok_or_else(|| Error::unknown("synthesis worker is not running".to_string()))?
             .send(AgentCommand::Init {
-                output_dir,
+                context: SessionInit {
+                    output_dir,
+                    session: self.session.clone(),
+                },
                 prompt,
                 launch,
             })
@@ -330,50 +260,45 @@ impl GeneratorSynthesisStage {
         if !self.enabled || self.initialized {
             return Ok(());
         }
-        self.initialize()?;
-        let deadline = Instant::now() + Duration::from_secs(self.config.init_timeout_secs.max(1));
-        while Instant::now() < deadline {
-            match self
-                .outcomes
-                .as_ref()
-                .unwrap()
-                .recv_timeout(Duration::from_millis(200))
-            {
-                Ok(Outcome::Launched(fact)) => {
-                    self.record_session("launch", SessionPhase::Initializing, &fact, None);
+        loop {
+            self.initialize()?;
+            match self.recv_one(Duration::from_millis(200)) {
+                Some(Outcome::Launched(fact)) => {
+                    self.record_session("launch", SessionPhase::Initializing, &fact, None)
                 }
-                Ok(Outcome::Ready(fact)) => {
-                    return self.accept_initialization(&fact);
+                Some(Outcome::Ready((), fact)) => return self.accept_initialization(&fact),
+                Some(Outcome::Failed(failure)) if failure.timeout => {
+                    self.init_timeouts = self.init_timeouts.saturating_add(1);
+                    self.note_terminal_failure(&failure);
+                    if self.init_timeouts >= crate::agents::INIT_TIMEOUT_ATTEMPTS {
+                        return Err(Error::unknown(format!(
+                            "synthesis initialization timed out {} consecutive times",
+                            self.init_timeouts
+                        )));
+                    }
+                    self.paused = false;
+                    self.initialization_started = false;
+                    self.record_session(
+                        "init_retry",
+                        SessionPhase::Initializing,
+                        &failure.fact,
+                        Some(format!(
+                            "initialization timed out; starting attempt {} of {}",
+                            self.init_timeouts + 1,
+                            crate::agents::INIT_TIMEOUT_ATTEMPTS
+                        )),
+                    );
                 }
-                Ok(Outcome::Failed(failure)) => {
+                Some(Outcome::Failed(failure)) => {
                     self.note_terminal_failure(&failure);
                     return Err(Error::unknown(format!(
                         "agent initialization failed: {}",
                         failure.reason
                     )));
                 }
-                Ok(Outcome::Artifact(_, _)) => {}
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    self.paused = true;
-                    self.record_session(
-                        "blocked",
-                        SessionPhase::Paused,
-                        &TerminalFact::default(),
-                        Some("synthesis worker disconnected".to_string()),
-                    );
-                    return Err(Error::unknown("synthesis worker disconnected".to_string()));
-                }
+                Some(Outcome::Artifact { .. }) | None => {}
             }
         }
-        self.paused = true;
-        self.record_session(
-            "timeout",
-            SessionPhase::Paused,
-            &TerminalFact::default(),
-            Some("agent initialization timed out".to_string()),
-        );
-        Err(Error::unknown("agent initialization timed out".to_string()))
     }
 
     /// Block until the first artifact is evaluated by `accept`.
@@ -385,8 +310,13 @@ impl GeneratorSynthesisStage {
         self.dispatch_with(rand)?;
         let deadline = Instant::now() + Duration::from_secs(self.config.task_timeout_secs.max(1));
         while Instant::now() < deadline {
-            if let Some(outcome) = self.recv_one(Duration::from_millis(200))? {
-                if let Outcome::Artifact(Ok(ready), fact) = outcome {
+            if let Some(outcome) = self.recv_one(Duration::from_millis(200)) {
+                if let Outcome::Artifact {
+                    result: Ok(ready),
+                    fact,
+                    ..
+                } = outcome
+                {
                     self.finish_request(false);
                     self.record_session("result", SessionPhase::Ready, &fact, None);
                     let kept = accept(ready.input, ready.origin)?;
@@ -406,7 +336,12 @@ impl GeneratorSynthesisStage {
                         "bootstrap synthesis failed: {reason}"
                     )));
                 }
-                if let Outcome::Artifact(Err(reason), fact) = outcome {
+                if let Outcome::Artifact {
+                    result: Err(reason),
+                    fact,
+                    ..
+                } = outcome
+                {
                     self.finish_request(false);
                     self.record_session(
                         "blocked",
@@ -437,9 +372,7 @@ impl GeneratorSynthesisStage {
             self.exited = true;
             self.record_session("stop", SessionPhase::Exited, &TerminalFact::default(), None);
         }
-        if let Some(commands) = &self.commands {
-            let _ = commands.send(AgentCommand::Stop);
-        }
+        self.worker.take();
     }
 
     fn dispatch_with(&mut self, rand: &mut impl Rand) -> Result<(), Error> {
@@ -449,15 +382,37 @@ impl GeneratorSynthesisStage {
         let Some(model) = self.model.as_ref() else {
             return Ok(());
         };
-        let trace = RandomTraceSelector.select(
-            model,
-            &self.binding,
-            rand,
-            &self.context,
-            self.config.sample_attempts,
-            self.config.trace_len_min,
-            self.config.trace_len_max,
-        );
+        let trace = if let Some(graph) = &self.graph {
+            let report = graph
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .select(
+                    model,
+                    &self.binding,
+                    rand,
+                    &self.context,
+                    self.config.sample_attempts,
+                    self.config.trace_len_min,
+                    self.config.trace_len_max,
+                );
+            if let Some(log) = &self.event_log {
+                let mut log = log.lock().unwrap_or_else(|error| error.into_inner());
+                if let Err(error) = crate::coverage::analysis::record_selection(&mut log, &report) {
+                    log::error!("coverage analysis event log failed: {error}");
+                }
+            }
+            report.trace
+        } else {
+            RandomTraceSelector.select(
+                model,
+                &self.binding,
+                rand,
+                &self.context,
+                self.config.sample_attempts,
+                self.config.trace_len_min,
+                self.config.trace_len_max,
+            )
+        };
         let Some(trace) = trace else {
             return Ok(());
         };
@@ -492,10 +447,10 @@ impl GeneratorSynthesisStage {
             })?,
             &trace,
         )?;
-        self.commands
+        self.worker
             .as_ref()
             .ok_or_else(|| Error::unknown("synthesis worker is not running".to_string()))?
-            .send(AgentCommand::Generate {
+            .send(AgentCommand::Run {
                 request: generation,
                 prompt,
             })
@@ -510,22 +465,10 @@ impl GeneratorSynthesisStage {
         Ok(())
     }
 
-    fn recv_one(&mut self, timeout: Duration) -> Result<Option<Outcome>, Error> {
-        let Some(outcomes) = &self.outcomes else {
-            return Ok(None);
-        };
-        match outcomes.recv_timeout(timeout) {
-            Ok(outcome) => Ok(Some(outcome)),
-            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                self.outcomes = None;
-                Ok(Some(Outcome::Failed(AgentFailure {
-                    reason: "synthesis worker disconnected".to_string(),
-                    fact: TerminalFact::default(),
-                    timeout: false,
-                })))
-            }
-        }
+    fn recv_one(&mut self, timeout: Duration) -> Option<Outcome> {
+        self.worker
+            .as_mut()
+            .and_then(|worker| worker.recv_timeout(timeout))
     }
 }
 
@@ -567,18 +510,29 @@ where
                 .take_synthesis_request();
             return Ok(());
         }
-        while let Some(outcome) = self.recv_one(Duration::from_millis(1))? {
+        while let Some(outcome) = self.recv_one(Duration::from_millis(1)) {
             self.consume(outcome, fuzzer, executor, state, manager)?;
         }
         state
             .metadata_or_insert_with(BitmapProgress::default)
             .set_synthesis_inflight(self.inflight);
+        let synthesis_due = state
+            .metadata_or_insert_with(BitmapProgress::default)
+            .synthesis_due();
         if self.paused {
             state
                 .metadata_or_insert_with(BitmapProgress::default)
                 .take_synthesis_request();
-        } else if self.initialized
-            && !self.inflight
+        } else if !self.initialized {
+            if synthesis_due {
+                self.record_session(
+                    "init_deferred",
+                    SessionPhase::Initializing,
+                    &TerminalFact::default(),
+                    Some("synthesis request skipped while initialization is pending".to_string()),
+                );
+            }
+        } else if !self.inflight
             && state
                 .metadata_or_insert_with(BitmapProgress::default)
                 .take_synthesis_request()
@@ -612,7 +566,7 @@ impl GeneratorSynthesisStage {
                 self.mirror_session(state);
                 Ok(())
             }
-            Outcome::Ready(fact) => {
+            Outcome::Ready((), fact) => {
                 if let Err(error) = self.accept_initialization(&fact) {
                     self.note_failure(state, error.to_string());
                 }
@@ -620,20 +574,73 @@ impl GeneratorSynthesisStage {
                 Ok(())
             }
             Outcome::Failed(failure) => {
+                if !self.initialized {
+                    let reason = self.redacted(&failure.reason);
+                    if !failure.timeout {
+                        self.note_terminal_failure(&failure);
+                        self.note_failure(state, reason.clone());
+                        return Err(Error::unknown(format!(
+                            "synthesis initialization failed: {reason}"
+                        )));
+                    }
+                    self.init_timeouts = self.init_timeouts.saturating_add(1);
+                    self.note_terminal_failure(&failure);
+                    self.note_failure(state, reason.clone());
+                    if self.init_timeouts >= crate::agents::INIT_TIMEOUT_ATTEMPTS {
+                        let error = format!(
+                            "synthesis initialization timed out {} consecutive times",
+                            self.init_timeouts
+                        );
+                        self.paused = true;
+                        self.record_session(
+                            "blocked",
+                            SessionPhase::Paused,
+                            &failure.fact,
+                            Some(error.clone()),
+                        );
+                        return Err(Error::unknown(error));
+                    }
+                    self.paused = false;
+                    self.initialization_started = false;
+                    self.record_session(
+                        "init_retry",
+                        SessionPhase::Initializing,
+                        &failure.fact,
+                        Some(format!(
+                            "initialization timed out; starting attempt {} of {}",
+                            self.init_timeouts + 1,
+                            crate::agents::INIT_TIMEOUT_ATTEMPTS
+                        )),
+                    );
+                    self.initialize()?;
+                    state
+                        .metadata_or_insert_with(BitmapProgress::default)
+                        .take_synthesis_request();
+                    self.mirror_session(state);
+                    return Ok(());
+                }
                 let reason = failure.reason.clone();
                 self.finish_request(true);
                 self.note_terminal_failure(&failure);
                 self.note_failure(state, reason);
                 Ok(())
             }
-            Outcome::Artifact(Err(reason), fact) => {
+            Outcome::Artifact {
+                result: Err(reason),
+                fact,
+                ..
+            } => {
                 self.finish_request(false);
                 self.context.generated_err += 1;
                 self.record_session("blocked", SessionPhase::Ready, &fact, Some(reason.clone()));
                 self.note_failure(state, reason);
                 Ok(())
             }
-            Outcome::Artifact(Ok(ready), fact) => {
+            Outcome::Artifact {
+                result: Ok(ready),
+                fact,
+                ..
+            } => {
                 if self.closed_requests.contains(&ready.request) {
                     self.finish_request(false);
                     self.record_session(
@@ -674,26 +681,18 @@ impl GeneratorSynthesisStage {
     }
 
     fn accept_initialization(&mut self, fact: &TerminalFact) -> Result<(), Error> {
-        let ready = fs::read(self.output.join("init/ready.json"))
-            .map_err(|error| error.to_string())
-            .and_then(|bytes| {
-                serde_json::from_slice::<Value>(&bytes).map_err(|error| error.to_string())
-            })
-            .and_then(|ready| {
-                if ready.get("status").and_then(Value::as_str) == Some("ready")
-                    && ready.get("session").and_then(Value::as_str) == Some(self.session.as_str())
-                {
-                    Ok(())
-                } else {
-                    Err("ready.json is missing this campaign session".to_string())
-                }
-            });
+        let ready = SessionInit {
+            output_dir: self.output.join("init"),
+            session: self.session.clone(),
+        }
+        .accept();
         if let Err(reason) = ready {
             self.paused = true;
             self.record_session("blocked", SessionPhase::Paused, fact, Some(reason.clone()));
             return Err(Error::unknown(reason));
         }
         self.initialized = true;
+        self.init_timeouts = 0;
         self.record_session("ready", SessionPhase::Ready, fact, None);
         Ok(())
     }
@@ -762,34 +761,10 @@ impl GeneratorSynthesisStage {
         if !self.enabled {
             return;
         }
-        self.session_state.phase = phase;
-        self.session_state.transition = transition.to_string();
-        if let Some(terminal) = &fact.terminal {
-            self.session_state.terminal = Some(self.redacted(terminal));
-        }
-        if let Some(state) = &fact.state {
-            self.session_state.hc_state = Some(self.redacted(state));
-        }
-        if let Some(status) = &fact.status {
-            self.session_state.hc_status = Some(self.redacted(status));
-        }
-        if let Some(error) = error.or(fact.error.clone()) {
-            self.session_state.hc_error = Some(self.redacted(&error));
-        } else if matches!(transition, "ready" | "result") {
-            self.session_state.hc_error = None;
-        }
-        self.append_session_log();
-    }
-
-    fn append_session_log(&self) {
-        let Ok(line) = serde_json::to_string(&self.session_state) else {
-            return;
-        };
-        let path = self.output.join("session.jsonl");
-        let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
-            return;
-        };
-        let _ = writeln!(file, "{line}");
+        self.session_state
+            .record(transition, phase, fact, error, &self.secrets);
+        self.session_state
+            .append_log(&self.output.join("session.jsonl"));
     }
 
     fn redacted(&self, text: &str) -> String {
@@ -802,30 +777,6 @@ impl GeneratorSynthesisStage {
             .ok_or_else(|| Error::illegal_state("synthesis prompt context is missing".to_string()))?
             .initialization_prompt(&self.session, self.init_hold, output_dir)
     }
-}
-
-pub(crate) fn redact_text(text: &str, secrets: &[String]) -> String {
-    let mut out = text.to_string();
-    for secret in secrets {
-        if !secret.is_empty() {
-            out = out.replace(secret, "[redacted]");
-        }
-    }
-    out
-}
-
-fn wait_file(path: &Path, budget: Duration) -> Result<(), String> {
-    let deadline = Instant::now() + budget;
-    while Instant::now() < deadline {
-        if path.is_file() {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-    Err(format!(
-        "{} was not published before the deadline",
-        path.display()
-    ))
 }
 
 #[cfg(test)]

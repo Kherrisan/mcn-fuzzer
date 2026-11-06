@@ -3,11 +3,16 @@
 //! The selector does not talk to an agent. A campaign snapshot is loaded once
 //! and reused for the whole run.
 
+mod explore;
 mod id;
 mod model;
 mod receipt;
 mod select;
 
+pub use explore::{
+    DepEdge, ExplorationCheckpoint, PriorityTraceSelector, ProtocolExplorationGraph,
+    SelectionReport,
+};
 pub use id::{protocol_id, StepId, TraceId};
 pub use model::{load_model, Binding, IndexedModel, ModelError, PartyRole, StepRecord};
 pub use receipt::write_receipt;

@@ -276,7 +276,7 @@ iterations = 1
 enabled = true
 file_limit = 67108864
 
-[source_coverage]
+[coverage]
 enabled = false
 
 [protocol_generation]
@@ -289,11 +289,13 @@ task_timeout_secs = 30
 trace_len_min = 1
 trace_len_max = 1
 sample_attempts = 32
-hc_executable = "{hc}"
 
 [parties]
 sut = ["server-PI", "server-DTP", "server-PI A", "server-PI B", "server-DTP A", "server-DTP B"]
 generator = "*"
+
+[agents]
+hc_executable = "{hc}"
 
 [agents.profiles.stub]
 provider = "pi"

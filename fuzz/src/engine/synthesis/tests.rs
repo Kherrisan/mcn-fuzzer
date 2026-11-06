@@ -1,4 +1,6 @@
+use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use libafl_bolts::rands::StdRand;
@@ -48,10 +50,12 @@ fn bare(output: &Path) -> Campaign {
             pythonpath: PathBuf::from("/tmp"),
             core: None,
             iterations: 1,
+            timeout_secs: None,
             bitmap_stagnation_limit: crate::engine::stagnation::DEFAULT_BITMAP_STAGNATION_LIMIT,
         },
         capture: CaptureConfig::default(),
-        source_coverage: SourceCoverageConfig::default(),
+        coverage: SourceCoverageConfig::default(),
+        _legacy_source_coverage: (),
         protocol_generation: ProtocolGenerationConfig {
             enabled: false,
             model: PathBuf::from("/no/such/protocol.json"),
@@ -63,9 +67,10 @@ fn bare(output: &Path) -> Campaign {
             trace_len_min: 1,
             trace_len_max: 1,
             sample_attempts: 32,
-            hc_executable: PathBuf::from("hc"),
+            _legacy_hc: (),
         },
         agents: AgentCatalog {
+            hc_executable: PathBuf::from("hc"),
             profiles: BTreeMap::from([(
                 "mock".to_string(),
                 AgentProfile {
@@ -121,7 +126,7 @@ fn model_file(dir: &Path) -> PathBuf {
 fn wait_out(stage: &mut GeneratorSynthesisStage, budget: Duration) -> Outcome {
     let deadline = Instant::now() + budget;
     while Instant::now() < deadline {
-        if let Some(outcome) = stage.recv_one(Duration::from_millis(40)).unwrap() {
+        if let Some(outcome) = stage.recv_one(Duration::from_millis(40)) {
             return outcome;
         }
     }
@@ -227,9 +232,9 @@ fn bitmap_stagnation_orders_stages_without_queuing_while_busy() {
         let mut campaign = bare(&dir.join("out"));
         campaign.protocol_generation.model = model_file(&dir);
         campaign.parties = Some(client_server_parties());
-        campaign.source_coverage.enabled = coverage_enabled;
+        campaign.coverage.enabled = coverage_enabled;
         // Failure must also advance the trigger without starting a coverage target.
-        campaign.source_coverage.binary = dir.join("missing-coverage-binary");
+        campaign.coverage.binary = dir.join("missing-coverage-binary");
         let context = SynthesisPromptContext::from_campaign(&campaign).unwrap();
         let mut synthesis = GeneratorSynthesisStage::from_campaign(&campaign).unwrap();
         synthesis.enabled = true;
@@ -237,9 +242,8 @@ fn bitmap_stagnation_orders_stages_without_queuing_while_busy() {
         synthesis.binding = context.binding().clone();
         synthesis.prompt_context = Some(context);
         let (commands, requests) = mpsc::channel();
-        synthesis.commands = Some(commands);
         let (outcome_tx, outcomes) = mpsc::channel();
-        synthesis.outcomes = Some(outcomes);
+        synthesis.worker = Some(AgentClient::from_channels(commands, outcomes));
         synthesis.launch = Some(
             command_line(
                 campaign.agents.profiles.get("mock").unwrap(),
@@ -353,17 +357,26 @@ fn bitmap_stagnation_orders_stages_without_queuing_while_busy() {
                 )
                 .unwrap();
                 outcome_tx
-                    .send(Outcome::Ready(TerminalFact::default()))
+                    .send(Outcome::Ready((), TerminalFact::default()))
                     .unwrap();
             }
-            // Background init failure must not abort the ordinary fuzz loop.
+            // Timeouts retry initialization; other init failures stop the campaign.
+            let result = synthesis.perform(&mut fuzzer, &mut host, &mut state, &mut ());
+            if reason == "timeout" {
+                result.unwrap();
+                assert!(matches!(
+                    requests.try_recv().unwrap(),
+                    AgentCommand::Init { .. }
+                ));
+            } else if reason == "disconnected" {
+                assert!(result.is_err());
+            } else {
+                result.unwrap();
+            }
             synthesis
                 .perform(&mut fuzzer, &mut host, &mut state, &mut ())
                 .unwrap();
-            synthesis
-                .perform(&mut fuzzer, &mut host, &mut state, &mut ())
-                .unwrap();
-            assert!(synthesis.paused);
+            assert_eq!(synthesis.paused, reason != "timeout");
             assert!(!synthesis.initialized);
             assert!(requests.try_recv().is_err());
             assert!(!state.metadata::<BitmapProgress>().unwrap().synthesis_due());
@@ -398,14 +411,14 @@ fn bitmap_stagnation_orders_stages_without_queuing_while_busy() {
         )
         .unwrap();
         outcome_tx
-            .send(Outcome::Ready(TerminalFact::default()))
+            .send(Outcome::Ready((), TerminalFact::default()))
             .unwrap();
         synthesis
             .perform(&mut fuzzer, &mut host, &mut state, &mut ())
             .unwrap();
         assert!(matches!(
             requests.try_recv().unwrap(),
-            AgentCommand::Generate { .. }
+            AgentCommand::Run { .. }
         ));
         assert!(synthesis.inflight);
         assert_eq!(request_count(&campaign.protocol_generation.output), 1);
@@ -436,10 +449,11 @@ fn bitmap_stagnation_orders_stages_without_queuing_while_busy() {
         // A completed refusal still releases the counter, without immediately
         // dispatching a replacement. Only a fresh k executions can do that.
         outcome_tx
-            .send(Outcome::Artifact(
-                Err("refused".to_string()),
-                TerminalFact::default(),
-            ))
+            .send(Outcome::Artifact {
+                request: "test-request".into(),
+                result: Err("refused".to_string()),
+                fact: TerminalFact::default(),
+            })
             .unwrap();
         synthesis
             .perform(&mut fuzzer, &mut host, &mut state, &mut ())
@@ -475,7 +489,7 @@ fn bitmap_stagnation_orders_stages_without_queuing_while_busy() {
             .unwrap();
         assert!(matches!(
             requests.try_recv().unwrap(),
-            AgentCommand::Generate { .. }
+            AgentCommand::Run { .. }
         ));
         assert_eq!(request_count(&campaign.protocol_generation.output), 2);
         assert!(!state.metadata::<BitmapProgress>().unwrap().synthesis_due());
@@ -501,10 +515,12 @@ fn bootstrap_outcomes_clear_the_inflight_request() {
         stage.inflight = true;
         stage.current_request = Some("bootstrap".to_string());
         let (sender, outcomes) = mpsc::channel();
-        stage.outcomes = Some(outcomes);
+        let (commands, _requests) = mpsc::channel();
+        stage.worker = Some(AgentClient::from_channels(commands, outcomes));
         let outcome = match scenario {
-            "success" => Outcome::Artifact(
-                Ok(ReadyInput {
+            "success" => Outcome::Artifact {
+                request: "test-request".into(),
+                result: Ok(ReadyInput {
                     request: "bootstrap".to_string(),
                     input: GeneratorInput::new(dir.join("generator.py"), BTreeMap::new()),
                     origin: TraceOrigin {
@@ -514,9 +530,13 @@ fn bootstrap_outcomes_clear_the_inflight_request() {
                         added_steps: Vec::new(),
                     },
                 }),
-                TerminalFact::default(),
-            ),
-            "refusal" => Outcome::Artifact(Err("refused".to_string()), TerminalFact::default()),
+                fact: TerminalFact::default(),
+            },
+            "refusal" => Outcome::Artifact {
+                request: "test-request".into(),
+                result: Err("refused".to_string()),
+                fact: TerminalFact::default(),
+            },
             _ => Outcome::Failed(AgentFailure {
                 reason: "failed".to_string(),
                 fact: TerminalFact::default(),
@@ -652,14 +672,16 @@ fn mock_core_covers_init_delay_failure_timeout_and_schema() {
     assert_eq!(stage.session_state.transition, "send");
     assert_eq!(stage.session_state.hc_status.as_deref(), Some("idle"));
     assert!(stage.inflight);
-    assert!(stage.recv_one(Duration::from_millis(30)).unwrap().is_none());
+    assert!(stage.recv_one(Duration::from_millis(30)).is_none());
     assert!(started.elapsed() < Duration::from_millis(250));
     let queued = request_count(&root.join("out"));
     stage.dispatch_with(&mut rand).unwrap();
     assert_eq!(request_count(&root.join("out")), queued);
     let (first_request, first_output_dir, first_artifacts) =
         match wait_out(&mut stage, Duration::from_secs(3)) {
-            Outcome::Artifact(Ok(ready), _) => {
+            Outcome::Artifact {
+                result: Ok(ready), ..
+            } => {
                 assert_eq!(
                     ready.input.params.get("verb"),
                     Some(&ParamValue::Str("NOOP".to_string()))
@@ -700,7 +722,9 @@ fn mock_core_covers_init_delay_failure_timeout_and_schema() {
     stage.mode_hint.clear();
     stage.dispatch_with(&mut rand).unwrap();
     match wait_out(&mut stage, Duration::from_secs(3)) {
-        Outcome::Artifact(Ok(ready), _) => {
+        Outcome::Artifact {
+            result: Ok(ready), ..
+        } => {
             let output_dir = root.join("out/requests").join(&ready.request);
             assert_ne!(ready.request, first_request);
             assert_ne!(output_dir, first_output_dir);
@@ -742,7 +766,11 @@ fn mock_core_covers_init_delay_failure_timeout_and_schema() {
         stage.mode_hint = mode.to_string();
         stage.dispatch_with(&mut rand).unwrap();
         match wait_out(&mut stage, Duration::from_secs(3)) {
-            Outcome::Artifact(Err(reason), fact) => {
+            Outcome::Artifact {
+                result: Err(reason),
+                fact,
+                ..
+            } => {
                 assert!(reason.contains(needle), "{mode}: {reason}");
                 stage.record_session("blocked", SessionPhase::Ready, &fact, Some(reason));
                 stage.finish_request(false);

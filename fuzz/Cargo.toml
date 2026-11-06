@@ -32,6 +32,7 @@ minijinja = { version = "3.0.0", features = ["serde"] }
 nix = { version = "0.31.1", features = ["fs", "mount", "poll", "process", "sched", "signal"] }
 pcap = "2.2.0"
 pcap-file = "2.0.0"
+petgraph = "0.7"
 rustpython-ast = { version = "0.4.0", features = ["visitor"] }
 rustpython-compiler = "0.4.0"
 serde = { version = "1.0.228", features = ["derive"] }

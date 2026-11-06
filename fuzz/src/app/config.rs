@@ -80,7 +80,7 @@ impl Default for Timeouts {
 pub struct TargetConfig {
     /// PCGUARD forkserver ELF.
     pub binary: PathBuf,
-    /// Optional SUT source directory supplied to synthesis prompts for inspection.
+    /// Optional SUT source directory. Coverage analysis reads it. Synthesis prompts do not.
     #[serde(default)]
     pub source_dir: Option<PathBuf>,
     /// Directory restored from `fixture` before every case.
@@ -160,6 +160,9 @@ pub struct CampaignPaths {
     pub core: Option<usize>,
     #[serde(default = "default_iterations")]
     pub iterations: u64,
+    /// Stop the campaign after this many wall-clock seconds. Takes precedence over iterations.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
     /// Consecutive ordinary executions without a newly occupied bitmap slot.
     #[serde(default = "default_bitmap_stagnation_limit")]
     pub bitmap_stagnation_limit: u64,
@@ -209,17 +212,19 @@ fn default_coverage_output() -> PathBuf {
     PathBuf::from("source-coverage")
 }
 
-/// Optional LLVM source-coverage replay. Omitted or `enabled = false` leaves PCGUARD fuzz unchanged.
+/// LLVM source-coverage replay and optional coverage analysis.
+///
+/// Omitted or `enabled = false` leaves PCGUARD fuzz unchanged.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SourceCoverageConfig {
+pub struct CoverageConfig {
     /// Replay saved inputs through a forkserver-only coverage binary.
     #[serde(default)]
     pub enabled: bool,
     /// Coverage-built SUT. Relative paths are resolved from the campaign file.
     #[serde(default)]
     pub binary: PathBuf,
-    /// Directory that receives snapshots and checkpoints.
+    /// Directory that receives snapshots, checkpoints, and analysis output.
     #[serde(default = "default_coverage_output")]
     pub output: PathBuf,
     /// `llvm-profdata` executable. LLVM 18 on this machine.
@@ -228,12 +233,31 @@ pub struct SourceCoverageConfig {
     /// `llvm-cov` executable.
     #[serde(default = "default_llvm_cov")]
     pub llvm_cov: String,
+    /// Run the coverage-analysis agent. Requires [`Self::enabled`].
+    #[serde(default)]
+    pub analysis_enabled: bool,
+    /// Profile name under `[agents.profiles]`.
+    #[serde(default)]
+    pub analysis_profile: String,
+    #[serde(default = "default_init_timeout")]
+    pub analysis_init_timeout_secs: u64,
+    #[serde(default = "default_task_timeout")]
+    pub analysis_task_timeout_secs: u64,
+    #[serde(default)]
+    pub callgraph_dot: PathBuf,
+    #[serde(default)]
+    pub cfg_dir: PathBuf,
+    #[serde(default)]
+    pub build_manifest: PathBuf,
     /// Runtime-only CLI override. Full JSON export is off unless requested on the command line.
     #[serde(skip)]
     pub export_json: bool,
 }
 
-impl Default for SourceCoverageConfig {
+/// Previous name of [`CoverageConfig`].
+pub type SourceCoverageConfig = CoverageConfig;
+
+impl Default for CoverageConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -241,6 +265,13 @@ impl Default for SourceCoverageConfig {
             output: default_coverage_output(),
             llvm_profdata: default_llvm_profdata(),
             llvm_cov: default_llvm_cov(),
+            analysis_enabled: false,
+            analysis_profile: String::new(),
+            analysis_init_timeout_secs: default_init_timeout(),
+            analysis_task_timeout_secs: default_task_timeout(),
+            callgraph_dot: PathBuf::new(),
+            cfg_dir: PathBuf::new(),
+            build_manifest: PathBuf::new(),
             export_json: false,
         }
     }
@@ -271,14 +302,26 @@ pub struct AgentProfile {
 }
 
 /// Named profiles. Missing from the campaign means no agents are configured.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AgentCatalog {
+    /// Private HC executable shared by synthesis and coverage analysis.
+    #[serde(default = "default_hc")]
+    pub hc_executable: PathBuf,
     #[serde(default)]
     pub profiles: std::collections::BTreeMap<String, AgentProfile>,
 }
 
+impl Default for AgentCatalog {
+    fn default() -> Self {
+        Self {
+            hc_executable: default_hc(),
+            profiles: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
 fn default_init_timeout() -> u64 {
-    120
+    300
 }
 
 fn default_task_timeout() -> u64 {
@@ -326,12 +369,37 @@ pub struct ProtocolGenerationConfig {
     pub trace_len_max: usize,
     #[serde(default = "default_sample_attempts")]
     pub sample_attempts: u32,
-    #[serde(default = "default_hc")]
-    pub hc_executable: PathBuf,
+    /// Rejected. The executable now lives on `[agents].hc_executable`.
+    #[serde(
+        default,
+        rename = "hc_executable",
+        deserialize_with = "reject_legacy_hc"
+    )]
+    pub(crate) _legacy_hc: (),
 }
 
 fn default_hc() -> PathBuf {
     PathBuf::from("hc")
+}
+
+fn reject_legacy_hc<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(
+        "protocol_generation.hc_executable has moved to [agents].hc_executable",
+    ))
+}
+
+fn reject_legacy_source_coverage<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(
+        "[source_coverage] has been renamed to [coverage]; move enabled, binary, output, llvm_profdata, and llvm_cov, and set analysis_enabled separately",
+    ))
 }
 
 fn reject_legacy_bindings<'de, D>(deserializer: D) -> Result<(), D::Error>
@@ -503,7 +571,7 @@ impl Default for ProtocolGenerationConfig {
             trace_len_min: default_trace_min(),
             trace_len_max: default_trace_max(),
             sample_attempts: default_sample_attempts(),
-            hc_executable: default_hc(),
+            _legacy_hc: (),
         }
     }
 }
@@ -517,9 +585,16 @@ pub struct Campaign {
     /// PCAP capture. Missing from the file keeps the historical no-capture path.
     #[serde(default)]
     pub capture: CaptureConfig,
-    /// LLVM source coverage replay. Missing from the file keeps it off.
+    /// LLVM source coverage and optional analysis. Missing from the file keeps it off.
     #[serde(default)]
-    pub source_coverage: SourceCoverageConfig,
+    pub coverage: CoverageConfig,
+    /// Rejected. The table was renamed to `[coverage]`.
+    #[serde(
+        default,
+        rename = "source_coverage",
+        deserialize_with = "reject_legacy_source_coverage"
+    )]
+    pub(crate) _legacy_source_coverage: (),
     /// Protocol generator synthesis. Missing from the file keeps it off.
     #[serde(default)]
     pub protocol_generation: ProtocolGenerationConfig,
@@ -547,6 +622,11 @@ impl Campaign {
                 "campaign.bitmap_stagnation_limit must be greater than 0".to_string(),
             ));
         }
+        if campaign.campaign.timeout_secs == Some(0) {
+            return Err(Error::illegal_argument(
+                "campaign.timeout_secs must be greater than 0".to_string(),
+            ));
+        }
         let base = path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -565,10 +645,66 @@ impl Campaign {
         campaign.campaign.crashes = resolve(&base, &campaign.campaign.crashes);
         campaign.campaign.python = resolve(&base, &campaign.campaign.python);
         campaign.campaign.pythonpath = resolve(&base, &campaign.campaign.pythonpath);
-        if !campaign.source_coverage.binary.as_os_str().is_empty() {
-            campaign.source_coverage.binary = resolve(&base, &campaign.source_coverage.binary);
+        if !campaign.coverage.binary.as_os_str().is_empty() {
+            campaign.coverage.binary = resolve(&base, &campaign.coverage.binary);
         }
-        campaign.source_coverage.output = resolve(&base, &campaign.source_coverage.output);
+        campaign.coverage.output = resolve(&base, &campaign.coverage.output);
+        if !campaign.coverage.callgraph_dot.as_os_str().is_empty() {
+            campaign.coverage.callgraph_dot = resolve(&base, &campaign.coverage.callgraph_dot);
+        }
+        if !campaign.coverage.cfg_dir.as_os_str().is_empty() {
+            campaign.coverage.cfg_dir = resolve(&base, &campaign.coverage.cfg_dir);
+        }
+        if !campaign.coverage.build_manifest.as_os_str().is_empty() {
+            campaign.coverage.build_manifest = resolve(&base, &campaign.coverage.build_manifest);
+        }
+        if !campaign.agents.hc_executable.as_os_str().is_empty() {
+            campaign.agents.hc_executable = resolve(&base, &campaign.agents.hc_executable);
+        }
+        if campaign.coverage.analysis_enabled && !campaign.coverage.enabled {
+            return Err(Error::illegal_argument(
+                "coverage.analysis_enabled requires coverage.enabled".to_string(),
+            ));
+        }
+        if campaign.coverage.analysis_enabled {
+            if campaign.coverage.analysis_profile.is_empty()
+                || !campaign
+                    .agents
+                    .profiles
+                    .contains_key(&campaign.coverage.analysis_profile)
+            {
+                return Err(Error::illegal_argument(
+                    "coverage.analysis_profile must name a profile in [agents.profiles]"
+                        .to_string(),
+                ));
+            }
+            for (label, path) in [
+                ("callgraph_dot", &campaign.coverage.callgraph_dot),
+                ("cfg_dir", &campaign.coverage.cfg_dir),
+                ("build_manifest", &campaign.coverage.build_manifest),
+            ] {
+                if path.as_os_str().is_empty() {
+                    return Err(Error::illegal_argument(format!(
+                        "coverage.{label} is required when analysis is enabled"
+                    )));
+                }
+            }
+            if campaign.parties.is_none() {
+                return Err(Error::illegal_argument(
+                    "coverage analysis requires [parties].sut and [parties].generator".to_string(),
+                ));
+            }
+            if campaign
+                .target
+                .source_dir
+                .as_ref()
+                .is_none_or(|path| path.as_os_str().is_empty())
+            {
+                return Err(Error::illegal_argument(
+                    "coverage analysis requires target.source_dir".to_string(),
+                ));
+            }
+        }
         if !campaign.protocol_generation.model.as_os_str().is_empty() {
             campaign.protocol_generation.model =
                 resolve(&base, &campaign.protocol_generation.model);
@@ -730,7 +866,10 @@ pythonpath = "pp"
 
     #[test]
     fn removed_stage_intervals_are_configuration_errors() {
-        for section in ["source_coverage", "protocol_generation"] {
+        let legacy = format!("{}\n[source_coverage]\nenabled = false\n", sample("", ""));
+        let error = toml::from_str::<Campaign>(&legacy).unwrap_err();
+        assert!(error.to_string().contains("[source_coverage]"), "{error}");
+        for section in ["coverage", "protocol_generation"] {
             let text = format!("{}\n[{section}]\ninterval = 1\n", sample("", ""));
             let error = toml::from_str::<Campaign>(&text).unwrap_err();
             assert!(
@@ -834,7 +973,8 @@ pythonpath = "pp"
         let plain: Campaign = toml::from_str(&sample("", "")).unwrap();
         assert!(!plain.protocol_generation.enabled);
         assert!(plain.protocol_generation.model.as_os_str().is_empty());
-        assert_eq!(plain.protocol_generation.init_timeout_secs, 120);
+        assert_eq!(plain.protocol_generation.init_timeout_secs, 300);
+        assert_eq!(plain.coverage.analysis_init_timeout_secs, 300);
         assert_eq!(plain.protocol_generation.task_timeout_secs, 600);
         assert!(plain.agents.profiles.is_empty());
         let text = format!(

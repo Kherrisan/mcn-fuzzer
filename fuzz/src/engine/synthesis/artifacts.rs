@@ -7,6 +7,7 @@ use rustpython_compiler::{compile, CompileOpts, Mode, Parse};
 use serde_json::Value;
 
 use super::ParamValue;
+use crate::agents::artifacts::{check_identity, read_json};
 
 pub(super) fn check(
     output: &Path,
@@ -15,15 +16,14 @@ pub(super) fn check(
     trace: &str,
 ) -> Result<(Value, BTreeMap<String, ParamValue>), String> {
     let result = read_json(&output.join("result.json"))?;
-    for (key, expected) in [
-        ("request_id", request),
-        ("protocol_id", protocol),
-        ("trace_id", trace),
-    ] {
-        if result.get(key).and_then(Value::as_str) != Some(expected) {
-            return Err("result.json does not match the dispatched trace".to_string());
-        }
-    }
+    check_identity(
+        &result,
+        &[
+            ("request_id", request),
+            ("protocol_id", protocol),
+            ("trace_id", trace),
+        ],
+    )?;
     if result.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(result
             .get("error")
@@ -46,11 +46,6 @@ pub(super) fn check(
         .map_err(|error| format!("params.json is not representable: {error}"))?;
     check_generator(&output.join("generator.py"))?;
     Ok((result, params))
-}
-
-fn read_json(path: &Path) -> Result<Value, String> {
-    let bytes = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    serde_json::from_slice(&bytes).map_err(|error| format!("{}: {error}", path.display()))
 }
 
 fn reject_remote_refs(value: &Value) -> Result<(), String> {

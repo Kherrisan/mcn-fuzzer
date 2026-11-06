@@ -314,6 +314,17 @@ fn apply_prompt(text: &str) -> Result<(), String> {
         if field(text, "HOLD=") == "1" {
             return Ok(());
         }
+        if text.contains("# Coverage analysis session") {
+            let model = std::path::PathBuf::from(field(text, "MODEL="));
+            let fixture = model
+                .parent()
+                .ok_or("model path missing parent")?
+                .join("handlers.fixture.json");
+            let mapping: Value =
+                serde_json::from_slice(&std::fs::read(fixture).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+            atomic_write(&root.join("handlers.json"), &mapping)?;
+        }
         atomic_write(
             &root.join("ready.json"),
             &json!({"status": "ready", "session": field(text, "SESSION=")}),
@@ -323,6 +334,19 @@ fn apply_prompt(text: &str) -> Result<(), String> {
         return Ok(());
     };
     let request = request.trim();
+    if text.contains("# Coverage analysis request") {
+        let mut result: Value = serde_json::from_slice(
+            &std::fs::read(root.join("input.json")).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        result["status"] = json!("ok");
+        atomic_write(
+            &root.join("protocol-refined.json"),
+            &json!({"step_dependencies": []}),
+        )?;
+        atomic_write(&root.join("priority-delta.json"), &json!({"steps": []}))?;
+        return atomic_write(&root.join("result.json"), &result);
+    }
     let mode = text
         .lines()
         .find_map(|line| line.strip_prefix("MODE="))

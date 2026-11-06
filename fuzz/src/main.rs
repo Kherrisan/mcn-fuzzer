@@ -138,11 +138,16 @@ fn main() -> ExitCode {
         }
         if let Command::Run { campaign, .. } = &cli.command {
             if let Ok(loaded) = load(campaign) {
-                if loaded.protocol_generation.enabled {
+                if loaded.protocol_generation.enabled || loaded.coverage.analysis_enabled {
+                    let output = if loaded.protocol_generation.enabled {
+                        loaded.protocol_generation.output.clone()
+                    } else {
+                        loaded.coverage.output.clone()
+                    };
                     mcn_fuzz::agents::install_generation_request(
                         mcn_fuzz::agents::GenerationRequest {
-                            hc: loaded.protocol_generation.hc_executable.clone(),
-                            output: loaded.protocol_generation.output.clone(),
+                            hc: loaded.agents.hc_executable.clone(),
+                            output,
                         },
                     );
                 }
@@ -175,7 +180,7 @@ fn main() -> ExitCode {
             iterations,
             source_coverage_json,
         } => load(campaign).and_then(|mut campaign| {
-            campaign.source_coverage.export_json = *source_coverage_json;
+            campaign.coverage.export_json = *source_coverage_json;
             app::run(&campaign, *iterations)
         }),
         Command::Replay { campaign, input } => {

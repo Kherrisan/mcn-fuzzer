@@ -38,13 +38,15 @@ sudo ./target/release/mcn-fuzz run --campaign targets/lightftp/campaign.toml
 sudo ./target/release/mcn-fuzz replay --campaign targets/lightftp/campaign.toml --input targets/lightftp/corpus/<file>
 ```
 
-When LLVM source coverage is enabled in the campaign, full JSON export is off by default. Add `--source-coverage-json` to save the detailed JSON in snapshots. Without the flag, the stage uses `llvm-cov export --summary-only` for coverage deltas and saves profdata snapshots and metadata.
+When LLVM source coverage is enabled in `[coverage]`, full JSON export is off by default. Add `--source-coverage-json` to save the detailed JSON in snapshots. Without the flag, the stage uses `llvm-cov export --summary-only` for coverage deltas and saves profdata snapshots and metadata. `[source_coverage]` is a configuration error; move that table to `[coverage]`. `analysis_enabled` is separate and requires collection. The private HC executable is `[agents].hc_executable` (default `hc`), not `protocol_generation.hc_executable`. Analysis output lives under `coverage.output/<build>/analysis/`. `targets/lightftp/build-coverage.sh --graphs` emits the forkserver coverage binary, bitcode, callgraph, CFG dots, and the four-field manifest in one build.
+
+Set `[campaign].timeout_secs` to stop the fuzz loop after a wall-clock duration. When present, it takes precedence over `[campaign].iterations`; the CLI `--iterations` option remains an explicit override. The deadline is checked between complete LibAFL iterations, so an iteration already in progress can finish before shutdown.
 
 `setup-capture.sh` checks Linux, pkg-config, and libpcap, then builds the Release binary with the stats feature. It does not call sudo or setcap.
 
 `replay` reads the corpus input file. LibAFL also writes `.metadata` sidecars; those are not generator inputs.
 
-Optional `[protocol_generation]` synthesizes new `generate(ctx, params)` scripts from a schema 7.0.0 protocol model. It is off when the section is omitted. The `run` command is the only entry that starts a campaign-private HC core; replay, accept, and benchmark do not. Profiles live under `[agents.profiles.<name>]` with `provider` set to `codex`, `claude`, or `pi`. A failed synthesis task is recorded and existing corpus entries keep fuzzing.
+Optional `[protocol_generation]` synthesizes new `generate(ctx, params)` scripts from a schema 7.0.0 protocol model. It is off when the section is omitted. The `run` command is the only entry that starts a campaign-private HC core; replay, accept, and benchmark do not. The core starts when synthesis or coverage analysis is enabled, and both agents share it. Profiles live under `[agents.profiles.<name>]` with `provider` set to `codex`, `claude`, or `pi`. A failed synthesis task is recorded and existing corpus entries keep fuzzing.
 
 Fuzz-stage scheduling uses consecutive ordinary executions without newly occupied
 PCGUARD bitmap slots. Configure the positive threshold under `[campaign]`:
@@ -75,11 +77,20 @@ Seedless campaigns wait for initialization and the first generated input because
 ordinary mutation requires a schedulable corpus.
 
 Round-based `interval` settings have been removed from `[protocol_generation]`
-and `[source_coverage]`; configuring them is an error. Initial and final
+and `[coverage]`; configuring them is an error. Initial and final
 source-coverage snapshots, and first-generator bootstrap when seeds are
 absent, still run as before. With seeds present, round 1 no longer starts an agent
-task automatically. Source coverage still requires `[source_coverage].enabled=true`
+task automatically. Source coverage still requires `[coverage].enabled=true`
 and a coverage-built binary; synthesis requires `[protocol_generation].enabled=true`.
+The shared agent runtime lives in `src/agents/worker.rs`. `AgentClient<I, T>` owns the command/outcome channels and background HC terminal. `AgentInit` supplies initialization checks and the ready artifact; `AgentTask` supplies request preparation and artifact acceptance. Both agents report `AgentOutcome` values, share session transitions/logging in `agents/session.rs`, and use `agents/artifacts.rs` for JSON reads, identity checks, and sealed tool inputs. Stages apply accepted results to LibAFL state at stage boundaries; the generic worker never accesses fuzz state.
+
+Coverage analysis uses the same `[coverage]` table and does not require synthesis. Both agents queue initialization together before seeds are loaded or source coverage is replayed. Each has a background HC worker, command/outcome channels, a persistent terminal, and at most one request in flight. Coverage source verification and handler extraction run in the background; the stage skips dispatch until initialization is ready. New snapshots replace the queued snapshot while a request is running. Completed snapshots are not dispatched again.
+
+Coverage measurement reads true/false counters from `llvm-cov export`'s `functions[].branches`. `coverage_analysis.cfg` extracts a `cfg/source-map.json` from the same bitcode used to emit the CFG DOTs; the LightFTP bundle builder generates it before hashing the manifest. At coverage-analysis startup, Rust invokes `coverage_analysis.graphs` once to validate the DOT bundle and publish `analysis/graphs/callgraph.json` plus `analysis/graphs/cfg.json`. Rust reads and validates both files, then seals them against later edits. All subsequent requests and agent graph queries read these JSON files; measurement never reparses DOTs or the source-map sidecar. The merged CFG JSON embeds per-function topology, source locations, and call sites. Existing graph bundles can regenerate the source map and manifest with `python3 analysis/lightftp/build_coverage_bundle.py --output targets/lightftp/build-cov --source-dir targets/lightftp/build-cov/LightFTP/Source --manifest-only` from `fuzz/`.
+
+After a coverage snapshot is frozen, the fuzzer main thread measures it in Rust. That step reads `coverage.json`, the sealed graph JSON, and the accepted handler mapping. It does not start Python or `llvm-cov`. Reachable CFG blocks and direct callgraph edges form regions from known-zero branches and basic blocks. Covered or unknown paths break those regions. Optimized branch polarity is used only when successor coverage disambiguates it. Ambiguous conditions, absent CFGs, external calls, and indirect calls are `unknown` entries. `complete: false` means unresolved boundaries remain, even when `zero: true`. `handlers.json` and `regions.json` are frozen before the coverage agent is prompted, and the agent must not edit them.
+
+Coverage results must match the dispatched session, request, build, snapshot, and protocol. Invalid artifacts reject that request and leave the agent ready for the next snapshot. HC failures and timeouts pause that agent. Both agents record the same session phases and HC terminal observations in their own `session.jsonl`; coverage also records request events in `events.jsonl`. Stopping a worker closes only its terminal; the campaign runtime owns the shared HC core.
 
 The synthesizer prompts are Markdown MiniJinja templates in `prompts/`. They are embedded in the fuzzer at build time, so rebuild after editing them.
 
@@ -101,7 +112,8 @@ The prepared environment is CPython 3.12 on Linux x86_64. Install its pinned dep
 
 The audit checks 32 cataloged distributions and runs protocol/crypto/codec probes; `--network` additionally exercises temporary loopback DNS, FTP, SMTP, DICOM, SSH and HTTP/DMAP peers. These checks verify the library environment, not interoperability with every ProFuzzBench target. Synthesis agents use installed modules and do not install dependencies themselves.
 
-Synthesizer prompts do not receive `[target].source_dir`, even when configured.
+Coverage-analysis init and task prompts receive `[target].source_dir` as `SOURCE_DIR`.
+Synthesizer prompts do not receive that path, even when it is configured.
 Both prompts and the module skill prohibit reading SUT source or using SUT feature
 support or expected message acceptance to decide whether to generate. Protocol
 behavior comes from the receipt and RFCs; public generator API/SDK references and
@@ -136,7 +148,7 @@ A campaign that omits `args` still launches LightFTP with `["@CONFIG@"]` and wri
 
 ```sh
 bash targets/openssl/build.sh
-sudo ./target/release/mcn-fuzz run --campaign targets/openssl/campaign.toml --iterations 100
+sudo ./target/release/mcn-fuzz run --campaign targets/openssl/campaign.toml
 sudo ./target/release/mcn-fuzz accept --campaign targets/openssl/campaign.toml
 sudo ./target/release/mcn-fuzz replay --campaign targets/openssl/campaign.toml --input targets/openssl/corpus/<file>
 ```

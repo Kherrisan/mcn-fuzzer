@@ -5,15 +5,20 @@
 //! main execution counter. Raw profiles stay mapped for the whole batch and
 //! are replaced only after that batch's forkserver has exited.
 
+pub mod analysis;
 pub mod capture;
+mod graphs;
+pub(crate) mod measure;
+pub mod schedule;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs::{self, File},
     io::Write,
     os::fd::{AsRawFd, OwnedFd},
+    os::unix::process::ExitStatusExt,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, ExitStatus},
     thread::sleep,
     time::{Duration, Instant},
 };
@@ -215,7 +220,7 @@ impl LlvmCoverageStage {
     where
         S: HasCorpus<GeneratorInput> + HasSolutions<GeneratorInput> + HasMetadata + HasExecutions,
     {
-        if !self.campaign.source_coverage.enabled {
+        if !self.campaign.coverage.enabled {
             return Ok(());
         }
         let executions = *state.executions();
@@ -256,7 +261,7 @@ where
         {
             return Ok(());
         }
-        if !self.campaign.source_coverage.enabled {
+        if !self.campaign.coverage.enabled {
             state
                 .metadata_or_insert_with(BitmapProgress::default)
                 .finish_source_coverage();
@@ -345,7 +350,7 @@ fn run_batch_with<S>(
 where
     S: HasCorpus<GeneratorInput> + HasSolutions<GeneratorInput> + HasMetadata,
 {
-    let config = &campaign.source_coverage;
+    let config = &campaign.coverage;
     let fingerprint = build_fingerprint(&config.binary, &config.llvm_profdata, &config.llvm_cov)?;
     let root = config.output.join(&fingerprint);
     let _lock = OutputLock::acquire(&config.output)?;
@@ -553,21 +558,27 @@ fn replay_pending(
     }
     let indexed = root.join("coverage.profdata.tmp");
     let index_at = Instant::now();
-    merge_raw(&config.llvm_profdata, &work_raw, &indexed)?;
+    merge_raw(&config.llvm_profdata, &work_raw, &indexed).map_err(|error| {
+        Error::unknown(format!(
+            "{error}; snapshot was not published after {} ms",
+            index_at.elapsed().as_millis()
+        ))
+    })?;
     timings.index = index_at.elapsed();
     let export_at = Instant::now();
-    // Full JSON is optional because OpenSSL's detailed llvm-cov export can be
-    // hundreds of MiB. The summary-only export keeps the counters needed for
-    // batch attribution while avoiding the detailed report and snapshot file.
-    let summary_output = export_cov(
-        &config.llvm_cov,
-        &config.binary,
-        &indexed,
-        !config.export_json,
-    )?;
+    // Analysis consumes detailed counters in-process from the frozen snapshot.
+    // Export once here while replay owns the executor, never in an async worker.
+    let detailed = config.export_json || config.analysis_enabled;
+    let summary_output = export_cov(&config.llvm_cov, &config.binary, &indexed, !detailed)
+        .map_err(|error| {
+            Error::unknown(format!(
+                "{error}; snapshot was not published after {} ms",
+                export_at.elapsed().as_millis()
+            ))
+        })?;
     timings.export = export_at.elapsed();
     let summary = parse_summary(&summary_output)?;
-    let snapshot_json = config.export_json.then_some(summary_output.as_str());
+    let snapshot_json = detailed.then_some(summary_output.as_str());
     let grew = summary.grew_from(progress.last_summary);
     let decision = BatchDecision {
         collected_before: progress.collected.clone(),
@@ -1430,18 +1441,37 @@ fn merge_raw(tool: &str, work_raw: &Path, output: &Path) -> Result<(), Error> {
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }
-    let status = Command::new(tool)
+    let started = Instant::now();
+    let output_status = Command::new(tool)
         .arg("merge")
         .arg("-sparse")
         .args(&raws)
         .arg("-o")
         .arg(output)
-        .status()
+        .output()
         .map_err(|error| Error::unknown(format!("starting {tool}: {error}")))?;
-    if !status.success() {
-        return Err(Error::unknown(format!("{tool} merge exited {status}")));
+    if !output_status.status.success() {
+        return Err(Error::unknown(tool_failure(
+            tool,
+            output_status.status,
+            &output_status.stderr,
+            started.elapsed(),
+        )));
     }
     Ok(())
+}
+
+fn tool_failure(tool: &str, status: ExitStatus, stderr: &[u8], elapsed: Duration) -> String {
+    let how = match (status.code(), status.signal()) {
+        (Some(code), _) => format!("exit {code}"),
+        (None, Some(signal)) => format!("signal {signal}"),
+        (None, None) => format!("status {status}"),
+    };
+    format!(
+        "{tool} failed with {how} after {} ms: {}",
+        elapsed.as_millis(),
+        String::from_utf8_lossy(stderr).trim()
+    )
 }
 
 fn export_cov(
@@ -1458,14 +1488,16 @@ fn export_cov(
     if summary_only {
         command.arg("--summary-only");
     }
+    let started = Instant::now();
     let output = command
         .output()
         .map_err(|error| Error::unknown(format!("starting {tool}: {error}")))?;
     if !output.status.success() {
-        return Err(Error::unknown(format!(
-            "{tool} export exited {}: {}",
+        return Err(Error::unknown(tool_failure(
+            tool,
             output.status,
-            String::from_utf8_lossy(&output.stderr)
+            &output.stderr,
+            started.elapsed(),
         )));
     }
     String::from_utf8(output.stdout)
@@ -1644,7 +1676,7 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn build_fingerprint(binary: &Path, profdata: &str, cov: &str) -> Result<String, Error> {
+pub(crate) fn build_fingerprint(binary: &Path, profdata: &str, cov: &str) -> Result<String, Error> {
     let mut material = file_sha256(binary)?;
     material.push_str(&tool_version(profdata));
     material.push_str(&tool_version(cov));
@@ -2257,10 +2289,12 @@ fn probe_campaign(workdir: &Path, binary: &Path) -> Campaign {
             pythonpath: workdir.to_path_buf(),
             core: None,
             iterations: 1,
+            timeout_secs: None,
             bitmap_stagnation_limit: crate::engine::stagnation::DEFAULT_BITMAP_STAGNATION_LIMIT,
         },
         capture: crate::app::config::CaptureConfig::default(),
-        source_coverage: crate::app::config::SourceCoverageConfig::default(),
+        coverage: crate::app::config::CoverageConfig::default(),
+        _legacy_source_coverage: (),
         protocol_generation: crate::app::config::ProtocolGenerationConfig::default(),
         agents: crate::app::config::AgentCatalog::default(),
         parties: None,

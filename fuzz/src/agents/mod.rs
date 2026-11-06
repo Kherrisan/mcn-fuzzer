@@ -4,8 +4,19 @@
 //! and a workspace. Credentials stay in the process environment and are not
 //! copied into task logs.
 
+pub(crate) mod artifacts;
 mod hc;
 mod profile;
+mod session;
+mod worker;
+pub(crate) use artifacts::wait_file;
+pub(crate) use session::{redact_text, AgentFailure, TerminalFact};
+pub use session::{AgentSession, SessionPhase};
+pub(crate) use worker::{
+    AgentClient, AgentCommand, AgentInit, AgentOutcome, AgentTask, SessionInit, WorkerConfig,
+};
+
+pub(crate) const INIT_TIMEOUT_ATTEMPTS: u32 = 3;
 
 pub use hc::{HcClient, HcError, MockCore, TerminalInfo};
 pub use profile::{command_line, CommandLine};
@@ -242,6 +253,26 @@ pub fn discard_recorded_runtime(output: &Path) {
         let _ = fs::remove_dir_all(&runtime);
     }
     let _ = fs::remove_file(&marker);
+}
+
+/// Stop this campaign's private core. Individual workers only close their terminal.
+pub fn shutdown_private_core() {
+    let boot = current_boot();
+    let Some(boot) = boot else {
+        return;
+    };
+    if let Ok(mut client) = HcClient::connect(&boot.socket, Duration::from_secs(2)) {
+        shutdown_session(&mut client, &boot.session);
+    }
+    if let Some(runtime) = boot.socket.parent().and_then(|path| path.parent()) {
+        let name = runtime
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        if runtime != std::env::temp_dir() && name.starts_with("mcn-hc-") {
+            let _ = fs::remove_dir_all(runtime);
+        }
+    }
 }
 
 /// Stop this campaign's terminal and private core. Other sessions are not signaled.

@@ -1,7 +1,7 @@
 //! One generator request and the artifacts correlated with it.
 
 use super::{prompts, GeneratorInput, TraceOrigin};
-use crate::protocol::StepTrace;
+use crate::{agents::artifacts::read_json, protocol::StepTrace};
 use serde_json::Value;
 use std::{fs, path::PathBuf};
 
@@ -80,10 +80,7 @@ impl GeneratorRequest {
     }
 
     fn step_ids(&self) -> Vec<String> {
-        let Ok(bytes) = fs::read(self.output_dir.join("receipt.json")) else {
-            return Vec::new();
-        };
-        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        let Ok(value) = read_json(&self.output_dir.join("receipt.json")) else {
             return Vec::new();
         };
         value

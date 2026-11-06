@@ -28,7 +28,7 @@ use crate::{
 };
 use libafl::{
     corpus::{Corpus, OnDiskCorpus},
-    events::SimpleEventManager,
+    events::{ProgressReporter, SimpleEventManager},
     executors::ExitKind,
     feedbacks::{CombinedFeedback, CrashFeedback, LogicEagerOr},
     fuzzer::{Evaluator, ExecutesInput, Fuzzer, NopInputFilter, StdFuzzer},
@@ -131,13 +131,46 @@ fn print_campaign_line(line: &str) {
     println!("{shown}");
 }
 
-/// Load seeds and fuzz for `iterations` generations.
+/// Load seeds and fuzz until the campaign timeout or iteration limit.
 pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
+    let started = Instant::now();
+    let deadline = campaign
+        .campaign
+        .timeout_secs
+        .map(|seconds| {
+            started
+                .checked_add(Duration::from_secs(seconds))
+                .ok_or_else(|| Error::illegal_argument("campaign.timeout_secs is too large"))
+        })
+        .transpose()?;
     require_exec(&campaign.target.binary)?;
     let mut session = Session::open(campaign)?;
     let mut synthesis = GeneratorSynthesisStage::from_campaign(campaign)?;
+    let mut analysis = crate::coverage::schedule::CoverageAnalysisStage::from_campaign(campaign)?;
+    if let Some(graph) = synthesis.shared_graph() {
+        analysis.use_graph(graph);
+    } else if campaign.coverage.analysis_enabled {
+        analysis.load_graph()?;
+    }
+    if let Some(log) = analysis.event_log() {
+        synthesis.set_event_log(log);
+    } else if synthesis.shared_graph().is_some() {
+        let path = campaign
+            .protocol_generation
+            .output
+            .join("analysis")
+            .join("events.jsonl");
+        synthesis.set_event_log(crate::coverage::analysis::shared_log(
+            path,
+            "synthesis",
+            "synthesis-only",
+        ));
+    }
     if campaign.protocol_generation.enabled {
         synthesis.initialize()?;
+    }
+    if campaign.coverage.analysis_enabled {
+        analysis.initialize()?;
     }
     let seed_files = std::fs::read_dir(&campaign.campaign.seeds)
         .map(|entries| {
@@ -169,23 +202,54 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
         )?;
     }
     let mut coverage = LlvmCoverageStage::from_campaign(campaign);
-    if campaign.source_coverage.enabled {
+    if campaign.coverage.enabled {
         coverage.replay_now(&mut session.executor, &mut session.state)?;
     }
-    let iterations = iterations.unwrap_or(campaign.campaign.iterations);
+    let iteration_limit =
+        iterations.or_else(|| deadline.is_none().then_some(campaign.campaign.iterations));
     let mut stages = tuple_list!(
         synthesis,
         StdMutationalStage::new(GeneratorMutator::new()),
-        coverage
+        coverage,
+        analysis
     );
-    session.fuzzer.fuzz_loop_for(
-        &mut stages,
-        &mut session.executor,
-        &mut session.state,
-        &mut session.mgr,
-        iterations,
-    )?;
-    if campaign.source_coverage.enabled {
+    let loop_result = if let Some(iterations) = iteration_limit {
+        session
+            .fuzzer
+            .fuzz_loop_for(
+                &mut stages,
+                &mut session.executor,
+                &mut session.state,
+                &mut session.mgr,
+                iterations,
+            )
+            .map(|_| ())
+    } else {
+        let deadline = deadline.expect("timed campaign has a deadline");
+        let mut result = Ok(());
+        while Instant::now() < deadline {
+            if let Err(error) = session
+                .mgr
+                .maybe_report_progress(&mut session.state, Duration::from_secs(15))
+            {
+                result = Err(error);
+                break;
+            }
+            if let Err(error) = session.fuzzer.fuzz_one(
+                &mut stages,
+                &mut session.executor,
+                &mut session.state,
+                &mut session.mgr,
+            ) {
+                result = Err(error);
+                break;
+            }
+        }
+        result.and_then(|()| session.mgr.report_progress(&mut session.state))
+    };
+    crate::agents::shutdown_private_core();
+    loop_result?;
+    if campaign.coverage.enabled {
         LlvmCoverageStage::from_campaign(campaign)
             .replay_now(&mut session.executor, &mut session.state)?;
     }
@@ -254,10 +318,12 @@ pub fn doctor() -> Result<(), Error> {
             pythonpath: tmp.clone(),
             core: None,
             iterations: 1,
+            timeout_secs: None,
             bitmap_stagnation_limit: crate::engine::stagnation::DEFAULT_BITMAP_STAGNATION_LIMIT,
         },
         capture: crate::app::config::CaptureConfig::default(),
-        source_coverage: crate::app::config::SourceCoverageConfig::default(),
+        coverage: crate::app::config::CoverageConfig::default(),
+        _legacy_source_coverage: (),
         protocol_generation: crate::app::config::ProtocolGenerationConfig::default(),
         agents: crate::app::config::AgentCatalog::default(),
         parties: None,
