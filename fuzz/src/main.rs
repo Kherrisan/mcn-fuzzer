@@ -151,6 +151,20 @@ fn main() -> ExitCode {
                         },
                     );
                 }
+                if loaded.coverage.analysis_enabled {
+                    mcn_fuzz::coverage::mcp::install_request(
+                        mcn_fuzz::coverage::mcp::ServiceRequest {
+                            python: loaded.campaign.python.clone(),
+                            pythonpath: loaded.campaign.pythonpath.clone(),
+                            output: loaded.coverage.output.clone(),
+                            socket: loaded.coverage.mcp_socket.clone(),
+                            source_dir: loaded.target.source_dir.clone(),
+                            ready_timeout: std::time::Duration::from_secs(
+                                loaded.coverage.mcp_ready_timeout_secs.max(1),
+                            ),
+                        },
+                    );
+                }
             }
         }
         let job = accept_supervise_job(&cli.command);
@@ -249,11 +263,18 @@ fn ensure_command_outputs(
         | Command::Replay { campaign, .. }
         | Command::AcceptJob { campaign, .. } => {
             let loaded = Campaign::load(campaign)?;
-            vec![
+            let mut paths = vec![
                 loaded.base.clone(),
                 loaded.campaign.corpus.clone(),
                 loaded.target.workdir.clone(),
-            ]
+            ];
+            if loaded.coverage.analysis_enabled {
+                paths.push(loaded.coverage.output.clone());
+            }
+            if loaded.protocol_generation.enabled {
+                paths.push(loaded.protocol_generation.output.clone());
+            }
+            paths
         }
         #[cfg(feature = "stats")]
         Command::BenchJob { output, .. } | Command::BenchFinalize { output, .. } => {

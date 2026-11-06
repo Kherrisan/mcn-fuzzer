@@ -14,16 +14,17 @@ pub(super) fn check(
     request: &str,
     protocol: &str,
     trace: &str,
+    proposal: &str,
 ) -> Result<(Value, BTreeMap<String, ParamValue>), String> {
     let result = read_json(&output.join("result.json"))?;
-    check_identity(
-        &result,
-        &[
-            ("request_id", request),
-            ("protocol_id", protocol),
-            ("trace_id", trace),
-        ],
-    )?;
+    let mut expected = vec![("request_id", request), ("protocol_id", protocol)];
+    if !trace.is_empty() {
+        expected.push(("trace_id", trace));
+    }
+    if !proposal.is_empty() {
+        expected.push(("proposal_id", proposal));
+    }
+    check_identity(&result, &expected)?;
     if result.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(result
             .get("error")

@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::{
     app::config::Campaign,
-    protocol::{load_model, Binding, IndexedModel, PartyRole, StepTrace},
+    protocol::{load_model, Binding, IndexedModel, PartyRole, StepRecord},
 };
 
 const INITIALIZATION_TEMPLATE: &str = include_str!(concat!(
@@ -34,6 +34,8 @@ pub(super) struct CampaignContext {
     pythonpath: PathBuf,
     generator_skill: PathBuf,
     generator_validator: PathBuf,
+    catalog: PathBuf,
+    proposal_tool: PathBuf,
     target: TargetContext,
     budgets: Budgets,
 }
@@ -77,6 +79,10 @@ impl CampaignContext {
                 .join("skills/protocol-modules/SKILL.md"),
             generator_validator: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("skills/protocol-modules/scripts/validate_generator.py"),
+            catalog: absolute(&campaign.protocol_generation.output)?.join("catalog.json"),
+            proposal_tool: absolute(&campaign.campaign.pythonpath)?
+                .join("coverage_analysis")
+                .join("server.py"),
             target: TargetContext {
                 binary: absolute(&campaign.target.binary)?,
                 workdir: absolute(&campaign.target.workdir)?,
@@ -159,6 +165,10 @@ impl SynthesisPromptContext {
         &self.campaign.python
     }
 
+    pub fn catalog(&self) -> &Path {
+        &self.campaign.catalog
+    }
+
     /// Installed-module guidance shared by initialization and generation.
     pub fn generator_skill(&self) -> &Path {
         &self.campaign.generator_skill
@@ -215,13 +225,16 @@ impl SynthesisPromptContext {
         .map_err(|error| libafl::Error::serialize(format!("render initialization prompt: {error}")))
     }
 
-    /// One generation prompt for an already chosen trace.
+    /// One generation prompt. A coverage proposal is copied into `output_dir`;
+    /// autonomous mode asks the agent to write and validate its own proposal.
     pub fn generation_prompt(
         &self,
         output_dir: &Path,
         request_id: &str,
+        session: &str,
         mode: &str,
-        trace: &StepTrace,
+        proposal: Option<&Path>,
+        autonomous: bool,
     ) -> Result<String, libafl::Error> {
         let output_dir = absolute(output_dir)?;
         let roles = self
@@ -236,10 +249,23 @@ impl SynthesisPromptContext {
                 })
             })
             .collect::<Vec<_>>();
+        let documents = self
+            .model
+            .document_paths()
+            .iter()
+            .map(|(rfc, path)| Ok(serde_json::json!({"rfc": rfc, "path": absolute(path)?})))
+            .collect::<Result<Vec<_>, libafl::Error>>()?;
+        let proposal_path = proposal.map(|path| absolute(path)).transpose()?;
+        let (proposal_id, trace_id) = proposal_path
+            .as_ref()
+            .and_then(|path| crate::coverage::proposal::Proposal::read(path).ok())
+            .map(|proposal| (proposal.proposal_id, proposal.trace_id))
+            .unwrap_or_default();
         let result_ok_json = serde_json::json!({
             "request_id": request_id,
             "protocol_id": self.model.protocol_id,
-            "trace_id": trace.id.0,
+            "proposal_id": proposal_id,
+            "trace_id": trace_id,
             "status": "ok",
             "added_steps": [],
         })
@@ -247,24 +273,39 @@ impl SynthesisPromptContext {
         let result_error_json = serde_json::json!({
             "request_id": request_id,
             "protocol_id": self.model.protocol_id,
-            "trace_id": trace.id.0,
+            "proposal_id": proposal_id,
+            "trace_id": trace_id,
             "status": "error",
             "error": "",
             "added_steps": [],
         })
         .to_string();
+        let draft_path = output_dir.join("proposal.draft.json");
         render_generation(serde_json::json!({
             "campaign": self.campaign,
             "execution": execution_text(self.mode),
             "output_dir": output_dir,
             "request_id": request_id,
+            "session": session,
             "protocol_id": self.model.protocol_id,
             "protocol_name": self.model.protocol_name,
-            "trace_id": trace.id.0,
             "mode": mode,
-            "receipt": output_dir.join("receipt.json"),
+            "autonomous": autonomous,
+            "proposal_id": proposal_id,
+            "trace_id": trace_id,
+            "proposal": proposal_path,
+            "proposal_draft": draft_path,
+            "proposal_tool": self.campaign.proposal_tool,
+            "catalog": self.campaign.catalog,
             "roles": roles,
-            "generator_parties": generator_parties(&self.model, &self.binding, trace),
+            "documents": documents,
+            "generator_parties": self
+                .model
+                .described_parties()
+                .into_iter()
+                .filter(|(name, _)| self.binding.role(name) == PartyRole::Generator)
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>(),
             "result_ok_json": result_ok_json,
             "result_error_json": result_error_json,
         }))
@@ -289,10 +330,10 @@ fn execution_text(mode: ExecutionMode) -> Value {
 pub(super) fn generator_parties(
     model: &IndexedModel,
     binding: &Binding,
-    trace: &StepTrace,
+    steps: &[StepRecord],
 ) -> Vec<String> {
     let mut names = BTreeSet::new();
-    for step in &trace.steps {
+    for step in steps {
         let mut parties = vec![step.sender_name.clone(), step.receiver_name.clone()];
         parties.extend(model.channel_party_names(&step.channel_name));
         for name in parties {

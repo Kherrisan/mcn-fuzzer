@@ -1,3 +1,5 @@
+> **Superseded by [coverage-mcp-proposal.md](coverage-mcp-proposal.md).** Rust exploration graph, priority deltas, region measurement, and receipt selection were removed; the MCP service owns analysis state and emits proposals.
+
 # Coverage Analysis Agent
 
 ## 1. 目标与配置归属

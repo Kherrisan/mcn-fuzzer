@@ -12,7 +12,7 @@ src/
   runtime/          Supervisor, forkserver backend, generator IPC, lifecycle, reports
   coverage/         LLVM source coverage and PCAP capture
   agents/           Agent profiles and HC integration
-  protocol/         Protocol models, trace selection, receipts
+  protocol/         Protocol models, stable IDs, read-only catalog
   evaluation/       Standalone synthesis evaluation and its CLI entrypoint
 ```
 
@@ -86,21 +86,78 @@ The shared agent runtime lives in `src/agents/worker.rs`. `AgentClient<I, T>` ow
 
 Coverage analysis uses the same `[coverage]` table and does not require synthesis. Both agents queue initialization together before seeds are loaded or source coverage is replayed. Each has a background HC worker, command/outcome channels, a persistent terminal, and at most one request in flight. Coverage source verification and handler extraction run in the background; the stage skips dispatch until initialization is ready. New snapshots replace the queued snapshot while a request is running. Completed snapshots are not dispatched again.
 
-Coverage measurement reads true/false counters from `llvm-cov export`'s `functions[].branches`. `coverage_analysis.cfg` extracts a `cfg/source-map.json` from the same bitcode used to emit the CFG DOTs; the LightFTP bundle builder generates it before hashing the manifest. At coverage-analysis startup, Rust invokes `coverage_analysis.graphs` once to validate the DOT bundle and publish `analysis/graphs/callgraph.json` plus `analysis/graphs/cfg.json`. Rust reads and validates both files, then seals them against later edits. All subsequent requests and agent graph queries read these JSON files; measurement never reparses DOTs or the source-map sidecar. The merged CFG JSON embeds per-function topology, source locations, and call sites. Existing graph bundles can regenerate the source map and manifest with `python3 analysis/lightftp/build_coverage_bundle.py --output targets/lightftp/build-cov --source-dir targets/lightftp/build-cov/LightFTP/Source --manifest-only` from `fuzz/`.
+Coverage analysis is driven by a campaign-private MCP service. The supervisor
+starts `python -m coverage_analysis.server serve` before it enters the SUT network
+namespace, next to the private HC core. The service owns all parsed coverage,
+CFG, callgraph, handler, and protocol-graph state in memory; it starts empty and
+never reads campaign files on its own. Each coverage agent session gets
+`-c mcp_servers.coverage.*` overrides that launch the stateless
+`coverage_analysis.server stdio` bridge, so the user's Codex configuration is not
+modified. Set `[coverage].mcp_socket` to connect to a supervisor-provided service
+instead; `mcp_ready_timeout_secs` defaults to 30. PID 1 creates
+`coverage.output` and `protocol_generation.output` with campaign ownership before
+either service starts, so the MCP working directory and HC state stay writable
+after privileges drop. The analysis profile must use `provider = "codex"`; a
+wrapper executable that ignores its argv cannot register the bridge, so the stage
+rejects non-Codex providers instead of simulating tools with shell commands.
+A reusable analysis profile looks like this (the executable must forward the
+extra `-c` arguments; a wrapper that ignores its argv will not work):
 
-After a coverage snapshot is frozen, the fuzzer main thread measures it in Rust. That step reads `coverage.json`, the sealed graph JSON, and the accepted handler mapping. It does not start Python or `llvm-cov`. Reachable CFG blocks and direct callgraph edges form regions from known-zero branches and basic blocks. Covered or unknown paths break those regions. Optimized branch polarity is used only when successor coverage disambiguates it. Ambiguous conditions, absent CFGs, external calls, and indirect calls are `unknown` entries. `complete: false` means unresolved boundaries remain, even when `zero: true`. `handlers.json` and `regions.json` are frozen before the coverage agent is prompted, and the agent must not edit them.
+```toml
+[coverage]
+analysis_enabled = true
+analysis_profile = "codex-mcp"
 
-Coverage results must match the dispatched session, request, build, snapshot, and protocol. Invalid artifacts reject that request and leave the agent ready for the next snapshot. HC failures and timeouts pause that agent. Both agents record the same session phases and HC terminal observations in their own `session.jsonl`; coverage also records request events in `events.jsonl`. Stopping a worker closes only its terminal; the campaign runtime owns the shared HC core.
+[agents.profiles.codex-mcp]
+provider = "codex"
+executable = "/home/user/.nvm/current/bin/codex"
+model = "gpt-6-luna"
+args = ["-c", "model_reasoning_effort=max"]
+```
+
+Parsed data, the committed graph checkpoint, and `service.jsonl` call records
+live under `coverage.output/mcp-state/`; the socket and service log under
+`/tmp/mcn-mcp-*`. `service.jsonl` is the audit trail for agent tool calls.
+
+The service tool set is explicit: `load_profdata`, `load_cfg`, `load_callgraph`,
+`load_protocol`, `load_handlers`, `get_loaded_state`; five coverage views
+(`show_overview/module/file/handler/func_code_coverage`); `get_reachable_functions`,
+`get_reaching_handlers`, and `show_source_coverage`; and protocol-graph tools
+(`get_protocol_steps`, `get_step_dependencies`, `update_step_annotations`,
+`upsert_dependency`, `remove_dependency`, `begin_analysis`, `submit_proposal`).
+Unloaded data returns `not_loaded` with the load tool to call; mismatched builds
+return `incompatible_data`. Coverage counts come from the frozen
+`coverage.json` true/false source branches, not from reconstructed IR edges.
+
+After a coverage snapshot is frozen, the coverage agent loads that request's
+inputs, explores the handler and reachable-function summaries, and writes a
+proposal in a graph transaction. `submit_proposal` validates step IDs, handler
+associations, trace identity, and dependencies, then freezes `proposal.json`.
+Rust rechecks identity, party binding, the ordered trace hash, and the proposal
+content hash, commits the transaction through the service, and places the
+proposal in a one-slot mailbox. `regions.json`, `priority-delta.json`,
+`protocol-refined.json`, the Rust exploration graph, and trace selection are no
+longer produced or maintained by Rust.
+
+The synthesis stage consumes that proposal unchanged: it copies it to a new
+request directory and points the prompt at it instead of a receipt. Coverage
+mode never generates without a proposal. Autonomous mode (analysis disabled, or
+seedless bootstrap) asks the agent to write `proposal.draft.json`, run
+`python -m coverage_analysis.server proposal` to fill IDs and validate it, and
+then generate. Both modes publish `generator.py`, `params.schema.json`,
+`params.json`, and `result.json`; Rust validates the proposal, code, parameters,
+and identity in-process before publishing the generator. Failed or expired
+proposals are aborted and leave existing corpus entries untouched.
 
 The synthesizer prompts are Markdown MiniJinja templates in `prompts/`. They are embedded in the fuzzer at build time, so rebuild after editing them.
 
-Protocol, step and trace hash IDs use the first eight lowercase hexadecimal characters of SHA-256 throughout receipts, prompts, generator origins and evaluation artifacts. Trace hashing still uses full step digests before shortening its own output. RSC-generated step and diagnostic IDs likewise use eight hash characters after their kind prefix. Document/source integrity digests retain their full SHA-256 values.
+Protocol, step and trace hash IDs use the first eight lowercase hexadecimal characters of SHA-256 throughout proposals, prompts, generator origins and evaluation artifacts. Trace hashing still uses full step digests before shortening its own output. RSC-generated step and diagnostic IDs likewise use eight hash characters after their kind prefix. Document/source integrity digests retain their full SHA-256 values.
 
-`synthesis-init.md` establishes the campaign background, reference paths, party roles, workflow, and artifact contract. `synthesis-generation.md` supplies each receipt's task with the public Python API, prerequisite handling, SDK/mock guidance, worker lifecycle, and publication rules. Both receive the same read-only campaign context with absolute paths and execution budgets. Missing template variables fail rendering; completion JSON examples are serialized by Rust before injection.
+`synthesis-init.md` establishes the campaign background, reference paths, party roles, workflow, and artifact contract. `synthesis-generation.md` supplies each proposal's task with the public Python API, prerequisite handling, SDK/mock guidance, worker lifecycle, and publication rules. Both receive the same read-only campaign context with absolute paths and execution budgets. Missing template variables fail rendering; completion JSON examples are serialized by Rust before injection.
 
 Both prompts also inject the absolute path to [the protocol module skill](skills/protocol-modules/SKILL.md) and require the agent to read it before selecting libraries. It covers all ten ProFuzzBench protocols, with message/packet codecs, upstream/server SDKs, crypto helpers, import names, installed versions and limitations. Keep the skill and its references accessible at runtime. Evaluation fingerprints the skill directory along with the prompt templates, so changing its contents requires preparing a new evaluation task.
 
-Receipts contain the selected trace and relevant definitions, plus an absolute `model_path` for targeted prerequisite queries. They do not embed `model_snapshot`. The skill requires the agent to run [the fixed artifact validator](skills/protocol-modules/scripts/validate_generator.py) on `result.draft.json` before atomically publishing `result.json`. The agent additionally runs its bounded import probe. Fuzzer acceptance rechecks the completion IDs, parameter schema and values, and Python syntax and entrypoint in Rust using the RustPython compiler; it does not launch Python or run the generator or SUT.
+Proposals contain the ordered trace with per-step reasons and constraints, the selected definitions, handler references, dependencies, and document identities. They do not embed the full model. The skill requires the agent to run [the fixed artifact validator](skills/protocol-modules/scripts/validate_generator.py) on `result.draft.json` before atomically publishing `result.json`. The agent additionally runs its bounded import probe. Fuzzer acceptance rechecks the completion IDs, parameter schema and values, and Python syntax and entrypoint in Rust using the RustPython compiler; it does not launch Python or run the generator or SUT.
 
 The prepared environment is CPython 3.12 on Linux x86_64. Install its pinned dependencies into the campaign interpreter (the supplied campaigns use `.venv/bin/python`):
 
@@ -116,11 +173,11 @@ Coverage-analysis init and task prompts receive `[target].source_dir` as `SOURCE
 Synthesizer prompts do not receive that path, even when it is configured.
 Both prompts and the module skill prohibit reading SUT source or using SUT feature
 support or expected message acceptance to decide whether to generate. Protocol
-behavior comes from the receipt and RFCs; public generator API/SDK references and
-static artifact validation remain available. Runtime replies, failures and
+behavior comes from the proposal and RFCs; public generator API/SDK references
+and static artifact validation remain available. Runtime replies, failures and
 coverage are evaluated by the fuzzer after publication.
 
-`WORKSPACE` is the agent's fixed working directory (`protocol_generation.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its receipt, `generator.py`, parameter schema, initial params, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root.
+`WORKSPACE` is the agent's fixed working directory (`protocol_generation.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its proposal, `generator.py`, parameter schema, initial params, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root.
 
 When synthesis is enabled, `[parties]` and `protocol_generation.model` are required. A campaign that includes `[parties]` resolves those selectors against the model before cases start, even when synthesis is disabled. A missing model is an error. `sut` and `generator` are each a non-empty list of protocol party names or `"*"`. `"*"` means every model party not named by the other side. Parties in neither set stay unavailable. The removed `protocol_generation.bindings` table is a configuration error. The LightFTP campaign assigns the server parties to the SUT and the remaining parties to the generator.
 

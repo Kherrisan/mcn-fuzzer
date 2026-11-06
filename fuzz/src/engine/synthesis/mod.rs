@@ -1,12 +1,14 @@
 //! Asynchronous generator synthesis. At most one agent task is in flight.
 //!
-//! The background thread performs HC calls. LibAFL state is touched only on
-//! the fuzzer thread, at a case boundary.
+//! Coverage mode consumes a frozen proposal from the shared mailbox and gives
+//! it to the agent unchanged. Autonomous mode (analysis disabled, or seedless
+//! bootstrap) asks the agent to write and validate its own proposal first.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -22,11 +24,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
     agents::{command_line, CommandLine},
     app::config::{Campaign, ProtocolGenerationConfig},
+    coverage::proposal::ProposalMailbox,
     engine::input::{GeneratorInput, ParamValue},
     engine::stagnation::BitmapProgress,
-    protocol::{
-        write_receipt, Binding, IndexedModel, RandomTraceSelector, SelectionContext, TraceSelector,
-    },
+    protocol::{write_catalog, Binding, IndexedModel},
 };
 
 mod agent;
@@ -52,7 +53,7 @@ impl_serdeany!(TraceOrigin);
 
 pub(crate) use crate::agents::redact_text;
 use crate::agents::{
-    AgentClient, AgentFailure, AgentInit, AgentOutcome, SessionInit, TerminalFact, WorkerConfig,
+    AgentFailure, AgentInit, AgentOutcome, SessionInit, TerminalFact, WorkerConfig,
 };
 pub use crate::agents::{AgentSession, SessionPhase};
 
@@ -86,24 +87,57 @@ pub fn validate_generator_artifacts(
     protocol_id: &str,
     trace_id: &str,
 ) -> Result<ValidatedGenerator, String> {
-    GeneratorRequest {
-        id: request_id.to_string(),
-        output_dir: output_dir.to_path_buf(),
-        protocol_id: protocol_id.to_string(),
-        trace_id: trace_id.to_string(),
-    }
-    .accept()
+    artifacts::check(output_dir, request_id, protocol_id, trace_id, "").and_then(
+        |(result, params)| {
+            let published = output_dir.join("published");
+            if published.exists() {
+                return Err("published generator path already exists".to_string());
+            }
+            fs::create_dir_all(&published).map_err(|error| error.to_string())?;
+            fs::copy(
+                output_dir.join("generator.py"),
+                published.join("generator.py"),
+            )
+            .map_err(|error| error.to_string())?;
+            fs::copy(
+                output_dir.join("params.schema.json"),
+                published.join("params.schema.json"),
+            )
+            .map_err(|error| error.to_string())?;
+            let generator = fs::canonicalize(published.join("generator.py"))
+                .map_err(|error| error.to_string())?;
+            let added = result
+                .get("added_steps")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(ValidatedGenerator {
+                input: GeneratorInput::new(generator, params),
+                origin: TraceOrigin {
+                    protocol_id: protocol_id.to_string(),
+                    trace_id: trace_id.to_string(),
+                    step_ids: Vec::new(),
+                    added_steps: added,
+                },
+            })
+        },
+    )
 }
 
 /// Stage placed before mutation. Disabled campaigns do not load a model.
 pub struct GeneratorSynthesisStage {
     enabled: bool,
-    model: Option<IndexedModel>,
+    model: Option<Arc<IndexedModel>>,
     binding: Binding,
     config: ProtocolGenerationConfig,
     prompt_context: Option<SynthesisPromptContext>,
     output: PathBuf,
-    context: SelectionContext,
     inflight: bool,
     initialization_started: bool,
     initialized: bool,
@@ -122,32 +156,37 @@ pub struct GeneratorSynthesisStage {
     exited: bool,
     /// Env values used only to redact text before it is stored. Never written.
     secrets: Vec<String>,
-    graph: Option<std::sync::Arc<std::sync::Mutex<crate::protocol::ProtocolExplorationGraph>>>,
-    event_log: Option<crate::coverage::analysis::SharedLog>,
+    mailbox: ProposalMailbox,
+    analysis_enabled: bool,
 }
 
 impl GeneratorSynthesisStage {
-    pub fn from_campaign(campaign: &Campaign) -> Result<Self, Error> {
+    pub fn from_campaign(campaign: &Campaign, mailbox: ProposalMailbox) -> Result<Self, Error> {
+        let mut stage = Self::disabled(campaign, mailbox);
         if !campaign.protocol_generation.enabled {
-            return Ok(Self::disabled(campaign));
+            return Ok(stage);
         }
         let context = SynthesisPromptContext::from_campaign(campaign)?;
+        let catalog_model = context.model().clone();
+        let catalog_binding = context.binding().clone();
         let boot = crate::agents::current_boot().ok_or_else(|| {
             Error::unknown(
                 "protocol generation is enabled but the private HC core was not started"
                     .to_string(),
             )
         })?;
-        let mut stage = Self::disabled(campaign);
         stage.enabled = true;
-        stage.model = Some(context.model().clone());
-        stage.graph = Some(std::sync::Arc::new(std::sync::Mutex::new(
-            crate::protocol::ProtocolExplorationGraph::from_model(context.model()),
-        )));
+        stage.model = Some(Arc::new(context.model().clone()));
         stage.binding = context.binding().clone();
         stage.config = campaign.protocol_generation.clone();
         stage.prompt_context = Some(context);
         stage.session = boot.session.clone();
+        stage.analysis_enabled = campaign.coverage.analysis_enabled;
+        write_catalog(
+            &catalog_model,
+            &catalog_binding,
+            &campaign.protocol_generation.output.join("catalog.json"),
+        )?;
         let launched = command_line(
             campaign
                 .agents
@@ -167,7 +206,7 @@ impl GeneratorSynthesisStage {
         Ok(stage)
     }
 
-    fn disabled(campaign: &Campaign) -> Self {
+    fn disabled(campaign: &Campaign, mailbox: ProposalMailbox) -> Self {
         Self {
             enabled: false,
             model: None,
@@ -175,7 +214,6 @@ impl GeneratorSynthesisStage {
             config: campaign.protocol_generation.clone(),
             prompt_context: None,
             output: campaign.protocol_generation.output.clone(),
-            context: SelectionContext::default(),
             inflight: false,
             initialization_started: false,
             initialized: false,
@@ -191,40 +229,28 @@ impl GeneratorSynthesisStage {
             session_state: AgentSession::default(),
             exited: false,
             secrets: Vec::new(),
-            graph: None,
-            event_log: None,
+            mailbox,
+            analysis_enabled: campaign.coverage.analysis_enabled,
         }
     }
 
-    /// Graph shared with coverage analysis. Synthesis keeps using this instance.
-    pub fn shared_graph(
-        &self,
-    ) -> Option<std::sync::Arc<std::sync::Mutex<crate::protocol::ProtocolExplorationGraph>>> {
-        self.graph.clone()
-    }
-
-    pub fn set_event_log(&mut self, log: crate::coverage::analysis::SharedLog) {
-        self.event_log = Some(log);
-    }
-
     fn spawn_worker(&mut self, socket: PathBuf) -> Result<(), Error> {
-        self.worker = Some(
-            AgentClient::spawn(WorkerConfig {
-                thread_name: "mcn-synthesis",
-                socket,
-                terminal: "generator".into(),
-                init_timeout: Duration::from_secs(self.config.init_timeout_secs.max(1)),
-                task_timeout: Duration::from_secs(self.config.task_timeout_secs.max(1)),
-                secrets: self.secrets.clone(),
-            })
-            .map_err(|error| Error::unknown(format!("starting synthesis worker: {error}")))?,
-        );
+        let terminal = format!("synthesis-{}", std::process::id());
+        let client = Client::spawn(WorkerConfig {
+            thread_name: "generator-synthesis",
+            socket,
+            terminal,
+            init_timeout: Duration::from_secs(self.config.init_timeout_secs.max(1)),
+            task_timeout: Duration::from_secs(self.config.task_timeout_secs.max(1)),
+            secrets: self.secrets.clone(),
+        })
+        .map_err(|error| Error::unknown(format!("starting synthesis worker: {error}")))?;
+        self.worker = Some(client);
         Ok(())
     }
 
-    /// Queue initialization on the worker without waiting. No receipt is written.
     pub fn initialize(&mut self) -> Result<(), Error> {
-        if !self.enabled || self.initialization_started {
+        if !self.enabled || self.initialization_started || self.initialized {
             return Ok(());
         }
         let output_dir = self.output.join("init");
@@ -307,18 +333,15 @@ impl GeneratorSynthesisStage {
         F: FnMut(GeneratorInput, TraceOrigin) -> Result<bool, Error>,
     {
         self.wait_initialized()?;
-        self.dispatch_with(rand)?;
+        self.dispatch_with(rand, true)?;
         let deadline = Instant::now() + Duration::from_secs(self.config.task_timeout_secs.max(1));
         while Instant::now() < deadline {
             if let Some(outcome) = self.recv_one(Duration::from_millis(200)) {
                 if let Outcome::Artifact {
-                    result: Ok(ready),
-                    fact,
-                    ..
+                    result: Ok(ready), ..
                 } = outcome
                 {
                     self.finish_request(false);
-                    self.record_session("result", SessionPhase::Ready, &fact, None);
                     let kept = accept(ready.input, ready.origin)?;
                     if !kept {
                         return Err(Error::unknown(
@@ -338,17 +361,10 @@ impl GeneratorSynthesisStage {
                 }
                 if let Outcome::Artifact {
                     result: Err(reason),
-                    fact,
                     ..
                 } = outcome
                 {
                     self.finish_request(false);
-                    self.record_session(
-                        "blocked",
-                        SessionPhase::Ready,
-                        &fact,
-                        Some(reason.clone()),
-                    );
                     return Err(Error::unknown(format!(
                         "bootstrap synthesis failed: {reason}"
                     )));
@@ -356,12 +372,6 @@ impl GeneratorSynthesisStage {
             }
         }
         self.finish_request(true);
-        self.record_session(
-            "timeout",
-            SessionPhase::Paused,
-            &TerminalFact::default(),
-            Some("bootstrap synthesis produced no schedulable corpus".to_string()),
-        );
         Err(Error::unknown(
             "bootstrap synthesis produced no schedulable corpus".to_string(),
         ))
@@ -375,77 +385,83 @@ impl GeneratorSynthesisStage {
         self.worker.take();
     }
 
-    fn dispatch_with(&mut self, rand: &mut impl Rand) -> Result<(), Error> {
+    /// `allow_autonomous` is only true for the seedless bootstrap.
+    fn dispatch_with(&mut self, rand: &mut impl Rand, allow_autonomous: bool) -> Result<(), Error> {
         if !self.enabled || !self.initialized || self.paused || self.inflight {
             return Ok(());
         }
         let Some(model) = self.model.as_ref() else {
             return Ok(());
         };
-        let trace = if let Some(graph) = &self.graph {
-            let report = graph
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .select(
-                    model,
-                    &self.binding,
-                    rand,
-                    &self.context,
-                    self.config.sample_attempts,
-                    self.config.trace_len_min,
-                    self.config.trace_len_max,
-                );
-            if let Some(log) = &self.event_log {
-                let mut log = log.lock().unwrap_or_else(|error| error.into_inner());
-                if let Err(error) = crate::coverage::analysis::record_selection(&mut log, &report) {
-                    log::error!("coverage analysis event log failed: {error}");
-                }
-            }
-            report.trace
+        let proposal = if self.analysis_enabled && !allow_autonomous {
+            let Some(proposal) = self.mailbox.take() else {
+                return Ok(());
+            };
+            Some(proposal)
         } else {
-            RandomTraceSelector.select(
-                model,
-                &self.binding,
-                rand,
-                &self.context,
-                self.config.sample_attempts,
-                self.config.trace_len_min,
-                self.config.trace_len_max,
-            )
+            None
         };
-        let Some(trace) = trace else {
-            return Ok(());
-        };
-        let request = format!("{:016x}", rand.next());
-        let output_dir = self.output.join("requests").join(&request);
-        if output_dir.exists() {
-            return Err(Error::illegal_state(format!(
-                "synthesis request {} already exists",
-                output_dir.display()
-            )));
-        }
-        fs::create_dir_all(&output_dir)?;
-        write_receipt(
-            &output_dir.join("receipt.json"),
-            model,
-            &self.binding,
-            &trace,
-        )?;
-        self.context.attempted.insert(trace.id.0.clone());
-        self.context.selections += 1;
-        self.context.by_trace.insert(trace.id.0.clone(), 1);
+        let autonomous = proposal.is_none();
+        let (request, output_dir, proposal_id, trace_id, session, build, snapshot) =
+            if let Some(accepted) = &proposal {
+                let request = accepted.proposal.proposal_id.clone();
+                let output_dir = self.output.join("requests").join(&request);
+                if output_dir.exists() {
+                    return Err(Error::illegal_state(format!(
+                        "synthesis request {} already exists",
+                        output_dir.display()
+                    )));
+                }
+                fs::create_dir_all(&output_dir)?;
+                fs::copy(&accepted.path, output_dir.join("proposal.json"))
+                    .map_err(|error| Error::unknown(format!("copying proposal: {error}")))?;
+                (
+                    request,
+                    output_dir,
+                    Some(accepted.proposal.proposal_id.clone()),
+                    Some(accepted.proposal.trace_id.clone()),
+                    self.session.clone(),
+                    accepted.proposal.build.clone(),
+                    accepted.proposal.snapshot.clone(),
+                )
+            } else {
+                let request = format!("{:016x}", rand.next());
+                let output_dir = self.output.join("requests").join(&request);
+                if output_dir.exists() {
+                    return Err(Error::illegal_state(format!(
+                        "synthesis request {} already exists",
+                        output_dir.display()
+                    )));
+                }
+                fs::create_dir_all(&output_dir)?;
+                (
+                    request,
+                    output_dir,
+                    None,
+                    None,
+                    self.session.clone(),
+                    String::new(),
+                    String::new(),
+                )
+            };
         let generation = GeneratorRequest {
             id: request.clone(),
             output_dir,
             protocol_id: model.protocol_id.clone(),
-            trace_id: trace.id.0.clone(),
+            session,
+            build,
+            snapshot,
+            proposal_id,
+            trace_id,
+            model: Arc::clone(model),
+            binding: self.binding.clone(),
+            autonomous,
         };
         let prompt = generation.prompt(
             &self.mode_hint,
             self.prompt_context.as_ref().ok_or_else(|| {
                 Error::illegal_state("synthesis prompt context is missing".to_string())
             })?,
-            &trace,
         )?;
         self.worker
             .as_ref()
@@ -482,7 +498,6 @@ impl<S> Restartable<S> for GeneratorSynthesisStage {
     fn should_restart(&mut self, _state: &mut S) -> Result<bool, Error> {
         Ok(true)
     }
-
     fn clear_progress(&mut self, _state: &mut S) -> Result<(), Error> {
         Ok(())
     }
@@ -535,9 +550,23 @@ where
         } else if !self.inflight
             && state
                 .metadata_or_insert_with(BitmapProgress::default)
-                .take_synthesis_request()
+                .synthesis_due()
         {
-            self.dispatch_with(state.rand_mut())?;
+            // Coverage mode must keep the trigger pending until a proposal
+            // arrives; taking it early would drop the only dispatch signal.
+            if self.analysis_enabled && self.mailbox.peek().is_none() {
+                self.record_session(
+                    "waiting_proposal",
+                    SessionPhase::Ready,
+                    &TerminalFact::default(),
+                    Some("synthesis trigger retained until a proposal is accepted".to_string()),
+                );
+            } else {
+                state
+                    .metadata_or_insert_with(BitmapProgress::default)
+                    .take_synthesis_request();
+                self.dispatch_with(state.rand_mut(), false)?;
+            }
         }
         state
             .metadata_or_insert_with(BitmapProgress::default)
@@ -631,7 +660,6 @@ impl GeneratorSynthesisStage {
                 ..
             } => {
                 self.finish_request(false);
-                self.context.generated_err += 1;
                 self.record_session("blocked", SessionPhase::Ready, &fact, Some(reason.clone()));
                 self.note_failure(state, reason);
                 Ok(())
@@ -659,7 +687,6 @@ impl GeneratorSynthesisStage {
                 self.record_session("result", SessionPhase::Ready, &fact, None);
                 match fuzzer.evaluate_input(state, executor, manager, &ready.input) {
                     Ok((_exit, corpus_id)) => {
-                        self.context.generated_ok += 1;
                         if let Some(id) = corpus_id {
                             if let Ok(case) = state.corpus_mut().get(id) {
                                 case.borrow_mut().add_metadata(ready.origin.clone());
@@ -712,13 +739,12 @@ impl GeneratorSynthesisStage {
         let progress = state.metadata_or_insert_with(SynthesisProgress::default);
         progress.failures.push(reason);
         progress.paused = self.paused;
-        progress.attempted.clone_from(&self.context.attempted);
         progress.session = self.session_state.clone();
     }
 
     fn remember<S: HasMetadata>(&mut self, state: &mut S, ready: &ReadyInput) {
         let progress = state.metadata_or_insert_with(SynthesisProgress::default);
-        progress.attempted.clone_from(&self.context.attempted);
+        progress.attempted.insert(ready.origin.trace_id.clone());
         progress.published.insert(
             ready.origin.trace_id.clone(),
             ready.input.generator.display().to_string(),

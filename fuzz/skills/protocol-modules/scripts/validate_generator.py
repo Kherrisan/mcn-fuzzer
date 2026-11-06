@@ -31,10 +31,12 @@ def read_json(path):
         raise ValidationError(f"{Path(path).name}: {exc}") from exc
 
 
-def check_result(result, request_id, protocol_id, trace_id):
+def check_result(result, request_id, protocol_id, trace_id, proposal_id=""):
     expected = {"request_id": request_id, "protocol_id": protocol_id, "trace_id": trace_id}
+    if proposal_id:
+        expected["proposal_id"] = proposal_id
     if not isinstance(result, dict) or any(result.get(k) != v for k, v in expected.items()):
-        raise ValidationError("result.json does not match the dispatched trace")
+        raise ValidationError("result.json does not match the dispatched proposal")
     if result.get("status") != "ok":
         raise ValidationError(str(result.get("error") or "generator synthesis failed"))
     added = result.get("added_steps")
@@ -191,11 +193,11 @@ def check_imports(generator, pythonpath, timeout):
 
 
 def validate(output_dir, request_id, protocol_id, trace_id, result_path=None,
-             *, import_check=False, pythonpath="", timeout=5.0):
+             *, import_check=False, pythonpath="", timeout=5.0, proposal_id=""):
     output_dir = Path(output_dir).resolve()
     checks = []
     result = read_json(result_path or output_dir / "result.json")
-    check_result(result, request_id, protocol_id, trace_id)
+    check_result(result, request_id, protocol_id, trace_id, proposal_id)
     checks.append("completion IDs, status and added_steps")
     schema = read_json(output_dir / "params.schema.json")
     params = read_json(output_dir / "params.json")
@@ -217,7 +219,8 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--request-id", required=True)
     parser.add_argument("--protocol-id", required=True)
-    parser.add_argument("--trace-id", required=True)
+    parser.add_argument("--trace-id")
+    parser.add_argument("--proposal", help="frozen proposal.json; supplies protocol, trace, and proposal ids")
     parser.add_argument("--result", type=Path, help="draft completion JSON; default: OUTPUT_DIR/result.json")
     parser.add_argument("--check-imports", action="store_true")
     parser.add_argument("--pythonpath", default=os.environ.get("PYTHONPATH", ""))
@@ -226,9 +229,22 @@ def main():
     if not 0 < args.import_timeout <= 60:
         parser.error("--import-timeout must be positive and at most 60 seconds")
     try:
-        report = validate(args.output_dir, args.request_id, args.protocol_id, args.trace_id,
-                          args.result, import_check=args.check_imports,
-                          pythonpath=args.pythonpath, timeout=args.import_timeout)
+        proposal_id = ""
+        if args.proposal:
+            proposal = read_json(args.proposal)
+            if proposal.get("protocol_id") != args.protocol_id:
+                raise ValidationError("proposal protocol_id does not match --protocol-id")
+            args.trace_id = proposal.get("trace_id")
+            proposal_id = proposal.get("proposal_id") or ""
+            if not args.trace_id or not proposal_id:
+                raise ValidationError("proposal is missing trace_id or proposal_id")
+        if not args.trace_id:
+            raise ValidationError("either --proposal or --trace-id is required")
+        report = validate(args.output_dir, args.request_id, args.protocol_id,
+                          args.trace_id, args.result,
+                          import_check=args.check_imports,
+                          pythonpath=args.pythonpath, timeout=args.import_timeout,
+                          proposal_id=proposal_id)
     except (ValidationError, RecursionError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         return 1

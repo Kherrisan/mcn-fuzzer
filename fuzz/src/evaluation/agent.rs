@@ -189,8 +189,8 @@ impl<'a> DirectAgentSession<'a> {
             )
         })?;
         fs::copy(
-            self.task.prepared().join("receipt.json"),
-            request_dir.join("receipt.json"),
+            self.task.prepared().join("proposal.json"),
+            request_dir.join("proposal.json"),
         )
         .map_err(|error| {
             fail(

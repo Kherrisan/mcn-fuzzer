@@ -286,9 +286,6 @@ profile = "stub"
 output = "{dir}/synthesis"
 init_timeout_secs = {init_timeout}
 task_timeout_secs = 30
-trace_len_min = 1
-trace_len_max = 1
-sample_attempts = 32
 
 [parties]
 sut = ["server-PI", "server-DTP", "server-PI A", "server-PI B", "server-DTP A", "server-DTP B"]

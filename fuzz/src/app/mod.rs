@@ -145,27 +145,10 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
         .transpose()?;
     require_exec(&campaign.target.binary)?;
     let mut session = Session::open(campaign)?;
-    let mut synthesis = GeneratorSynthesisStage::from_campaign(campaign)?;
-    let mut analysis = crate::coverage::schedule::CoverageAnalysisStage::from_campaign(campaign)?;
-    if let Some(graph) = synthesis.shared_graph() {
-        analysis.use_graph(graph);
-    } else if campaign.coverage.analysis_enabled {
-        analysis.load_graph()?;
-    }
-    if let Some(log) = analysis.event_log() {
-        synthesis.set_event_log(log);
-    } else if synthesis.shared_graph().is_some() {
-        let path = campaign
-            .protocol_generation
-            .output
-            .join("analysis")
-            .join("events.jsonl");
-        synthesis.set_event_log(crate::coverage::analysis::shared_log(
-            path,
-            "synthesis",
-            "synthesis-only",
-        ));
-    }
+    let mailbox = crate::coverage::proposal::ProposalMailbox::default();
+    let mut synthesis = GeneratorSynthesisStage::from_campaign(campaign, mailbox.clone())?;
+    let mut analysis =
+        crate::coverage::schedule::CoverageAnalysisStage::from_campaign(campaign, mailbox)?;
     if campaign.protocol_generation.enabled {
         synthesis.initialize()?;
     }
@@ -247,6 +230,9 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
         }
         result.and_then(|()| session.mgr.report_progress(&mut session.state))
     };
+    // Stop agent workers before their MCP service, then release the shared core.
+    drop(stages);
+    crate::coverage::mcp::shutdown();
     crate::agents::shutdown_private_core();
     loop_result?;
     if campaign.coverage.enabled {

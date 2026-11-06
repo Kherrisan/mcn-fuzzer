@@ -30,7 +30,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::runtime::{drop_privileges, user_home, TargetIdentity};
+use crate::runtime::{drop_privileges, prepare_owned_dir, user_home, TargetIdentity};
 
 #[derive(Clone, Debug)]
 pub struct GenerationRequest {
@@ -99,6 +99,7 @@ pub fn boot_if_requested(identity: &TargetIdentity) -> Result<(), libafl::Error>
         config_dir: request.output.join("hc-config"),
         socket,
     };
+    prepare_owned_dir(&request.output, identity)?;
     let _ = fs::write(
         request.output.join("private-hc-runtime"),
         plan.runtime_dir.display().to_string(),

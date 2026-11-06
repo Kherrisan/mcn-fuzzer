@@ -12,9 +12,10 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     app::config::Campaign,
+    coverage::proposal::{proposal_id, Proposal, ProposalGoal, ProposalStep},
     engine::executor::{restore_tree, write_server_config},
     engine::synthesis::{ExecutionMode, SynthesisPromptContext},
-    protocol::{covers_sut_and_generator, write_receipt, StepTrace},
+    protocol::{covers_sut_and_generator, StepTrace},
 };
 
 use super::config::Suite;
@@ -31,6 +32,7 @@ pub struct Task {
     pub logical_session: String,
     pub protocol_id: String,
     pub trace_id: String,
+    pub proposal_id: String,
     pub step_names: Vec<String>,
     pub digest: String,
     pub sources: Sources,
@@ -208,11 +210,14 @@ pub fn prepare_instance(
         context.model().protocol_id,
         instance.display()
     ));
-    write_receipt(
-        &instance.join("prepared/receipt.json"),
-        context.model(),
-        context.binding(),
-        &trace,
+    let mut proposal = evaluation_proposal(context.model(), &trace, &logical_session, &request_id);
+    proposal.proposal_id = proposal_id(&proposal).map_err(|error| error.to_string())?;
+    fs::write(
+        instance.join("prepared/proposal.json"),
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&proposal).map_err(|error| error.to_string())?
+        ),
     )
     .map_err(|error| error.to_string())?;
     let trace_doc = serde_json::json!({
@@ -237,7 +242,14 @@ pub fn prepare_instance(
         .initialization_prompt(&logical_session, false, &init_dir)
         .map_err(|error| error.to_string())?;
     let generation = context
-        .generation_prompt(&request_dir, &request_id, "", &trace)
+        .generation_prompt(
+            &request_dir,
+            &request_id,
+            &logical_session,
+            "",
+            Some(&instance.join("prepared/proposal.json")),
+            false,
+        )
         .map_err(|error| error.to_string())?;
     fs::write(instance.join("prepared/prompts/init.md"), init)
         .map_err(|error| error.to_string())?;
@@ -281,7 +293,7 @@ pub fn prepare_instance(
             0,
             vec![
                 instance.join("trace.json"),
-                instance.join("prepared/receipt.json"),
+                instance.join("prepared/proposal.json"),
                 instance.join("prepared/prompts/init.md"),
                 instance.join("prepared/prompts/generation.md"),
             ],
@@ -301,6 +313,7 @@ pub fn prepare_instance(
         logical_session,
         protocol_id: context.model().protocol_id.clone(),
         trace_id: trace.id.0,
+        proposal_id: proposal.proposal_id.clone(),
         step_names: names,
         digest,
         sources,
@@ -336,6 +349,73 @@ pub fn prepare_instance(
     };
     task.save()?;
     Ok(task)
+}
+
+/// Fixed evaluation trace expressed as a proposal fixture (no MCP, no handlers).
+fn evaluation_proposal(
+    model: &crate::protocol::IndexedModel,
+    trace: &StepTrace,
+    session: &str,
+    request: &str,
+) -> Proposal {
+    let snapshot = model.snapshot();
+    let steps = trace
+        .steps
+        .iter()
+        .map(|step| ProposalStep {
+            step_id: step.id().0,
+            handler_ids: Vec::new(),
+            reason: "fixed evaluation step".to_string(),
+            constraints: Vec::new(),
+        })
+        .collect();
+    let definitions: Vec<_> = trace
+        .steps
+        .iter()
+        .map(|step| {
+            serde_json::json!({
+                "step_id": step.id().0,
+                "source_id": step.source_id,
+                "name": step.name,
+                "message": step.message_name,
+                "channel": step.channel_name,
+                "sender": step.sender_name,
+                "receiver": step.receiver_name,
+                "condition": step.condition,
+            })
+        })
+        .collect();
+    let documents = snapshot
+        .get("meta")
+        .and_then(|meta| meta.get("documents"))
+        .cloned()
+        .unwrap_or(serde_json::Value::Array(Vec::new()));
+    Proposal {
+        version: 1,
+        proposal_id: String::new(),
+        origin: "autonomous".to_string(),
+        session: session.to_string(),
+        request_id: request.to_string(),
+        build: String::new(),
+        snapshot: String::new(),
+        protocol_id: model.protocol_id.clone(),
+        graph_revision: 0,
+        trace_id: trace.id.0.clone(),
+        goal: ProposalGoal {
+            handler_ids: Vec::new(),
+            reason: "fixed evaluation trace".to_string(),
+        },
+        trace: steps,
+        context: serde_json::json!({
+            "steps": definitions,
+            "messages": snapshot.get("messages").cloned().unwrap_or_default(),
+            "channels": snapshot.get("channels").cloned().unwrap_or_default(),
+            "parties": snapshot.get("parties").cloned().unwrap_or_default(),
+            "handlers": [],
+            "dependencies": snapshot.get("step_dependencies").cloned().unwrap_or_default(),
+            "documents": documents,
+        }),
+    }
 }
 
 pub fn trace_from_names(

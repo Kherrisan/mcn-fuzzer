@@ -5,10 +5,10 @@
 //! main execution counter. Raw profiles stay mapped for the whole batch and
 //! are replaced only after that batch's forkserver has exited.
 
-pub mod analysis;
 pub mod capture;
-mod graphs;
-pub(crate) mod measure;
+pub mod events;
+pub mod mcp;
+pub mod proposal;
 pub mod schedule;
 
 use std::{

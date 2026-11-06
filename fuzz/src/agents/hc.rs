@@ -335,16 +335,22 @@ fn apply_prompt(text: &str) -> Result<(), String> {
     };
     let request = request.trim();
     if text.contains("# Coverage analysis request") {
-        let mut result: Value = serde_json::from_slice(
-            &std::fs::read(root.join("input.json")).map_err(|error| error.to_string())?,
+        // Mock requests only need a terminal result; the MCP service is not
+        // available in this in-process test double.
+        let request: Value = serde_json::from_slice(
+            &std::fs::read(root.join("request.json")).map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-        result["status"] = json!("ok");
-        atomic_write(
-            &root.join("protocol-refined.json"),
-            &json!({"step_dependencies": []}),
-        )?;
-        atomic_write(&root.join("priority-delta.json"), &json!({"steps": []}))?;
+        let identity = request.get("identity").cloned().unwrap_or_default();
+        let result = json!({
+            "request_id": identity.get("request_id").cloned().unwrap_or_default(),
+            "session": identity.get("session").cloned().unwrap_or_default(),
+            "build": identity.get("build").cloned().unwrap_or_default(),
+            "snapshot": identity.get("snapshot").cloned().unwrap_or_default(),
+            "protocol_id": identity.get("protocol_id").cloned().unwrap_or_default(),
+            "status": "no_proposal",
+            "error": "mock core does not call MCP tools",
+        });
         return atomic_write(&root.join("result.json"), &result);
     }
     let mode = text

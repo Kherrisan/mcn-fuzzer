@@ -348,6 +348,21 @@ pub fn ensure_output_accessible(path: &Path, identity: &TargetIdentity) -> Resul
     Ok(())
 }
 
+/// Create an output directory owned by the campaign account.
+///
+/// PID 1 is still root here. The directory must exist before a service or HC
+/// child uses it as a working directory or writes a runtime record into it.
+pub(crate) fn prepare_owned_dir(path: &Path, identity: &TargetIdentity) -> Result<(), Error> {
+    use std::os::unix::fs::{chown, PermissionsExt};
+    fs::create_dir_all(path)
+        .map_err(|error| Error::unknown(format!("creating {}: {error}", path.display())))?;
+    chown(path, Some(identity.uid), Some(identity.gid))
+        .map_err(|error| Error::unknown(format!("chown {}: {error}", path.display())))?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+        .map_err(|error| Error::unknown(format!("chmod {}: {error}", path.display())))?;
+    Ok(())
+}
+
 /// Which side of the PID-namespace fork this process is.
 pub enum Role {
     /// Outer supervisor. The PID 1 child has already exited.
@@ -540,6 +555,7 @@ fn child_setup(
     mount_private_ipc(identity)?;
     if generation {
         crate::agents::boot_if_requested(identity)?;
+        crate::coverage::mcp::boot_if_requested(identity)?;
         nix::sched::unshare(CloneFlags::CLONE_NEWNET).map_err(|error| {
             Error::unknown(format!("PID 1 unshare(CLONE_NEWNET) failed: {error}"))
         })?;

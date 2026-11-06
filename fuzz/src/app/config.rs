@@ -249,6 +249,12 @@ pub struct CoverageConfig {
     pub cfg_dir: PathBuf,
     #[serde(default)]
     pub build_manifest: PathBuf,
+    /// Supervisor-provided MCP endpoint. Absent starts a private service.
+    #[serde(default)]
+    pub mcp_socket: Option<PathBuf>,
+    /// How long to wait for the MCP service socket, in seconds.
+    #[serde(default = "default_mcp_ready")]
+    pub mcp_ready_timeout_secs: u64,
     /// Runtime-only CLI override. Full JSON export is off unless requested on the command line.
     #[serde(skip)]
     pub export_json: bool,
@@ -272,6 +278,8 @@ impl Default for CoverageConfig {
             callgraph_dot: PathBuf::new(),
             cfg_dir: PathBuf::new(),
             build_manifest: PathBuf::new(),
+            mcp_socket: None,
+            mcp_ready_timeout_secs: default_mcp_ready(),
             export_json: false,
         }
     }
@@ -328,16 +336,8 @@ fn default_task_timeout() -> u64 {
     600
 }
 
-fn default_trace_min() -> usize {
-    1
-}
-
-fn default_trace_max() -> usize {
-    8
-}
-
-fn default_sample_attempts() -> u32 {
-    64
+fn default_mcp_ready() -> u64 {
+    30
 }
 
 /// Optional protocol-driven generator synthesis. Omitted or disabled leaves the campaign unchanged.
@@ -363,12 +363,27 @@ pub struct ProtocolGenerationConfig {
     pub init_timeout_secs: u64,
     #[serde(default = "default_task_timeout")]
     pub task_timeout_secs: u64,
-    #[serde(default = "default_trace_min")]
-    pub trace_len_min: usize,
-    #[serde(default = "default_trace_max")]
-    pub trace_len_max: usize,
-    #[serde(default = "default_sample_attempts")]
-    pub sample_attempts: u32,
+    /// Rejected. Traces now come from a proposal.
+    #[serde(
+        default,
+        rename = "trace_len_min",
+        deserialize_with = "reject_legacy_trace"
+    )]
+    pub(crate) _legacy_trace_min: (),
+    /// Rejected. Traces now come from a proposal.
+    #[serde(
+        default,
+        rename = "trace_len_max",
+        deserialize_with = "reject_legacy_trace"
+    )]
+    pub(crate) _legacy_trace_max: (),
+    /// Rejected. Traces now come from a proposal.
+    #[serde(
+        default,
+        rename = "sample_attempts",
+        deserialize_with = "reject_legacy_trace"
+    )]
+    pub(crate) _legacy_sample_attempts: (),
     /// Rejected. The executable now lives on `[agents].hc_executable`.
     #[serde(
         default,
@@ -380,6 +395,16 @@ pub struct ProtocolGenerationConfig {
 
 fn default_hc() -> PathBuf {
     PathBuf::from("hc")
+}
+
+fn reject_legacy_trace<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(
+        "protocol_generation trace selection settings are obsolete; traces come from a proposal",
+    ))
 }
 
 fn reject_legacy_hc<'de, D>(deserializer: D) -> Result<(), D::Error>
@@ -568,9 +593,9 @@ impl Default for ProtocolGenerationConfig {
             _legacy_bindings: (),
             init_timeout_secs: default_init_timeout(),
             task_timeout_secs: default_task_timeout(),
-            trace_len_min: default_trace_min(),
-            trace_len_max: default_trace_max(),
-            sample_attempts: default_sample_attempts(),
+            _legacy_trace_min: (),
+            _legacy_trace_max: (),
+            _legacy_sample_attempts: (),
             _legacy_hc: (),
         }
     }
@@ -657,6 +682,9 @@ impl Campaign {
         }
         if !campaign.coverage.build_manifest.as_os_str().is_empty() {
             campaign.coverage.build_manifest = resolve(&base, &campaign.coverage.build_manifest);
+        }
+        if let Some(socket) = &campaign.coverage.mcp_socket {
+            campaign.coverage.mcp_socket = Some(resolve(&base, socket));
         }
         if !campaign.agents.hc_executable.as_os_str().is_empty() {
             campaign.agents.hc_executable = resolve(&base, &campaign.agents.hc_executable);

@@ -1,3 +1,5 @@
+> **Superseded by [coverage-mcp-proposal.md](coverage-mcp-proposal.md).** Rust exploration graph, priority deltas, region measurement, and receipt selection were removed; the MCP service owns analysis state and emits proposals.
+
 # 将 coverage measure 迁移到 Rust，并验证分析结果应用
 
 ## 1. 目标与问题背景

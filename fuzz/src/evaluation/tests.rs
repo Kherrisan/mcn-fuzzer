@@ -293,9 +293,9 @@ fn prompts_share_a_template_and_name_the_sut_owner() {
             let trace = StepTrace::new(context.model().steps.clone());
             assert_eq!(context.model().protocol_id.len(), 8);
             assert_eq!(trace.id.0.len(), 8);
-            assert!(trace.step_ids.iter().all(|id| id.0.len() == 8));
+            assert!(trace.steps.iter().all(|step| step.id().0.len() == 8));
             let generation = context
-                .generation_prompt(&dir.join("request"), "req", "", &trace)
+                .generation_prompt(&dir.join("request"), "req", "sess", "", None, false)
                 .unwrap();
             let skill = context.generator_skill();
             assert!(skill.is_absolute());
@@ -309,7 +309,7 @@ fn prompts_share_a_template_and_name_the_sut_owner() {
                     assert!(!prompt.contains(&source.display().to_string()));
                 }
                 assert!(prompt.contains("Do not read or search the SUT source code"));
-                assert!(prompt.contains("Generate protocol behavior solely from the receipt"));
+                assert!(prompt.contains("Generate protocol behavior solely from the proposal"));
                 assert!(prompt.contains("Do not assess which features the SUT implements or omits"));
                 assert!(prompt.contains("not for predicted SUT rejection"));
                 assert!(prompt.contains(&format!(
@@ -723,7 +723,7 @@ fn lightftp_suite_prepares_every_case_without_rewriting_the_campaign() {
             .collect();
         assert_eq!(listed, task.step_names);
         assert!(!task.workspace().join("requests").exists());
-        assert!(task.prepared().join("receipt.json").is_file());
+        assert!(task.prepared().join("proposal.json").is_file());
         let prompt = fs::read_to_string(task.prepared().join("prompts/generation.md")).unwrap();
         assert!(prompt.contains("evaluation-managed SUT"));
         assert!(!prompt.contains("secret"));
@@ -753,8 +753,8 @@ fn handwritten_lightftp_generators_replay() {
         let dir = task.request_dir();
         fs::create_dir_all(&dir).unwrap();
         fs::copy(
-            task.prepared().join("receipt.json"),
-            dir.join("receipt.json"),
+            task.prepared().join("proposal.json"),
+            dir.join("proposal.json"),
         )
         .unwrap();
         fs::write(dir.join("generator.py"), &generator).unwrap();
@@ -780,6 +780,7 @@ fn handwritten_lightftp_generators_replay() {
                 "request_id": task.request_id,
                 "protocol_id": task.protocol_id,
                 "trace_id": task.trace_id,
+                "proposal_id": task.proposal_id,
                 "status": "ok",
                 "added_steps": [],
             }))
