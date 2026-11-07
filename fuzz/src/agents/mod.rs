@@ -18,6 +18,32 @@ pub(crate) use worker::{
 
 pub(crate) const INIT_TIMEOUT_ATTEMPTS: u32 = 3;
 
+/// Build a readable HC terminal name scoped to the directory containing the
+/// campaign configuration.
+pub(crate) fn campaign_terminal_name(kind: &str, campaign_base: &Path) -> String {
+    let raw_id = campaign_base
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("campaign");
+    let campaign_id: String = raw_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let campaign_id = campaign_id.trim_matches('-');
+    let campaign_id = if campaign_id.is_empty() {
+        "campaign"
+    } else {
+        campaign_id
+    };
+    format!("mcn-fuzzer-{kind}-{campaign_id}")
+}
+
 pub use hc::{HcClient, HcError, MockCore, TerminalInfo};
 pub use profile::{command_line, CommandLine};
 

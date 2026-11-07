@@ -401,7 +401,7 @@ impl CoverageAnalysisStage {
     }
 
     fn spawn_worker(&mut self, socket: PathBuf) -> Result<(), Error> {
-        let terminal = format!("coverage-{}", std::process::id());
+        let terminal = crate::agents::campaign_terminal_name("coverage", &self.campaign.base);
         let client = Client::spawn(WorkerConfig {
             thread_name: "coverage-analysis",
             socket,

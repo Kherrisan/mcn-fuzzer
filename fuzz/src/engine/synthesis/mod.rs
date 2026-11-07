@@ -138,6 +138,7 @@ pub struct GeneratorSynthesisStage {
     config: ProtocolGenerationConfig,
     prompt_context: Option<SynthesisPromptContext>,
     output: PathBuf,
+    campaign_base: PathBuf,
     inflight: bool,
     initialization_started: bool,
     initialized: bool,
@@ -214,6 +215,7 @@ impl GeneratorSynthesisStage {
             config: campaign.protocol_generation.clone(),
             prompt_context: None,
             output: campaign.protocol_generation.output.clone(),
+            campaign_base: campaign.base.clone(),
             inflight: false,
             initialization_started: false,
             initialized: false,
@@ -235,7 +237,7 @@ impl GeneratorSynthesisStage {
     }
 
     fn spawn_worker(&mut self, socket: PathBuf) -> Result<(), Error> {
-        let terminal = format!("synthesis-{}", std::process::id());
+        let terminal = crate::agents::campaign_terminal_name("synthesis", &self.campaign_base);
         let client = Client::spawn(WorkerConfig {
             thread_name: "generator-synthesis",
             socket,
