@@ -1,7 +1,7 @@
 //! One background HC terminal per agent. Stages exchange typed commands/outcomes;
 //! protocol-specific preparation and artifact acceptance are supplied as traits.
 
-use super::{wait_file, AgentFailure, CommandLine, HcClient, TerminalFact};
+use super::{AgentFailure, CommandLine, HcClient, TerminalFact};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -148,7 +148,7 @@ struct Worker<I: AgentInit, T: AgentTask> {
 
 impl<I: AgentInit, T: AgentTask> Worker<I, T> {
     fn run(mut self) {
-        let mut client = match HcClient::connect(&self.config.socket, Duration::from_secs(5)) {
+        let mut client = match HcClient::connect(&self.config.socket, Duration::from_secs(30)) {
             Ok(client) => client,
             Err(error) => {
                 let _ = self.outcomes.send(AgentOutcome::Failed(AgentFailure::new(
@@ -218,14 +218,89 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
             }
             Err(error) => return self.failure(error.message, client),
         }
+        if launch.codex {
+            // CLI 0.166.0 has no --name. `/rename <name>` calls thread/name/set.
+            // A missing plain-text marker still continues into the prompt.
+            // A dead terminal is an init timeout so synthesis restarts the attempt.
+            let ui_deadline =
+                std::time::Instant::now() + self.config.init_timeout.min(Duration::from_secs(15));
+            if let Err(reason) = self.wait_for_screen(
+                client,
+                ui_deadline,
+                codex_composer_ready,
+                "the Codex composer to accept input",
+            ) {
+                if codex_composer_lost(&reason) {
+                    return self.failure(
+                        format!(
+                            "timed out waiting for the Codex composer to accept input on {}: {reason}",
+                            self.config.terminal
+                        ),
+                        client,
+                    );
+                }
+            }
+            if let Some(reason) = self.codex_terminal_closed(client) {
+                return self.failure(
+                    format!(
+                        "timed out waiting for the Codex composer to accept input on {}: {reason}",
+                        self.config.terminal
+                    ),
+                    client,
+                );
+            }
+            let rename = format!("/rename {}", self.initial_terminal);
+            if let Err(error) = client.send(&self.config.terminal, &rename) {
+                return self.failure(
+                    format!(
+                        "timed out waiting for the Codex composer to accept input on {}: {}",
+                        self.config.terminal, error.message
+                    ),
+                    client,
+                );
+            }
+        }
         if let Err(error) = client.send(&self.config.terminal, prompt) {
             return self.failure(error.message, client);
         }
-        if let Err(reason) = wait_file(
-            &context.output_dir().join("ready.json"),
-            self.config.init_timeout,
-        ) {
-            return self.failure(reason, client);
+        let ready_path = context.output_dir().join("ready.json");
+        let deadline = std::time::Instant::now() + self.config.init_timeout;
+        loop {
+            if ready_path.is_file() {
+                break;
+            }
+            match client.get(&self.config.terminal) {
+                Ok(info) if matches!(info.state.as_str(), "finished" | "exited" | "dead") => {
+                    let detail = info
+                        .error
+                        .or(info.status)
+                        .unwrap_or_else(|| "no terminal error was reported".to_string());
+                    return self.failure(
+                        format!(
+                            "agent terminal {} exited during initialization ({}): {detail}",
+                            info.name, info.state
+                        ),
+                        client,
+                    );
+                }
+                Err(error) => {
+                    return self.failure(
+                        format!("checking agent during initialization: {}", error.message),
+                        client,
+                    );
+                }
+                _ => {}
+            }
+            if std::time::Instant::now() >= deadline {
+                return self.failure(
+                    format!(
+                        "{} was not published before the deadline",
+                        ready_path.display()
+                    ),
+                    client,
+                );
+            }
+            thread::sleep(Duration::from_millis(100));
         }
         match context.accept() {
             Ok(ready) => AgentOutcome::Ready(ready, self.observe(client)),
@@ -272,9 +347,97 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
         TerminalFact::observe(client, &self.config.terminal, &self.config.secrets)
     }
 
+    fn codex_terminal_closed(&self, client: &mut HcClient) -> Option<String> {
+        match client.get(&self.config.terminal) {
+            Ok(info) if matches!(info.state.as_str(), "finished" | "exited" | "dead") => {
+                Some(format!("terminal {} {}", info.name, info.state))
+            }
+            _ => None,
+        }
+    }
+
     fn failure(&self, reason: String, client: &mut HcClient) -> Outcome<I, T> {
         AgentOutcome::Failed(AgentFailure::new(reason, self.observe(client)))
     }
+
+    fn wait_for_screen(
+        &self,
+        client: &mut HcClient,
+        deadline: std::time::Instant,
+        mut ready: impl FnMut(&str) -> bool,
+        waiting_for: &str,
+    ) -> Result<(), String> {
+        loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for {waiting_for} on {}",
+                    self.config.terminal
+                ));
+            }
+            match client.get(&self.config.terminal) {
+                Ok(info) if matches!(info.state.as_str(), "finished" | "exited" | "dead") => {
+                    return Err(format!(
+                        "agent terminal {} exited while waiting for {waiting_for} ({})",
+                        info.name, info.state
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) => return Err(error.message),
+            }
+            match client.read(&self.config.terminal, 40) {
+                Ok(screen) if ready(&plain_terminal(&screen)) => return Ok(()),
+                Ok(_) => {}
+                Err(error) => return Err(error.message),
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+}
+
+/// Codex 0.166.0 draws this placeholder when the composer will submit a line.
+fn codex_composer_ready(screen: &str) -> bool {
+    screen.contains("Ask Codex to do anything")
+}
+
+fn codex_composer_lost(reason: &str) -> bool {
+    reason.contains("exited") || reason.contains("finished") || reason.contains("dead")
+}
+
+/// The status line shows ` · <name>` after `/rename`. An unsubmitted
+/// `/rename <name>` line does not.
+fn codex_thread_name_visible(screen: &str, name: &str) -> bool {
+    screen.contains(&format!(" · {name}"))
+}
+
+fn plain_terminal(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character != '\u{1b}' {
+            out.push(character);
+            continue;
+        }
+        match chars.peek().copied() {
+            Some('[') => {
+                chars.next();
+                for next in chars.by_ref() {
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                chars.next();
+                for next in chars.by_ref() {
+                    if next == '\u{7}' || next == '\\' {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Standard ready.json handshake, also reused by specialized initializers.
@@ -371,6 +534,7 @@ mod tests {
                     argv: vec!["/bin/true".into()],
                     env: vec![],
                     cwd: directory.clone(),
+                    codex: false,
                 },
             })
             .unwrap();
@@ -412,6 +576,83 @@ mod tests {
         drop(next);
         drop(core);
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn codex_init_renames_the_thread_to_the_hc_terminal() {
+        static TEMP: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "mcn-codex-name-{}-{}",
+            std::process::id(),
+            TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let socket = directory.join("hc.sock");
+        let core = MockCore::spawn(socket.clone()).unwrap();
+        let terminal =
+            crate::agents::campaign_terminal_name("coverage", Path::new("/campaigns/lightftp"));
+        let mut client = AgentClient::<SessionInit, Request>::spawn(WorkerConfig {
+            thread_name: "shared-worker-test",
+            socket: socket.clone(),
+            terminal: terminal.clone(),
+            init_timeout: Duration::from_secs(2),
+            task_timeout: Duration::from_secs(2),
+            secrets: vec![],
+        })
+        .unwrap();
+        client
+            .send(AgentCommand::Init {
+                context: SessionInit {
+                    output_dir: directory.clone(),
+                    session: "shared-session".into(),
+                },
+                prompt: format!(
+                    "OUTPUT_DIR={}\nSESSION=shared-session\nWRITE ready.json",
+                    directory.display()
+                ),
+                launch: CommandLine {
+                    argv: vec!["/usr/bin/codex".into(), "--no-daemon".into()],
+                    env: vec![],
+                    cwd: directory.clone(),
+                    codex: true,
+                },
+            })
+            .unwrap();
+        assert!(matches!(
+            client.recv_timeout(Duration::from_secs(3)),
+            Some(AgentOutcome::Launched(_))
+        ));
+        assert!(matches!(
+            client.recv_timeout(Duration::from_secs(3)),
+            Some(AgentOutcome::Ready((), _))
+        ));
+        let sent = fs::read_to_string(socket.with_extension("sends")).unwrap();
+        let rename = format!("/rename {terminal}");
+        let prompt_at = sent.find("WRITE ready.json").expect("init prompt");
+        let rename_at = sent.find(&rename).expect("rename command");
+        assert!(rename_at < prompt_at);
+        assert_eq!(terminal, "mcn-fuzzer-coverage-lightftp");
+        assert!(sent.starts_with(&format!("{rename}\n")));
+        drop(client);
+        drop(core);
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn codex_status_line_is_not_the_unsubmitted_rename_command() {
+        assert!(codex_composer_ready("Ask Codex to do anything"));
+        assert!(codex_thread_name_visible(
+            "GPT · /tmp/probe · mcn-fuzzer-synthesis-lightftp",
+            "mcn-fuzzer-synthesis-lightftp",
+        ));
+        assert!(!codex_thread_name_visible(
+            "› /rename mcn-fuzzer-synthesis-lightftp",
+            "mcn-fuzzer-synthesis-lightftp",
+        ));
+        assert_eq!(
+            plain_terminal("\u{1b}[32mAsk Codex to do anything\u{1b}[0m"),
+            "Ask Codex to do anything"
+        );
     }
 
     #[test]

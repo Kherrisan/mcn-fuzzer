@@ -1,8 +1,7 @@
-//! Read-only identifier catalog shared with the Python MCP service.
+//! Read-only name catalog shared with the Python MCP service.
 //!
-//! This is an identity table, not a selector: it contains the protocol ID,
-//! stable step IDs, party bindings, and original definitions. No scores,
-//! traversal order, or exploration policy live here.
+//! Version 3 names every step, dependency, and party. It has no digest IDs.
+//! No scores, traversal order, or exploration policy live here.
 
 use std::{fs, path::Path};
 
@@ -20,29 +19,22 @@ pub fn write_catalog(
         .iter()
         .map(|step| {
             json!({
-                "step_id": step.id().0,
-                "source_id": step.source_id,
                 "name": step.name,
-                "message_name": step.message_name,
+                "action": step.action.name(),
+                "message_name": step.message_name(),
                 "channel_name": step.channel_name,
-                "sender_name": step.sender_name,
-                "receiver_name": step.receiver_name,
+                "sender_name": step.sender_name(),
+                "receiver_name": step.receiver_name(),
+                "party_name": step.party_name(),
                 "condition": step.condition,
             })
         })
-        .collect();
-    let by_name: std::collections::BTreeMap<String, String> = model
-        .steps
-        .iter()
-        .map(|step| (step.name.clone(), step.id().0))
         .collect();
     let dependencies: Vec<_> = model
         .dependencies
         .iter()
         .map(|dependency| {
             json!({
-                "prior_step_id": by_name.get(&dependency.prior_step).cloned().unwrap_or_default(),
-                "dependent_step_id": by_name.get(&dependency.dependent_step).cloned().unwrap_or_default(),
                 "prior_step": dependency.prior_step,
                 "dependent_step": dependency.dependent_step,
                 "condition": dependency.condition,
@@ -70,8 +62,7 @@ pub fn write_catalog(
         .map(|(rfc, path)| json!({"rfc": rfc, "path": path}))
         .collect();
     let catalog = json!({
-        "version": 1,
-        "protocol_id": model.protocol_id,
+        "version": 3,
         "protocol_name": model.protocol_name,
         "binding": binding,
         "parties": model.party_names(),

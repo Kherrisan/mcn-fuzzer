@@ -6,6 +6,12 @@ is to turn each later proposal into a reusable Python generator that implements
 the external environment needed to exercise those steps against the real SUT.
 The generator can carry several parties at once, including server, upstream, and user
 roles. Implement generator parties; the real target implements SUT parties.
+Steps are send, listen, connect, or close. send is one protocol message.
+listen means that party is ready to accept connections and does not wait for
+the peer before later steps. connect opens the transport connection. close
+closes that party's transport connection. A trace may repeat the same step.
+Generator parties perform their own network actions with the existing socket
+API. Do not listen, connect, or close on behalf of a SUT party.
 
 This agent session lasts for the campaign. Each generated script runs in a fresh
 forked Python worker for each case. Reuse protocol knowledge across requests, but
@@ -20,7 +26,6 @@ SESSION={{ session }}
 HOLD={{ hold }}
 WORKSPACE={{ campaign.workspace }}
 OUTPUT_DIR={{ output_dir }}
-PROTOCOL={{ protocol_id }}
 
 - Protocol: {{ protocol_name }}; model complete flag: {{ model_complete }}.
 - Agent launch directory and campaign synthesis root: {{ campaign.workspace }}
@@ -60,6 +65,16 @@ a SUT party to make a trace appear to succeed.
 DOCUMENTS:
 {% for document in documents %}- {{ document.rfc }}: {{ document.path }}
 {% endfor %}
+EXTRA_REFERENCE_FILES:
+{% if campaign.extra_files %}{% for file in campaign.extra_files %}- {{ file }}
+{% endfor %}{% else %}- none provided; do not invent deployment facts that are not in the proposal, RFCs, or campaign facts above.
+{% endif %}
+Read each provided extra file during initialization. These are campaign
+configuration inputs, not SUT source: account names, passwords, access
+permissions, certificates, directory roots, and other deployment facts may and
+should be taken from them. Reading these explicit files is allowed and does not
+violate the SUT source restriction. They are read-only; do not modify them.
+
 Read the public API and lifecycle sources and inspect the model's structure now.
 Read the generator module skill at {{ campaign.generator_skill }} now. Use its
 protocol map to read only the references relevant to this campaign. Prefer its
@@ -76,9 +91,12 @@ than inventing API calls or protocol guarantees.
 # Protocol-driven generation
 
 Do not read or search the SUT source code, reverse-engineer its binary, or probe
-its implemented features. Generate protocol behavior solely from the proposal and
-the referenced RFC documents. Use the model only to clarify
-protocol prerequisites. Public generator API/lifecycle sources, installed SDK APIs,
+its implemented features. Protocol message semantics, order, and wire behavior
+follow the proposal and the referenced RFC documents. Use the model only to clarify
+protocol prerequisites. Runtime deployment facts such as account names,
+passwords, access permissions, certificates, and directory roots may and should
+come from the provided extra files; do not guess common defaults when a provided
+file states the actual value. Public generator API/lifecycle sources, installed SDK APIs,
 and the module skill remain implementation references for generator-side code.
 Do not assess which features the SUT implements or omits, or whether it will
 accept the generated messages. Do not reject a proposal, drop its steps, or narrow
@@ -161,7 +179,7 @@ Every later successful request writes four files in its own OUTPUT_DIR:
 | generator.py | Complete importable module with synchronous top-level def generate(ctx, params). Include helper/mock code and integration with installed Python modules in this module. |
 | params.schema.json | Root object schema describing named mutation parameters; the runtime checks only a basic schema subset. |
 | params.json | Root JSON object of strings, signed 64-bit integers, booleans, or recursively nested lists of those types. No nested objects, floats, or null. |
-| result.json | Completion signal with exact request_id, protocol_id, proposal_id, trace_id, status="ok", and added_steps as an array of strings. Publish last by atomic rename. |
+| result.json | Completion signal with the exact request_id, status="ok", and added_steps as an array of strings. Publish last by atomic rename. |
 
 Each generation task provides exact success/failure JSON examples. On failure,
 publish matching IDs, a non-ok status, and a specific error in result.json.

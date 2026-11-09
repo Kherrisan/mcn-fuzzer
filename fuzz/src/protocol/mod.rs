@@ -5,35 +5,31 @@
 //! artifact validation.
 
 mod catalog;
-mod id;
 mod model;
 
 pub use catalog::write_catalog;
-pub use id::{protocol_id, StepId, TraceId};
 pub use model::{load_model, Binding, IndexedModel, ModelError, PartyRole, StepRecord};
 
-/// Ordered step sequence used for display, evaluation fixtures, and identity.
+/// Ordered model steps used for display and evaluation fixtures.
 #[derive(Clone, Debug)]
 pub struct StepTrace {
     pub steps: Vec<StepRecord>,
-    pub id: TraceId,
 }
 
 impl StepTrace {
     pub fn new(steps: Vec<StepRecord>) -> Self {
-        let id = TraceId::from_steps(&steps);
-        Self { steps, id }
+        Self { steps }
     }
 }
 
 /// Whether a trace touches at least one SUT party and one generator party.
 pub fn covers_sut_and_generator(steps: &[StepRecord], binding: &Binding) -> bool {
     steps.iter().any(|step| {
-        [&step.sender_name, &step.receiver_name]
+        step.participants()
             .iter()
             .any(|party| binding.role(party) == PartyRole::Sut)
     }) && steps.iter().any(|step| {
-        [&step.sender_name, &step.receiver_name]
+        step.participants()
             .iter()
             .any(|party| binding.role(party) == PartyRole::Generator)
     })

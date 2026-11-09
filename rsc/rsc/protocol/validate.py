@@ -13,8 +13,12 @@ from rsc.schemas import validate_instance
 
 from .context import document_digest
 from .contract import COLLECTIONS, DEFINITIONS, protocol_schema
-from .merge import issue
 from .models import PROTOCOL_VERSION
+from .references import reference_errors
+
+
+def issue(description, objects=()):
+    return {"description": description, "object_names": list(dict.fromkeys(objects))}
 
 
 def object_errors(
@@ -25,11 +29,6 @@ def object_errors(
     del documents
     schema = protocol_schema(schemas_dir)
     result: dict[str, list[str]] = defaultdict(list)
-    step_ids = [row.get("id") for row in model.get("steps", []) if isinstance(row, dict)]
-    if len(step_ids) != len(set(step_ids)):
-        for row in model.get("steps", []):
-            if isinstance(row, dict) and step_ids.count(row.get("id")) > 1:
-                result[str(row.get("id"))].append("step IDs must be unique")
     for key in COLLECTIONS:
         check = Draft202012Validator(
             {"$ref": f"#/$defs/{DEFINITIONS[key]}", "$defs": schema["$defs"]}
@@ -45,7 +44,7 @@ def object_errors(
                     or row.get("acceptor_party_name") is not None
                 ):
                     errors.append("connectionless channels must have null connection roles")
-            token = row["id"] if key == "steps" and "id" in row else f"{key}[{index}]"
+            token = row.get("name") if key == "steps" and row.get("name") else f"{key}[{index}]"
             result[token].extend(errors)
     return {key: errors for key, errors in result.items() if errors}
 
@@ -60,8 +59,8 @@ def prune_invalid(
             retained = []
             for index, row in enumerate(model[key]):
                 token = (
-                    row["id"]
-                    if key == "steps" and isinstance(row, dict) and "id" in row
+                    row.get("name")
+                    if key == "steps" and isinstance(row, dict) and row.get("name")
                     else f"{key}[{index}]"
                 )
                 if token in errors:
@@ -84,15 +83,11 @@ def validate_protocol(model: dict, documents: dict[str, dict], schemas_dir=None)
         and isinstance(model.get("meta"), dict)
         and model["meta"].get("schema_version") != PROTOCOL_VERSION
     ):
-        return [
-            f"unsupported protocol schema version; recompile RFC sources for {PROTOCOL_VERSION}"
-        ]
+        actual = model["meta"].get("schema_version")
+        return [f"protocol schema_version is {actual}, expected {PROTOCOL_VERSION}"]
     errors = validate_instance(Draft202012Validator(protocol_schema(schemas_dir)), model)
     if errors:
         return errors
-    step_ids = [row["id"] for row in model["steps"]]
-    if len(step_ids) != len(set(step_ids)):
-        errors.append("step IDs must be unique")
     expected = {source["doc_id"] for source in model["meta"]["documents"]}
     if expected != set(documents) or len(expected) != len(model["meta"]["documents"]):
         errors.append("source document set does not match meta.documents")
@@ -110,6 +105,13 @@ def validate_protocol(model: dict, documents: dict[str, dict], schemas_dir=None)
         for key, values in object_errors(model, documents, schemas_dir).items()
         for error in values
     )
+    if not errors:
+        records = {
+            f"{kind}:{index}": {"kind": kind, "value": value}
+            for kind in COLLECTIONS
+            for index, value in enumerate(model[kind])
+        }
+        errors.extend(reference_errors(records))
     if model["meta"]["complete"] and model["unresolved"]:
         errors.append("complete model cannot contain unresolved issues")
     if not any(model[key] for key in COLLECTIONS):
@@ -126,9 +128,8 @@ def validate_protocol_file(path: str | Path, schemas_dir=None) -> list[str]:
             and isinstance(model.get("meta"), dict)
             and model["meta"].get("schema_version") != PROTOCOL_VERSION
         ):
-            return [
-                f"unsupported protocol schema version; recompile RFC sources for {PROTOCOL_VERSION}"
-            ]
+            actual = model["meta"].get("schema_version")
+            return [f"protocol schema_version is {actual}, expected {PROTOCOL_VERSION}"]
         errors = validate_instance(Draft202012Validator(protocol_schema(schemas_dir)), model)
         if errors:
             return errors

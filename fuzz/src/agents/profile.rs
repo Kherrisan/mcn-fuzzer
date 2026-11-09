@@ -13,6 +13,9 @@ pub struct CommandLine {
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
     pub cwd: std::path::PathBuf,
+    /// Interactive Codex. Its thread is named with `/rename`, which calls
+    /// app-server `thread/name/set`. CLI 0.166.0 rejects `--name`.
+    pub codex: bool,
 }
 
 impl CommandLine {
@@ -34,9 +37,17 @@ pub fn command_line(profile: &AgentProfile, cwd: &Path) -> Result<CommandLine, l
         ));
     }
     let mut argv = vec![profile.executable.display().to_string()];
+    let codex = matches!(profile.provider, AgentProvider::Codex);
     match profile.provider {
         AgentProvider::Codex => {
             argv.push("--no-daemon".to_string());
+            // Fuzzer workers run with the campaign user's permissions. A
+            // startup self-update can try to replace a system-wide npm install
+            // and exit with EACCES before the agent publishes ready.json.
+            argv.extend([
+                "-c".to_string(),
+                "check_for_update_on_startup=false".to_string(),
+            ]);
             if let Some(model) = profile.model.as_deref() {
                 argv.push("--model".to_string());
                 argv.push(model.to_string());
@@ -51,7 +62,11 @@ pub fn command_line(profile: &AgentProfile, cwd: &Path) -> Result<CommandLine, l
     }
     if let Some(effort) = profile.effort.as_deref() {
         match profile.provider {
-            AgentProvider::Codex | AgentProvider::Claude => {
+            AgentProvider::Codex => {
+                argv.push("-c".to_string());
+                argv.push(format!("model_reasoning_effort={effort}"));
+            }
+            AgentProvider::Claude => {
                 argv.push("--effort".to_string());
                 argv.push(effort.to_string());
             }
@@ -63,6 +78,7 @@ pub fn command_line(profile: &AgentProfile, cwd: &Path) -> Result<CommandLine, l
         argv,
         env: profile.env.clone(),
         cwd: cwd.to_path_buf(),
+        codex,
     })
 }
 
@@ -94,10 +110,12 @@ mod tests {
             vec![
                 "/usr/bin/agent",
                 "--no-daemon",
+                "-c",
+                "check_for_update_on_startup=false",
                 "--model",
                 "m",
-                "--effort",
-                "high",
+                "-c",
+                "model_reasoning_effort=high",
                 "--extra"
             ]
             .into_iter()
@@ -135,6 +153,9 @@ mod tests {
                 .map(str::to_string)
                 .collect::<Vec<_>>()
         );
+        assert!(codex.codex);
+        assert!(!claude.codex);
+        assert!(!pi.codex);
         assert!(codex.env.iter().any(|(key, _)| key == "TOKEN"));
         let rendered = format!("{:?}", codex.argv);
         assert!(!rendered.contains("secret"));

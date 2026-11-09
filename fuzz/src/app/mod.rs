@@ -20,7 +20,7 @@ use crate::{
     coverage::LlvmCoverageStage,
     engine::executor::{CaseExecutor, CoverageFeedback},
     engine::input::GeneratorInput,
-    engine::mutator::GeneratorMutator,
+    engine::mutation_stage::GeneratorMutationStage,
     engine::stagnation::BitmapProgress,
     engine::synthesis::GeneratorSynthesisStage,
     runtime::backend::{AbortReason, ForkserverBackend, TargetBackend},
@@ -35,7 +35,7 @@ use libafl::{
     inputs::{BytesInputConverter, Input},
     monitors::SimpleMonitor,
     schedulers::QueueScheduler,
-    stages::StdMutationalStage,
+    stages::Stage,
     state::{HasCorpus, HasSolutions, StdState},
     Error, HasMetadata,
 };
@@ -149,11 +149,17 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
     let mut synthesis = GeneratorSynthesisStage::from_campaign(campaign, mailbox.clone())?;
     let mut analysis =
         crate::coverage::schedule::CoverageAnalysisStage::from_campaign(campaign, mailbox)?;
-    if campaign.protocol_generation.enabled {
+    if campaign.generator_synthesis.enabled {
         synthesis.initialize()?;
     }
     if campaign.coverage.analysis_enabled {
         analysis.initialize()?;
+    }
+    let mut mutation = GeneratorMutationStage::with_queue(
+        campaign.generator_synthesis.output.join("candidates.json"),
+    );
+    if campaign.generator_synthesis.enabled {
+        mutation.load_queue(&mut session.state)?;
     }
     let seed_files = std::fs::read_dir(&campaign.campaign.seeds)
         .map(|entries| {
@@ -162,19 +168,11 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
                 .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
         })
         .unwrap_or(false);
-    if campaign.protocol_generation.enabled && !seed_files {
-        let mut kept = false;
-        let mut bootstrap_rand = libafl_bolts::rands::StdRand::with_seed(0x5052_4f54);
-        synthesis.bootstrap_first(&mut bootstrap_rand, |input, origin| {
-            session.evaluate(&input)?;
-            kept = true;
-            let _ = origin;
-            Ok(session.state.corpus().count() > 0)
-        })?;
-        if !kept || session.state.corpus().count() == 0 {
-            return Err(Error::unknown(
-                "protocol synthesis did not produce a schedulable corpus".to_string(),
-            ));
+    if campaign.generator_synthesis.enabled && !seed_files {
+        if !mutation.has_queue(&session.state) {
+            let mut bootstrap_rand = libafl_bolts::rands::StdRand::with_seed(0x5052_4f54);
+            let ready = synthesis.bootstrap_first(&mut bootstrap_rand)?;
+            mutation.enqueue(&mut session.state, ready.request, ready.input, ready.origin)?;
         }
     } else {
         session.state.load_initial_inputs(
@@ -184,18 +182,39 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
             &[campaign.campaign.seeds.clone()],
         )?;
     }
+    // A seedless campaign cannot ask the scheduler for a corpus input yet.
+    // Run the same mutation stage directly while it still has synthesis input.
+    // The baseline never enters the corpus; the first kept mutation enables the
+    // ordinary fuzzer loop.
+    if session.state.corpus().count() == 0 {
+        while mutation.has_queue(&session.state) {
+            if session.state.corpus().count() > 0 {
+                break;
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                break;
+            }
+            mutation.perform(
+                &mut session.fuzzer,
+                &mut session.executor,
+                &mut session.state,
+                &mut session.mgr,
+            )?;
+        }
+        if session.state.corpus().count() == 0 {
+            return Err(Error::unknown(
+                "seedless synthesis input produced no corpus entry after mutation exploration"
+                    .to_string(),
+            ));
+        }
+    }
     let mut coverage = LlvmCoverageStage::from_campaign(campaign);
     if campaign.coverage.enabled {
         coverage.replay_now(&mut session.executor, &mut session.state)?;
     }
     let iteration_limit =
         iterations.or_else(|| deadline.is_none().then_some(campaign.campaign.iterations));
-    let mut stages = tuple_list!(
-        synthesis,
-        StdMutationalStage::new(GeneratorMutator::new()),
-        coverage,
-        analysis
-    );
+    let mut stages = tuple_list!(synthesis, mutation, coverage, analysis);
     let loop_result = if let Some(iterations) = iteration_limit {
         session
             .fuzzer
@@ -269,7 +288,6 @@ pub fn doctor() -> Result<(), Error> {
     let tmp = std::env::temp_dir().join(format!("mcn-doctor-{}", std::process::id()));
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(tmp.join("work"))?;
-    fs::create_dir_all(tmp.join("fixture"))?;
     let mode_path = tmp.join("work").join("fftp.conf");
     fs::write(&mode_path, b"a")?;
     let campaign = Campaign {
@@ -277,13 +295,8 @@ pub fn doctor() -> Result<(), Error> {
             binary: probe.clone(),
             source_dir: None,
             workdir: tmp.join("work"),
-            fixture: tmp.join("fixture"),
-            config_template: tmp.join("fftp.conf"),
-            config_output: "fftp.conf".to_string(),
-            args: vec!["@CONFIG@".to_string()],
-            cert: "certs/my.crt".to_string(),
-            key: "certs/my.pem".to_string(),
-            ca: None,
+            cleanup_script: None,
+            args: vec!["fftp.conf".to_string()],
             host: "127.0.0.1".to_string(),
             port: 0,
             extra_env: Vec::new(),
@@ -310,7 +323,8 @@ pub fn doctor() -> Result<(), Error> {
         capture: crate::app::config::CaptureConfig::default(),
         coverage: crate::app::config::CoverageConfig::default(),
         _legacy_source_coverage: (),
-        protocol_generation: crate::app::config::ProtocolGenerationConfig::default(),
+        _legacy_generator_synthesis: (),
+        generator_synthesis: crate::app::config::GeneratorSynthesisConfig::default(),
         agents: crate::app::config::AgentCatalog::default(),
         parties: None,
         base: tmp.clone(),

@@ -1,6 +1,6 @@
 {
   "meta": {
-    "schema_version": "7.0.0",
+    "schema_version": "8.0.0",
     "protocol": "TLS 1.2 / OpenSSL s_server manually curated evaluation subset",
     "complete": false,
     "documents": [
@@ -155,8 +155,8 @@
   ],
   "steps": [
     {
-      "id": "tls12-step-001",
       "name": "send ClientHello",
+      "action": "send",
       "message_name": "ClientHello",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS client",
@@ -164,8 +164,8 @@
       "condition": "Initial TLS 1.2 ClientHello for a full ECDHE-RSA handshake: offer ECDHE-RSA-AES128-GCM-SHA256 (0xc02f), supported groups (e.g. X25519/P-256), signature algorithms and null compression. Advertise no session resumption; use ctx.host/ctx.port."
     },
     {
-      "id": "tls12-step-002",
       "name": "receive ServerHello",
+      "action": "send",
       "message_name": "ServerHello",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS server",
@@ -173,8 +173,8 @@
       "condition": "After the valid ClientHello, parse TLS 1.2 ServerHello and its selected cipher; handle record/handshake fragmentation and coalescing."
     },
     {
-      "id": "tls12-step-003",
       "name": "receive Certificate",
+      "action": "send",
       "message_name": "Certificate",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS server",
@@ -182,8 +182,8 @@
       "condition": "In a full authenticated handshake, receive the real server certificate chain. The local test fixture is self-signed; configure client trust explicitly for this local evaluation rather than requiring a public CA."
     },
     {
-      "id": "tls12-step-004",
       "name": "receive ServerKeyExchange",
+      "action": "send",
       "message_name": "ServerKeyExchange",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS server",
@@ -191,8 +191,8 @@
       "condition": "For selected ECDHE-RSA cipher, receive server ephemeral key exchange parameters and signature; an installed TLS SDK may implement handshake cryptography."
     },
     {
-      "id": "tls12-step-005",
       "name": "receive ServerHelloDone",
+      "action": "send",
       "message_name": "ServerHelloDone",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS server",
@@ -200,8 +200,8 @@
       "condition": "Consume the complete server first flight through ServerHelloDone. If the trace stops here, cleanly close owned TCP resources; completing the handshake is not required for that trace."
     },
     {
-      "id": "tls12-step-006",
       "name": "send ClientKeyExchange",
+      "action": "send",
       "message_name": "ClientKeyExchange",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS client",
@@ -209,8 +209,8 @@
       "condition": "Continue full ECDHE-RSA handshake using the negotiated group and actual server key exchange parameters. A Python ssl TLS 1.2 client may execute the selected handshake steps."
     },
     {
-      "id": "tls12-step-007",
       "name": "send client ChangeCipherSpec",
+      "action": "send",
       "message_name": "ChangeCipherSpec",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS client",
@@ -218,8 +218,8 @@
       "condition": "After client key exchange, activate negotiated client write keys."
     },
     {
-      "id": "tls12-step-008",
       "name": "send client Finished",
+      "action": "send",
       "message_name": "Finished",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS client",
@@ -227,8 +227,8 @@
       "condition": "Send encrypted Finished with valid transcript-dependent verify_data; using an installed TLS implementation is allowed."
     },
     {
-      "id": "tls12-step-009",
       "name": "receive server ChangeCipherSpec",
+      "action": "send",
       "message_name": "ChangeCipherSpec",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS server",
@@ -236,8 +236,8 @@
       "condition": "After the valid client Finished, activate negotiated server read keys."
     },
     {
-      "id": "tls12-step-010",
       "name": "receive server Finished",
+      "action": "send",
       "message_name": "Finished",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS server",
@@ -245,8 +245,8 @@
       "condition": "Verify real server Finished and establish TLS 1.2; do not replace this with detecting ServerHello alone."
     },
     {
-      "id": "tls12-step-011",
       "name": "send HTTP request in ApplicationData",
+      "action": "send",
       "message_name": "ApplicationData",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS client",
@@ -254,8 +254,8 @@
       "condition": "After handshake success, send an encrypted HTTP GET / HTTP/1.0 request with Host: localhost and a terminating empty line to the configured s_server -www service."
     },
     {
-      "id": "tls12-step-012",
       "name": "receive HTTP response in ApplicationData",
+      "action": "send",
       "message_name": "ApplicationData",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS server",
@@ -263,8 +263,8 @@
       "condition": "Decrypt and collect bounded HTTP response bytes; require an HTTP 200 status and nonempty body from s_server -www, not just a completed handshake."
     },
     {
-      "id": "tls12-step-013",
       "name": "send client close_notify",
+      "action": "send",
       "message_name": "Alert",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS client",
@@ -272,8 +272,8 @@
       "condition": "On an established session send a real encrypted close_notify. In handshake-close initiate shutdown; in https-roundtrip reply to server shutdown. Bound shutdown waits and close all sockets."
     },
     {
-      "id": "tls12-step-014",
       "name": "receive server close_notify",
+      "action": "send",
       "message_name": "Alert",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS server",
@@ -281,8 +281,8 @@
       "condition": "On an established session consume actual server close_notify; it may follow the HTTP response or respond to client shutdown. Use TLS SDK orderly shutdown semantics, not plain TCP EOF as proof."
     },
     {
-      "id": "tls12-step-015",
       "name": "send ClientHello without a shared cipher",
+      "action": "send",
       "message_name": "ClientHello",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS client",
@@ -290,8 +290,8 @@
       "condition": "Negative test: send a structurally valid TLS 1.2 ClientHello offering ONLY TLS_RSA_WITH_NULL_MD5 (0x0001), which this default security configuration disables. Do not offer any other real cipher. Send bytes on the wire; local SDK cipher selection rejection is not server behavior."
     },
     {
-      "id": "tls12-step-016",
       "name": "receive handshake_failure",
+      "action": "send",
       "message_name": "Alert",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS server",
@@ -299,8 +299,8 @@
       "condition": "For the no-shared-cipher ClientHello receive and validate a real TLS fatal alert (level 2, description 40 handshake_failure). Expected rejection is successful test behavior; handle it without an uncaught Python exception."
     },
     {
-      "id": "tls12-step-017",
       "name": "send ClientHello with duplicate supported_groups",
+      "action": "send",
       "message_name": "ClientHello",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS client",
@@ -308,8 +308,8 @@
       "condition": "Negative test: construct otherwise valid TLS 1.2 ClientHello with supported_groups extension (type 10) repeated twice. Offer a valid ECDHE-RSA cipher and valid group contents, correct record/handshake/vector lengths. Actually transmit the duplicate extensions; do not stop at local SDK validation."
     },
     {
-      "id": "tls12-step-018",
       "name": "receive illegal_parameter",
+      "action": "send",
       "message_name": "Alert",
       "channel_name": "TLS TCP connection",
       "sender_name": "TLS server",

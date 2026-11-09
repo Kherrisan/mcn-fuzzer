@@ -2,6 +2,7 @@
 
 pub mod executor;
 pub mod input;
+pub mod mutation_stage;
 pub mod mutator;
 pub mod stagnation;
 pub mod synthesis;

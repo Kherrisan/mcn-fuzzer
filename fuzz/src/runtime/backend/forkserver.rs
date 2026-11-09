@@ -4,16 +4,21 @@
 //! `ForkserverExecutor::run_target` is not used. That method would request a
 //! second child and try to feed it bytes.
 
-use std::{fs, path::Path, time::Duration};
+use std::{
+    fs::{self, File},
+    path::Path,
+    time::Duration,
+};
 
 use libafl::{
     executors::{forkserver::ForkserverExecutor, StdChildArgs},
+    observers::{StdErrObserver, StdOutObserver},
     Error,
 };
 use libafl_bolts::{
     core_affinity::CoreId,
     shmem::{ShMem, ShMemProvider, UnixShMem, UnixShMemProvider},
-    tuples::tuple_list,
+    tuples::{tuple_list, Handled},
     StdTargetArgs,
 };
 use nix::{
@@ -33,9 +38,13 @@ use crate::{
 /// Variables that disable PCGUARD counters. They are removed, never set to zero.
 const FSRV_ONLY_VARS: [&str; 2] = ["AFL_LLVM_ONLY_FSRV", "AFL_GCC_ONLY_FSRV"];
 
+/// Observers attached to every forkserver executor. Coverage replay binds them
+/// to append-only SUT logs; ordinary fuzzing leaves them unbound.
+type OutputObservers = (StdOutObserver, (StdErrObserver, ()));
+
 /// LibAFL forkserver plus the shared map the target updates.
 pub struct ForkserverBackend {
-    executor: ForkserverExecutor<(), (), (), UnixShMem>,
+    executor: ForkserverExecutor<(), OutputObservers, (), UnixShMem>,
     /// Coverage bitmap. The target attaches to it through `__AFL_SHM_ID`.
     shmem: UnixShMem,
     _shmem_provider: UnixShMemProvider,
@@ -61,7 +70,7 @@ impl ForkserverBackend {
         }
         if campaign.target.args.is_empty() {
             return Err(Error::illegal_argument(
-                "target.args is empty. LightFTP uses [\"@CONFIG@\"].".to_string(),
+                "target.args is empty; provide the target's arguments in target.args.".to_string(),
             ));
         }
         let allocated = campaign.target.map_size;
@@ -119,7 +128,12 @@ impl ForkserverBackend {
         for (key, value) in &campaign.target.extra_env {
             builder = builder.env(key, placeholders.apply(value));
         }
-        let executor = builder.build(tuple_list!()).map_err(|error| {
+        let executor = builder
+            .build(tuple_list!(
+                StdOutObserver::new("sut-stdout".into())?,
+                StdErrObserver::new("sut-stderr".into())?
+            ))
+            .map_err(|error| {
             let text = format!("{error:?}");
             if text.contains("allocated map size") || text.contains("map size") {
                 Error::illegal_argument(format!(
@@ -168,6 +182,21 @@ impl ForkserverBackend {
         port: u16,
         profile_file: &str,
     ) -> Result<Self, Error> {
+        Self::spawn_coverage_with_output(campaign, port, profile_file, None, None)
+    }
+
+    /// Start a forkserver-only coverage binary with optional stdout/stderr FDs.
+    ///
+    /// The descriptors are bound through `StdOutObserver::new_file` /
+    /// `StdErrObserver::new_file`; the manual forkserver path does not call the
+    /// observer hooks, so the children inherit the append-mode files directly.
+    pub fn spawn_coverage_with_output(
+        campaign: &Campaign,
+        port: u16,
+        profile_file: &str,
+        stdout: Option<File>,
+        stderr: Option<File>,
+    ) -> Result<Self, Error> {
         let binary = &campaign.target.binary;
         if !binary.is_file() {
             return Err(Error::illegal_argument(format!(
@@ -188,6 +217,12 @@ impl ForkserverBackend {
                 campaign.target.workdir.display()
             ))
         })?;
+        // The forkserver builder reads the process-global id even when this
+        // command has no main fuzz executor. A sentinel keeps that id distinct
+        // from the coverage map passed only to the child.
+        if std::env::var("__AFL_SHM_ID").unwrap_or_default().is_empty() {
+            std::env::set_var("__AFL_SHM_ID", "mcn-coverage-standalone");
+        }
         let main_shm = std::env::var("__AFL_SHM_ID").unwrap_or_default();
         let mut provider = UnixShMemProvider::new()?;
         let shmem = provider.new_shmem(allocated)?;
@@ -237,7 +272,24 @@ impl ForkserverBackend {
             }
             builder = builder.env(key, placeholders.apply(value));
         }
-        let executor = builder.build(tuple_list!()).map_err(|error| {
+        let captured = stdout.is_some() || stderr.is_some();
+        let stdout_observer = match stdout {
+            Some(file) => StdOutObserver::new_file("sut-stdout".into(), file),
+            None => StdOutObserver::new("sut-stdout".into())?,
+        };
+        let stderr_observer = match stderr {
+            Some(file) => StdErrObserver::new_file("sut-stderr".into(), file),
+            None => StdErrObserver::new("sut-stderr".into())?,
+        };
+        let observers = tuple_list!(stdout_observer, stderr_observer);
+        let stdout_handle = observers.0.handle();
+        let stderr_handle = observers.1 .0.handle();
+        if captured {
+            builder = builder
+                .stdout_observer(stdout_handle)
+                .stderr_observer(stderr_handle);
+        }
+        let executor = builder.build(observers).map_err(|error| {
             Error::unknown(format!(
                 "coverage forkserver handshake with {} failed: {error:?}",
                 binary.display()
@@ -573,13 +625,8 @@ mod tests {
                 binary: PathBuf::from("/bin/true"),
                 source_dir: None,
                 workdir: PathBuf::from("/tmp"),
-                fixture: PathBuf::from("/tmp"),
-                config_template: PathBuf::from("/tmp/fftp.conf"),
-                config_output: "fftp.conf".to_string(),
-                args: vec!["@CONFIG@".to_string()],
-                cert: "certs/my.crt".to_string(),
-                key: "certs/my.pem".to_string(),
-                ca: None,
+                cleanup_script: None,
+                args: vec!["fftp.conf".to_string()],
                 host: "127.0.0.1".to_string(),
                 port: 0,
                 extra_env: vec![(key.to_string(), value.to_string())],
@@ -601,7 +648,8 @@ mod tests {
             capture: crate::app::config::CaptureConfig::default(),
             coverage: crate::app::config::CoverageConfig::default(),
             _legacy_source_coverage: (),
-            protocol_generation: crate::app::config::ProtocolGenerationConfig::default(),
+            _legacy_generator_synthesis: (),
+            generator_synthesis: crate::app::config::GeneratorSynthesisConfig::default(),
             agents: crate::app::config::AgentCatalog::default(),
             parties: None,
             base: PathBuf::from("/tmp"),

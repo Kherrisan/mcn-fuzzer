@@ -133,9 +133,9 @@ pub fn generate(path: &Path) -> Result<Task, String> {
             .get(&task.profile)
             .ok_or_else(|| format!("agent profile {} is not defined", task.profile))?;
         let provider = agent::provider_of(task)?;
-        let deadline = Duration::from_secs(campaign.protocol_generation.init_timeout_secs.max(1));
+        let deadline = Duration::from_secs(campaign.generator_synthesis.init_timeout_secs.max(1));
         let generation_deadline =
-            Duration::from_secs(campaign.protocol_generation.task_timeout_secs.max(1));
+            Duration::from_secs(campaign.generator_synthesis.task_timeout_secs.max(1));
         let init_prompt = fs::read_to_string(task.prepared().join("prompts/init.md"))
             .map_err(|error| error.to_string())?;
         let generation_prompt = fs::read_to_string(task.prepared().join("prompts/generation.md"))
@@ -213,12 +213,12 @@ fn build(options: &Options) -> Result<Vec<Task>, String> {
     let suite = Suite::load(&options.suite)?;
     let campaign = Campaign::load(&suite.campaign).map_err(|error| error.to_string())?;
     let profiles = if options.profiles.is_empty() {
-        if campaign.protocol_generation.profile.is_empty() {
+        if campaign.generator_synthesis.profile.is_empty() {
             return Err(
-                "no --profile was given and protocol_generation.profile is empty".to_string(),
+                "no --profile was given and generator_synthesis.profile is empty".to_string(),
             );
         }
-        vec![campaign.protocol_generation.profile.clone()]
+        vec![campaign.generator_synthesis.profile.clone()]
     } else {
         options.profiles.clone()
     };

@@ -6,7 +6,7 @@ needed by the validator itself. It reads files and prints one JSON report.
 
 ## Common checks (also used by Rust acceptance)
 
-- Completion IDs equal the dispatched request, protocol and trace IDs; status is
+- The completion request_id equals the dispatched request; status is
   `ok`; added_steps is an array of strings. Pass result.draft.json via `--result`
   before publication; the default path is OUTPUT_DIR/result.json for acceptance.
 - generator.py parses and compiles without execution. It defines a synchronous

@@ -50,7 +50,7 @@ fn fixture(dir: &Path) -> Value {
     fs::create_dir_all(&source).unwrap();
     fs::write(source.join("a.c"), "int foo(int x) { return x ? 1 : 0; }\n").unwrap();
     let model_body = json!({
-        "meta": {"schema_version": "7.0.0", "protocol": "demo", "complete": true, "documents": []},
+        "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": true, "documents": []},
         "parties": [{"name": "client", "description": "c"}, {"name": "server", "description": "s"}],
         "messages": [{"name": "hello", "associated_fields": []}],
         "channels": [{"name": "control", "description": "c", "transport": "TCP",
@@ -58,7 +58,7 @@ fn fixture(dir: &Path) -> Value {
                       "endpoint_party_names": ["client", "server"],
                       "initiator_party_name": "client", "acceptor_party_name": "server",
                       "endpoint_sources": []}],
-        "steps": [{"id": "step-001", "name": "hello", "message_name": "hello",
+        "steps": [{"name": "hello", "action": "send", "message_name": "hello",
                    "channel_name": "control", "sender_name": "client",
                    "receiver_name": "server", "condition": "start"}],
         "step_dependencies": [],
@@ -81,11 +81,11 @@ fn fixture(dir: &Path) -> Value {
     fs::write(
         &handlers,
         json!({
-            "version": 1, "session": "s",
+            "version": 2, "session": "s",
             "mappings": [{"message": "hello",
                           "handlers": [{"symbol": "foo", "location": "a.c:10",
                                         "evidence": "dispatch", "uncertain": false}],
-                          "step_ids": [model.steps[0].id().0], "reason": null}]
+                          "step_names": [model.steps[0].name], "reason": null}]
         })
         .to_string(),
     )
@@ -140,8 +140,7 @@ fn fixture(dir: &Path) -> Value {
         "protocol": protocol, "catalog": catalog, "handlers": handlers, "cfg": cfg,
         "callgraph": callgraph, "manifest": manifest, "snapshot": snapshot,
         "source": source, "binary": binary,
-        "protocol_id": model.protocol_id,
-        "step_id": model.steps[0].id().0,
+        "step_name": model.steps[0].name,
     })
 }
 
@@ -202,7 +201,7 @@ fn rust_client_drives_the_python_service_and_validates_the_proposal() {
         let client = wait_ready(&socket).expect("service becomes ready");
         let request = json!({
             "request_id": "req-1", "session": "s", "build": "build1",
-            "snapshot": "000001", "protocol_id": files["protocol_id"],
+            "snapshot": "000001",
             "output_dir": dir.join("out"),
             "snapshot_dir": files["snapshot"], "manifest": files["manifest"],
             "model": files["protocol"], "catalog": files["catalog"],
@@ -261,8 +260,11 @@ fn rust_client_drives_the_python_service_and_validates_the_proposal() {
                 json!({
                     "request_id": "req-1", "origin": "coverage",
                     "goal": {"handler_ids": [handler], "reason": "reach foo"},
-                    "trace": [{"step_id": files["step_id"], "handler_ids": [handler],
-                               "reason": "target", "constraints": []}],
+                    "parties": {"client_1": "client", "server_1": "server"},
+                    "channels": {"control_1": {"channel": "control", "endpoints": ["client_1", "server_1"]}},
+                    "trace": [{"name": "hello_once", "step": files["step_name"],
+                               "channel": "control_1", "sender": "client_1",
+                               "receiver": "server_1", "reason": "target", "constraints": []}],
                 }),
             )
             .unwrap();
@@ -286,14 +288,12 @@ fn rust_client_drives_the_python_service_and_validates_the_proposal() {
                     request_id: "req-1".into(),
                     build: "build1".into(),
                     snapshot: "000001".into(),
-                    protocol_id: model.protocol_id.clone(),
                 },
             )
             .unwrap();
         let digest = sha256_file(&proposal_path).unwrap();
-        let committed = client
-            .commit("req-1", submitted["proposal_id"].as_str().unwrap(), &digest)
-            .unwrap();
+        assert_eq!(submitted["request_id"], "req-1");
+        let committed = client.commit("req-1", &digest).unwrap();
         assert_eq!(committed["graph_revision"], 1);
         client.call(json!({"op": "shutdown"})).unwrap();
     });

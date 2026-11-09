@@ -12,8 +12,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     app::config::Campaign,
-    coverage::proposal::{proposal_id, Proposal, ProposalGoal, ProposalStep},
-    engine::executor::{restore_tree, write_server_config},
+    coverage::proposal::{instantiate, Proposal},
     engine::synthesis::{ExecutionMode, SynthesisPromptContext},
     protocol::{covers_sut_and_generator, StepTrace},
 };
@@ -30,9 +29,6 @@ pub struct Task {
     pub instance_dir: PathBuf,
     pub request_id: String,
     pub logical_session: String,
-    pub protocol_id: String,
-    pub trace_id: String,
-    pub proposal_id: String,
     pub step_names: Vec<String>,
     pub digest: String,
     pub sources: Sources,
@@ -58,8 +54,11 @@ pub struct Sources {
     pub generation_template: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator_skill: Option<PathBuf>,
+    #[serde(default)]
+    pub extra_files: Vec<PathBuf>,
     pub binary: PathBuf,
-    pub fixture: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup_script: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -69,13 +68,8 @@ pub struct TargetSnap {
     #[serde(default)]
     pub extra_env: Vec<(String, String)>,
     pub host: String,
-    pub fixture: PathBuf,
     pub workdir_snapshot: PathBuf,
-    pub config_template: PathBuf,
-    pub config_output: String,
-    pub cert: String,
-    pub key: String,
-    pub ca: Option<String>,
+    pub cleanup_script: Option<PathBuf>,
     pub case_ms: u64,
     pub connect_ms: u64,
     pub io_ms: u64,
@@ -190,15 +184,12 @@ pub fn prepare_instance(
     }
     fs::create_dir_all(instance.join("prepared/prompts")).map_err(|error| error.to_string())?;
     fs::create_dir_all(instance.join("agent")).map_err(|error| error.to_string())?;
-    let fixture = instance.join("prepared/fixture");
-    restore_tree(&campaign.target.fixture, &fixture).map_err(|error| error.to_string())?;
     let workdir = instance.join("prepared/workdir");
-    restore_tree(&campaign.target.fixture, &workdir).map_err(|error| error.to_string())?;
+    fs::create_dir_all(&workdir).map_err(|error| error.to_string())?;
     let mut local = campaign.clone();
     local.parties = Some(suite.parties());
-    local.target.fixture = fixture.clone();
     local.target.workdir = workdir.clone();
-    local.protocol_generation.output = instance.join("workspace");
+    local.generator_synthesis.output = instance.join("workspace");
     let context = SynthesisPromptContext::from_campaign(&local)
         .map_err(|error| error.to_string())?
         .with_execution(ExecutionMode::Evaluation);
@@ -207,11 +198,10 @@ pub fn prepare_instance(
     let request_id = format!("{case_name}-r{repeat}");
     let logical_session = stable_uuid(&format!(
         "{}:{profile_name}:{case_name}:{repeat}:{}",
-        context.model().protocol_id,
+        context.model().protocol_name,
         instance.display()
     ));
-    let mut proposal = evaluation_proposal(context.model(), &trace, &logical_session, &request_id);
-    proposal.proposal_id = proposal_id(&proposal).map_err(|error| error.to_string())?;
+    let proposal = evaluation_proposal(context.model(), &trace, &logical_session, &request_id)?;
     fs::write(
         instance.join("prepared/proposal.json"),
         format!(
@@ -221,14 +211,15 @@ pub fn prepare_instance(
     )
     .map_err(|error| error.to_string())?;
     let trace_doc = serde_json::json!({
-        "trace_id": trace.id.0,
-        "steps": trace.steps.iter().map(|step| serde_json::json!({
+        "request_id": request_id.clone(),
+        "steps": proposal.trace.iter().map(|step| serde_json::json!({
             "name": step.name,
-            "source_id": step.source_id,
-            "step_id": step.id().0,
-            "sender": step.sender_name,
-            "receiver": step.receiver_name,
-            "channel": step.channel_name,
+            "step": step.step,
+            "action": step.action,
+            "sender": step.sender,
+            "receiver": step.receiver,
+            "party": step.party,
+            "channel": step.channel,
         })).collect::<Vec<_>>(),
     });
     fs::write(
@@ -255,35 +246,27 @@ pub fn prepare_instance(
         .map_err(|error| error.to_string())?;
     fs::write(instance.join("prepared/prompts/generation.md"), generation)
         .map_err(|error| error.to_string())?;
-    let snapshot = workdir.join(&campaign.target.config_output);
-    write_server_config(
-        &campaign.target.config_template,
-        &snapshot,
-        &crate::app::config::TargetPlaceholders {
-            port: 0,
-            root: workdir.clone(),
-            config: snapshot.clone(),
-            cert: workdir.join(&campaign.target.cert),
-            key: workdir.join(&campaign.target.key),
-            ca: campaign
-                .target
-                .ca
-                .clone()
-                .map(|ca| workdir.join(ca))
-                .unwrap_or_else(|| workdir.join("certs/my.pem")),
-        },
-    )
-    .map_err(|error| error.to_string())?;
     let sources = Sources {
         suite: absolute(&suite.path)?,
         campaign: absolute(&suite.campaign)?,
-        model: absolute(&campaign.protocol_generation.model)?,
+        model: absolute(&campaign.generator_synthesis.model)?,
         init_template: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("prompts/synthesis-init.md"),
         generation_template: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("prompts/synthesis-generation.md"),
         generator_skill: Some(context.generator_skill().to_path_buf()),
+        extra_files: campaign
+            .generator_synthesis
+            .extra_files
+            .iter()
+            .map(|path| absolute(path))
+            .collect::<Result<Vec<_>, _>>()?,
         binary: absolute(&campaign.target.binary)?,
-        fixture: absolute(&campaign.target.fixture)?,
+        cleanup_script: campaign
+            .target
+            .cleanup_script
+            .as_deref()
+            .map(absolute)
+            .transpose()?,
     };
     let digest = source_digest(&sources)?;
     let mut stages = BTreeMap::new();
@@ -311,9 +294,6 @@ pub fn prepare_instance(
         instance_dir: absolute(&instance)?,
         request_id,
         logical_session,
-        protocol_id: context.model().protocol_id.clone(),
-        trace_id: trace.id.0,
-        proposal_id: proposal.proposal_id.clone(),
         step_names: names,
         digest,
         sources,
@@ -322,13 +302,13 @@ pub fn prepare_instance(
             args: campaign.target.args.clone(),
             extra_env: campaign.target.extra_env.clone(),
             host: campaign.target.host.clone(),
-            fixture,
             workdir_snapshot: workdir,
-            config_template: absolute(&campaign.target.config_template)?,
-            config_output: campaign.target.config_output.clone(),
-            cert: campaign.target.cert.clone(),
-            key: campaign.target.key.clone(),
-            ca: campaign.target.ca.clone(),
+            cleanup_script: campaign
+                .target
+                .cleanup_script
+                .as_deref()
+                .map(absolute)
+                .transpose()?,
             case_ms: campaign.timeouts.case_ms,
             connect_ms: campaign.timeouts.connect_ms,
             io_ms: campaign.timeouts.io_ms,
@@ -357,65 +337,16 @@ fn evaluation_proposal(
     trace: &StepTrace,
     session: &str,
     request: &str,
-) -> Proposal {
-    let snapshot = model.snapshot();
-    let steps = trace
-        .steps
-        .iter()
-        .map(|step| ProposalStep {
-            step_id: step.id().0,
-            handler_ids: Vec::new(),
-            reason: "fixed evaluation step".to_string(),
-            constraints: Vec::new(),
-        })
-        .collect();
-    let definitions: Vec<_> = trace
-        .steps
-        .iter()
-        .map(|step| {
-            serde_json::json!({
-                "step_id": step.id().0,
-                "source_id": step.source_id,
-                "name": step.name,
-                "message": step.message_name,
-                "channel": step.channel_name,
-                "sender": step.sender_name,
-                "receiver": step.receiver_name,
-                "condition": step.condition,
-            })
-        })
-        .collect();
-    let documents = snapshot
-        .get("meta")
-        .and_then(|meta| meta.get("documents"))
-        .cloned()
-        .unwrap_or(serde_json::Value::Array(Vec::new()));
-    Proposal {
-        version: 1,
-        proposal_id: String::new(),
-        origin: "autonomous".to_string(),
-        session: session.to_string(),
-        request_id: request.to_string(),
-        build: String::new(),
-        snapshot: String::new(),
-        protocol_id: model.protocol_id.clone(),
-        graph_revision: 0,
-        trace_id: trace.id.0.clone(),
-        goal: ProposalGoal {
-            handler_ids: Vec::new(),
-            reason: "fixed evaluation trace".to_string(),
-        },
-        trace: steps,
-        context: serde_json::json!({
-            "steps": definitions,
-            "messages": snapshot.get("messages").cloned().unwrap_or_default(),
-            "channels": snapshot.get("channels").cloned().unwrap_or_default(),
-            "parties": snapshot.get("parties").cloned().unwrap_or_default(),
-            "handlers": [],
-            "dependencies": snapshot.get("step_dependencies").cloned().unwrap_or_default(),
-            "documents": documents,
-        }),
+) -> Result<Proposal, String> {
+    let mut proposal = instantiate(model, &trace.steps)?;
+    proposal.origin = "autonomous".to_string();
+    proposal.session = session.to_string();
+    proposal.request_id = request.to_string();
+    proposal.goal.reason = "fixed evaluation trace".to_string();
+    for item in &mut proposal.trace {
+        item.reason = "fixed evaluation step".to_string();
     }
+    Ok(proposal)
 }
 
 pub fn trace_from_names(
@@ -449,11 +380,12 @@ pub fn trace_from_names(
             .iter()
             .map(|step| {
                 format!(
-                    "{} {}->{:?}/{:?}",
+                    "{} {:?}",
                     step.name,
-                    step.sender_name,
-                    binding.role(&step.sender_name),
-                    binding.role(&step.receiver_name)
+                    step.participants()
+                        .iter()
+                        .map(|party| format!("{party}:{:?}", binding.role(party)))
+                        .collect::<Vec<_>>()
                 )
             })
             .collect::<Vec<_>>()
@@ -472,6 +404,9 @@ pub fn source_digest(sources: &Sources) -> Result<String, String> {
     hash_file(&mut hasher, &sources.model)?;
     hash_file(&mut hasher, &sources.init_template)?;
     hash_file(&mut hasher, &sources.generation_template)?;
+    for extra in &sources.extra_files {
+        hash_file(&mut hasher, extra)?;
+    }
     if let Some(skill) = &sources.generator_skill {
         hash_tree(
             &mut hasher,
@@ -481,7 +416,9 @@ pub fn source_digest(sources: &Sources) -> Result<String, String> {
         )?;
     }
     hash_file(&mut hasher, &sources.binary)?;
-    hash_tree(&mut hasher, &sources.fixture)?;
+    if let Some(cleanup_script) = &sources.cleanup_script {
+        hash_file(&mut hasher, cleanup_script)?;
+    }
     Ok(format!("{:x}", hasher.finalize()))
 }
 

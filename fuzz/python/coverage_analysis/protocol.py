@@ -11,8 +11,6 @@ from pathlib import Path
 
 import networkx as nx
 
-from coverage_analysis import catalog as ids
-
 
 class ProtocolError(ValueError):
     pass
@@ -20,14 +18,14 @@ class ProtocolError(ValueError):
 
 def _step_view(step):
     return {
-        "step_id": step["step_id"],
-        "source_id": step.get("source_id"),
         "name": step.get("name", ""),
-        "message": step.get("message_name", ""),
-        "channel": step.get("channel_name", ""),
-        "sender": step.get("sender_name", ""),
-        "receiver": step.get("receiver_name", ""),
-        "condition": step.get("condition", ""),
+        "action": step.get("action") or "send",
+        "message": step.get("message_name") or None,
+        "channel": step.get("channel_name") or "",
+        "sender": step.get("sender_name") or None,
+        "receiver": step.get("receiver_name") or None,
+        "party": step.get("party_name") or None,
+        "condition": step.get("condition") or "",
     }
 
 
@@ -35,21 +33,16 @@ class ProtocolGraph:
     def __init__(self, base, catalog):
         self.base = base
         self.catalog = catalog
-        self.steps = {step["step_id"]: step for step in catalog["steps"]}
-        self.by_source = {step["source_id"]: step["step_id"]
-                          for step in catalog["steps"] if step.get("source_id")}
-        self.by_name = {step.get("name"): step["step_id"]
-                        for step in catalog["steps"] if step.get("name")}
+        names = [step.get("name") for step in catalog["steps"]]
+        if len(names) != len(set(names)) or any(not name for name in names):
+            raise ProtocolError("catalog step names must be unique")
+        self.steps = {step["name"]: step for step in catalog["steps"]}
         self.graph = nx.DiGraph()
         for step in catalog["steps"]:
-            self.graph.add_node(step["step_id"], annotations=[], constraints=[])
+            self.graph.add_node(step["name"], annotations=[], constraints=[])
         for dependency in catalog.get("dependencies", []):
-            prior = (dependency.get("prior_step_id")
-                     or self.by_source.get(dependency.get("prior_step"))
-                     or self.by_name.get(dependency.get("prior_step")))
-            dependent = (dependency.get("dependent_step_id")
-                         or self.by_source.get(dependency.get("dependent_step"))
-                         or self.by_name.get(dependency.get("dependent_step")))
+            prior = dependency.get("prior_step")
+            dependent = dependency.get("dependent_step")
             if prior in self.steps and dependent in self.steps:
                 self.graph.add_edge(prior, dependent,
                                     condition=dependency.get("condition", ""),
@@ -66,8 +59,6 @@ class ProtocolGraph:
     def resolve(self, step):
         if step in self.steps:
             return step
-        if step in self.by_source:
-            return self.by_source[step]
         raise ProtocolError(f"unknown step {step}")
 
     def step(self, step):
@@ -81,9 +72,9 @@ class ProtocolGraph:
 
     def dependencies(self, step):
         step = self.resolve(step)
-        prior = [{"step_id": source, **self.step(source), **self.graph.edges[source, step]}
+        prior = [{"step": source, **self.step(source), **self.graph.edges[source, step]}
                  for source in self.graph.predecessors(step)]
-        after = [{"step_id": target, **self.step(target), **self.graph.edges[step, target]}
+        after = [{"step": target, **self.step(target), **self.graph.edges[step, target]}
                  for target in self.graph.successors(step)]
         return {"before": prior, "after": after}
 
@@ -124,13 +115,13 @@ class ProtocolGraph:
                 })
         return rows
 
-    def checkpoint(self, proposal_id=None):
+    def checkpoint(self, request_id=None):
         nodes = []
         for step, attrs in sorted(self.graph.nodes(data=True)):
             annotations = list(attrs.get("annotations") or [])
             constraints = list(attrs.get("constraints") or [])
             if annotations or constraints:
-                nodes.append({"step_id": step, "annotations": annotations,
+                nodes.append({"step": step, "annotations": annotations,
                               "constraints": constraints})
         edges = []
         for source, target, attrs in self.graph.edges(data=True):
@@ -140,21 +131,18 @@ class ProtocolGraph:
                           "condition": attrs.get("condition", ""),
                           "field_relations": list(attrs.get("field_relations") or [])})
         return {
-            "version": 1,
-            "protocol_id": self.base["protocol_id"],
+            "version": 2,
             "revision": self.revision,
-            "proposal_id": proposal_id,
+            "request_id": request_id,
             "nodes": nodes,
             "edges": edges,
         }
 
     def apply_checkpoint(self, checkpoint):
-        if checkpoint.get("version") != 1:
-            raise ProtocolError("graph checkpoint must have version 1")
-        if checkpoint.get("protocol_id") != self.base["protocol_id"]:
-            raise ProtocolError("graph checkpoint belongs to another protocol")
+        if checkpoint.get("version") != 2:
+            raise ProtocolError("graph checkpoint must have version 2")
         for node in checkpoint.get("nodes") or []:
-            step = self.resolve(node["step_id"])
+            step = self.resolve(node["step"])
             self.graph.nodes[step]["annotations"] = list(node.get("annotations") or [])
             self.graph.nodes[step]["constraints"] = list(node.get("constraints") or [])
         for edge in checkpoint.get("edges") or []:
@@ -173,28 +161,30 @@ def load_protocol(protocol_path, catalog_path=None, checkpoint_path=None):
     except (OSError, json.JSONDecodeError) as error:
         raise ProtocolError(f"cannot read protocol model {path}: {error}") from error
     meta = model.get("meta") or {}
-    if meta.get("schema_version") != "7.0.0":
-        raise ProtocolError("protocol schema_version must be 7.0.0")
-    base = {"protocol_id": ids.protocol_id(model), "protocol_name": meta.get("protocol", ""),
-            "model": model}
+    actual = meta.get("schema_version")
+    if actual != "8.0.0":
+        raise ProtocolError(f"protocol schema_version is {actual}, expected 8.0.0")
+    base = {"protocol_name": meta.get("protocol", ""), "model": model}
     if catalog_path:
         try:
             catalog = json.loads(Path(catalog_path).read_text())
         except (OSError, json.JSONDecodeError) as error:
             raise ProtocolError(f"cannot read catalog {catalog_path}: {error}") from error
-        if catalog.get("version") != 1:
-            raise ProtocolError("catalog must have version 1")
-        if catalog.get("protocol_id") != base["protocol_id"]:
-            raise ProtocolError("catalog protocol_id does not match the protocol model")
+        if catalog.get("version") != 3:
+            raise ProtocolError(f"catalog version is {catalog.get('version')}, expected 3")
         if not catalog.get("steps"):
             raise ProtocolError("catalog has no steps")
-        seen = set()
+        model_steps = {step.get("name"): step for step in model.get("steps") or []}
         for step in catalog["steps"]:
-            if step["step_id"] in seen:
-                raise ProtocolError(f"duplicate step id {step['step_id']}")
-            seen.add(step["step_id"])
+            source = model_steps.get(step.get("name"))
+            if source is None:
+                raise ProtocolError(f"catalog step {step.get('name')!r} is not in the protocol")
+            if (source.get("action") or "send") != (step.get("action") or "send"):
+                raise ProtocolError(f"catalog step {step.get('name')!r} action does not match")
+            if (source.get("action") or "send") != "send" and step.get("message_name"):
+                raise ProtocolError("network action catalog step cannot name a message")
     else:
-        catalog = build_catalog(model, base["protocol_id"])
+        catalog = build_catalog(model)
     graph = ProtocolGraph(base, catalog)
     if checkpoint_path:
         try:
@@ -207,31 +197,30 @@ def load_protocol(protocol_path, catalog_path=None, checkpoint_path=None):
 
 def build_catalog(model, protocol_id=None):
     """Fallback catalog when Rust did not write one (offline tests only)."""
-    protocol_id = protocol_id or ids.protocol_id(model)
+    del protocol_id
     steps = []
     for raw in model.get("steps") or []:
-        step = {
-            "name": raw.get("name", ""),
-            "message_name": raw.get("message_name", ""),
-            "channel_name": raw.get("channel_name", ""),
-            "sender_name": raw.get("sender_name", ""),
-            "receiver_name": raw.get("receiver_name", ""),
-            "condition": raw.get("condition", ""),
-        }
-        steps.append({**step, "step_id": ids.step_id(step), "source_id": raw.get("id")})
-    by_name = {raw.get("name"): ids.step_id(step) for raw, step in
-               zip(model.get("steps") or [], steps)}
+        action = raw.get("action") or "send"
+        steps.append({
+            "name": raw.get("name") or "",
+            "action": action,
+            "message_name": raw.get("message_name") if action == "send" else None,
+            "party_name": raw.get("party_name") if action != "send" else None,
+            "channel_name": raw.get("channel_name") or "",
+            "sender_name": raw.get("sender_name") if action == "send" else None,
+            "receiver_name": raw.get("receiver_name") if action == "send" else None,
+            "condition": raw.get("condition") or "",
+        })
     dependencies = []
     for raw in model.get("step_dependencies") or []:
         dependencies.append({
-            "prior_step_id": by_name.get(raw.get("prior_step"), ""),
-            "dependent_step_id": by_name.get(raw.get("dependent_step"), ""),
-            "condition": raw.get("condition", ""),
+            "prior_step": raw.get("prior_step") or "",
+            "dependent_step": raw.get("dependent_step") or "",
+            "condition": raw.get("condition") or "",
             "field_relations": raw.get("field_relations") or [],
         })
     return {
-        "version": 1,
-        "protocol_id": protocol_id,
+        "version": 3,
         "protocol_name": (model.get("meta") or {}).get("protocol", ""),
         "binding": {},
         "parties": [party.get("name") for party in model.get("parties") or []],
@@ -246,7 +235,12 @@ def context_for(graph, trace_ids, handlers):
     steps = [graph.view(step) for step in trace_ids]
     messages = sorted({step["message"] for step in steps if step.get("message")})
     channels = sorted({step["channel"] for step in steps if step.get("channel")})
-    parties = sorted({name for step in steps for name in (step["sender"], step["receiver"]) if name})
+    parties = sorted({
+        name
+        for step in steps
+        for name in (step.get("sender"), step.get("receiver"), step.get("party"))
+        if name
+    })
     message_handlers = handlers.by_message if handlers else {}
     handler_rows = []
     for message in messages:
@@ -267,18 +261,15 @@ def context_for(graph, trace_ids, handlers):
 
 
 def validate_handlers(handlers, graph):
-    """Every handler mapping must reference a step that exists in the catalog."""
+    """Every handler mapping must reference a step name that exists in the catalog."""
     known = set(graph.steps)
-    source = graph.by_source
     problems = []
     for row in handlers.rows:
         normalized = []
-        for step in row.step_ids:
+        for step in row.step_names:
             if step in known:
                 normalized.append(step)
-            elif step in source:
-                normalized.append(source[step])
             else:
                 problems.append(f"handler {row.message} references unknown step {step}")
-        row.step_ids = normalized
+        row.step_names = normalized
     return problems

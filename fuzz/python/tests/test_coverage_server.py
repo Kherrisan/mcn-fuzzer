@@ -11,7 +11,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from coverage_analysis import catalog as ids
 from coverage_analysis import coverage as coverage_mod
 from coverage_analysis import proposal as proposal_mod
 from coverage_analysis import protocol as protocol_mod
@@ -21,16 +20,15 @@ from coverage_analysis.manifest import graphs_digest, write_manifest
 
 def model_document():
     step = {
-        "id": "step-001",
         "name": "hello",
-        "message_name": "hello",
+        "action": "send", "message_name": "hello",
         "channel_name": "control",
         "sender_name": "client",
         "receiver_name": "server",
         "condition": "start",
     }
     return {
-        "meta": {"schema_version": "7.0.0", "protocol": "demo", "complete": True,
+        "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": True,
                  "documents": []},
         "parties": [{"name": "client", "description": "c"},
                     {"name": "server", "description": "s"}],
@@ -70,15 +68,15 @@ def fixture(root):
     catalog = protocol_mod.build_catalog(model_document())
     catalog_path = root / "catalog.json"
     catalog_path.write_text(json.dumps(catalog))
-    step_id = catalog["steps"][0]["step_id"]
+    step_name = catalog["steps"][0]["name"]
     handlers = {
-        "version": 1,
+        "version": 2,
         "session": "s",
         "mappings": [{
             "message": "hello",
             "handlers": [{"symbol": "foo", "location": "a.c:10",
                           "evidence": "dispatch", "uncertain": False}],
-            "step_ids": [step_id],
+            "step_names": [step_name],
             "reason": None,
         }],
     }
@@ -117,21 +115,9 @@ def fixture(root):
     return {
         "root": root, "source": source, "protocol": protocol, "catalog": catalog_path,
         "handlers": handlers_path, "cfg": cfg, "callgraph": callgraph,
-        "manifest": manifest, "snapshot": snapshot, "out": out, "step_id": step_id,
+        "manifest": manifest, "snapshot": snapshot, "out": out, "step_name": step_name,
         "binary": binary,
     }
-
-
-class IdTests(unittest.TestCase):
-    def test_step_trace_and_protocol_ids_are_stable_and_short(self):
-        step = model_document()["steps"][0]
-        digest = ids.step_id(step)
-        self.assertEqual(len(digest), 8)
-        self.assertEqual(digest, "55f21230")
-        trace = ids.trace_id([step])
-        self.assertEqual(len(trace), 8)
-        self.assertEqual(trace, "d21f4f84")
-        self.assertEqual(len(ids.protocol_id(model_document())), 8)
 
 
 class CoverageTests(unittest.TestCase):
@@ -164,20 +150,122 @@ class ProposalTests(unittest.TestCase):
             graph = protocol_mod.load_protocol(files["protocol"], files["catalog"])
             handlers = load_handlers(files["handlers"])
             handler_id = handlers.rows[0].handlers[0].id
-            trace = [{"step_id": files["step_id"], "handler_ids": [handler_id],
+            self.assertEqual(handler_id, "foo")
+            trace = [{"name": "hello_once", "step": files["step_name"],
+                      "channel": "control_1", "sender": "client_1", "receiver": "server_1",
                       "reason": "target", "constraints": ["needs login"]}]
+            parties = {"client_1": "client", "server_1": "server"}
+            channels = {"control_1": {"channel": "control", "endpoints": ["client_1", "server_1"]}}
             proposal = proposal_mod.build_proposal(
                 graph, "coverage", "s", "req", "build1", "000001",
-                {"handler_ids": [handler_id], "reason": "reach foo"}, trace, handlers)
+                {"handler_ids": [handler_id], "reason": "reach foo"}, trace, handlers,
+                parties, channels)
             proposal_mod.validate_proposal(proposal, graph, handlers,
                                            {"session": "s", "request_id": "req",
-                                            "build": "build1", "snapshot": "000001",
-                                            "protocol_id": graph.base["protocol_id"]})
-            self.assertEqual(len(proposal["proposal_id"]), 8)
+                                            "build": "build1", "snapshot": "000001"})
+            self.assertNotIn("proposal_id", proposal)
+            self.assertEqual(proposal["request_id"], "req")
             changed = json.loads(json.dumps(proposal))
             changed["trace"][0]["constraints"] = ["different"]
+            proposal_mod.validate_proposal(changed, graph, handlers)
+            changed["request_id"] = "other"
             with self.assertRaises(proposal_mod.ProposalError):
-                proposal_mod.validate_proposal(changed, graph, handlers)
+                proposal_mod.validate_proposal(changed, graph, handlers,
+                                               {"session": "s", "request_id": "req",
+                                                "build": "build1", "snapshot": "000001"})
+
+
+def _network_model():
+    def step(action, name, **fields):
+        row = {
+            "name": name,
+            "action": action,
+            "channel_name": "control",
+            "condition": "",
+        }
+        row.update(fields)
+        return row
+    return {
+        "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": True,
+                 "documents": []},
+        "parties": [{"name": "client", "description": "c"},
+                    {"name": "server", "description": "s"}],
+        "messages": [{"name": "hello", "associated_fields": []}],
+        "channels": [{"name": "control", "description": "c", "transport": "TCP",
+                      "connection": "connection_oriented",
+                      "endpoint_party_names": ["client", "server"],
+                      "initiator_party_name": "client",
+                      "acceptor_party_name": "server", "endpoint_sources": []}],
+        "steps": [
+            step("send", "send hello", message_name="hello",
+                 sender_name="client", receiver_name="server"),
+            step("listen", "server listens", party_name="server"),
+            step("connect", "client connects", party_name="client"),
+            step("close", "server closes", party_name="server"),
+        ],
+        "step_dependencies": [{
+            "prior_step": "server listens",
+            "dependent_step": "client connects",
+            "condition": "listener is ready",
+            "field_relations": [],
+        }],
+        "unresolved": [],
+    }
+
+
+class ProtocolLoadTests(unittest.TestCase):
+    def test_schema8_catalog3_loads_every_action_and_rejects_schema7(self):
+        model = _network_model()
+        catalog = protocol_mod.build_catalog(model)
+        self.assertEqual(catalog["version"], 3)
+        self.assertNotIn("protocol_id", catalog)
+        actions = {step["action"] for step in catalog["steps"]}
+        self.assertEqual(actions, {"send", "listen", "connect", "close"})
+        for raw, published in zip(model["steps"], catalog["steps"]):
+            self.assertEqual(published["name"], raw["name"])
+            self.assertNotIn("step_id", published)
+            self.assertEqual(published["party_name"], raw.get("party_name"))
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            protocol = root / "protocol.json"
+            catalog_path = root / "catalog.json"
+            protocol.write_text(json.dumps(model))
+            catalog_path.write_text(json.dumps(catalog))
+            graph = protocol_mod.load_protocol(protocol, catalog_path)
+            self.assertEqual({step["action"] for step in graph.catalog["steps"]}, actions)
+            listen = next(step for step in graph.catalog["steps"] if step["action"] == "listen")
+            context = protocol_mod.context_for(graph, [listen["name"]], None)
+            self.assertEqual(context["parties"], ["server"])
+            self.assertEqual(context["handlers"], [])
+            self.assertIsNone(graph.view(listen["name"])["message"])
+            old = json.loads(protocol.read_text())
+            old["meta"]["schema_version"] = "7.0.0"
+            protocol.write_text(json.dumps(old))
+            with self.assertRaises(protocol_mod.ProtocolError) as raised:
+                protocol_mod.load_protocol(protocol, catalog_path)
+            self.assertIn("7.0.0", str(raised.exception))
+            self.assertIn("8.0.0", str(raised.exception))
+
+    def test_proposal_rejects_trace_handler_ids(self):
+        model = _network_model()
+        catalog = protocol_mod.build_catalog(model)
+        graph = protocol_mod.ProtocolGraph(
+            {"protocol_name": "demo", "model": model},
+            catalog,
+        )
+        listen = next(step["name"] for step in catalog["steps"] if step["action"] == "listen")
+        with self.assertRaises(proposal_mod.ProposalError) as raised:
+            proposal_mod.build_proposal(
+                graph, "autonomous", "s", "req", "", "",
+                {"handler_ids": [], "reason": "open"},
+                [{"name": "listen_once", "step": listen, "channel": "control_1",
+                  "party": "server_1", "handler_ids": ["h1"], "reason": "listen",
+                  "constraints": []}],
+                None,
+                {"server_1": "server"},
+                {"control_1": {"channel": "control", "endpoints": ["server_1"]}},
+            )
+        self.assertIn("cannot carry handler ids", str(raised.exception))
 
 
 class ServiceTests(unittest.TestCase):
@@ -217,7 +305,7 @@ class ServiceTests(unittest.TestCase):
 
                 request = {
                     "request_id": "req-1", "session": "s", "build": "build1",
-                    "snapshot": "000001", "protocol_id": "unused",
+                    "snapshot": "000001",
                     "output_dir": str(files["out"]),
                     "snapshot_dir": str(files["snapshot"]),
                     "manifest": str(files["manifest"]),
@@ -229,9 +317,6 @@ class ServiceTests(unittest.TestCase):
                 call({"op": "register_request", "request": request})
                 tool("load_protocol", {"protocol_path": str(files["protocol"]),
                                        "catalog_path": str(files["catalog"])})
-                catalog = json.loads(files["catalog"].read_text())
-                request["protocol_id"] = catalog["protocol_id"]
-                call({"op": "register_request", "request": request})
                 tool("load_handlers", {"handlers_path": str(files["handlers"])})
                 tool("load_cfg", {"cfg_dir": str(files["cfg"]),
                                   "manifest_path": str(files["manifest"])})
@@ -250,18 +335,25 @@ class ServiceTests(unittest.TestCase):
                     "request_id": "req-1", "origin": "coverage",
                     "goal": {"handler_ids": [handlers[0]["handler"]["id"]],
                              "reason": "reach foo"},
-                    "trace": [{"step_id": files["step_id"],
-                               "handler_ids": [handlers[0]["handler"]["id"]],
+                    "parties": {"client_1": "client", "server_1": "server"},
+                    "channels": {"control_1": {"channel": "control",
+                                               "endpoints": ["client_1", "server_1"]}},
+                    "trace": [{"name": "hello_once", "step": files["step_name"],
+                               "channel": "control_1", "sender": "client_1",
+                               "receiver": "server_1",
                                "reason": "target", "constraints": []}],
+                    "mutations": [{"op": "field", "steps": ["hello_once"],
+                                   "field": "username", "suggestion": "empty",
+                                   "evidence": "a.c:10"}],
                 })
+                self.assertEqual(proposal["request_id"], "req-1")
+                self.assertNotIn("proposal_id", proposal)
                 path = files["out"] / "proposal.json"
                 digest = hashlib.sha256(path.read_bytes()).hexdigest()
                 committed = call({"op": "commit_analysis", "request_id": "req-1",
-                                  "proposal_id": proposal["proposal_id"],
                                   "proposal_sha256": digest})
                 self.assertEqual(committed["graph_revision"], 1)
                 again = call({"op": "commit_analysis", "request_id": "req-1",
-                              "proposal_id": proposal["proposal_id"],
                               "proposal_sha256": digest})
                 self.assertEqual(again["graph_revision"], 1)
                 call({"op": "shutdown"})

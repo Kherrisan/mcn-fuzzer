@@ -1,4 +1,4 @@
-//! Schema 7.0.0 protocol models and name indexes.
+//! Schema 8.0.0 protocol models and name indexes.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -8,8 +8,6 @@ use std::{
 
 use serde::Deserialize;
 use serde_json::Value;
-
-use super::id::protocol_id;
 
 /// How a campaign carries one named party.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -163,15 +161,91 @@ pub(crate) struct EndpointSource {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Step {
-    id: String,
-    name: String,
-    message_name: String,
-    channel_name: String,
-    sender_name: String,
-    receiver_name: String,
-    condition: String,
+#[serde(tag = "action", deny_unknown_fields)]
+enum Step {
+    #[serde(rename = "send")]
+    Send {
+        name: String,
+        channel_name: String,
+        condition: String,
+        message_name: String,
+        sender_name: String,
+        receiver_name: String,
+    },
+    #[serde(rename = "listen")]
+    Listen {
+        name: String,
+        channel_name: String,
+        condition: String,
+        party_name: String,
+    },
+    #[serde(rename = "connect")]
+    Connect {
+        name: String,
+        channel_name: String,
+        condition: String,
+        party_name: String,
+    },
+    #[serde(rename = "close")]
+    Close {
+        name: String,
+        channel_name: String,
+        condition: String,
+        party_name: String,
+    },
+}
+
+impl Step {
+    fn name(&self) -> &str {
+        match self {
+            Self::Send { name, .. }
+            | Self::Listen { name, .. }
+            | Self::Connect { name, .. }
+            | Self::Close { name, .. } => name,
+        }
+    }
+
+    fn channel_name(&self) -> &str {
+        match self {
+            Self::Send { channel_name, .. }
+            | Self::Listen { channel_name, .. }
+            | Self::Connect { channel_name, .. }
+            | Self::Close { channel_name, .. } => channel_name,
+        }
+    }
+
+    fn condition(&self) -> &str {
+        match self {
+            Self::Send { condition, .. }
+            | Self::Listen { condition, .. }
+            | Self::Connect { condition, .. }
+            | Self::Close { condition, .. } => condition,
+        }
+    }
+
+    fn action(&self) -> StepAction {
+        match self {
+            Self::Send {
+                message_name,
+                sender_name,
+                receiver_name,
+                ..
+            } => StepAction::Send {
+                message_name: message_name.clone(),
+                sender_name: sender_name.clone(),
+                receiver_name: receiver_name.clone(),
+            },
+            Self::Listen { party_name, .. } => StepAction::Listen {
+                party_name: party_name.clone(),
+            },
+            Self::Connect { party_name, .. } => StepAction::Connect {
+                party_name: party_name.clone(),
+            },
+            Self::Close { party_name, .. } => StepAction::Close {
+                party_name: party_name.clone(),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -197,19 +271,111 @@ pub(crate) struct Issue {
     pub(crate) object_names: Vec<String>,
 }
 
+/// Message send or one network action. Network actions do not invent a message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StepAction {
+    Send {
+        message_name: String,
+        sender_name: String,
+        receiver_name: String,
+    },
+    Listen {
+        party_name: String,
+    },
+    Connect {
+        party_name: String,
+    },
+    Close {
+        party_name: String,
+    },
+}
+
+impl StepAction {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Send { .. } => "send",
+            Self::Listen { .. } => "listen",
+            Self::Connect { .. } => "connect",
+            Self::Close { .. } => "close",
+        }
+    }
+
+    pub fn message_name(&self) -> Option<&str> {
+        match self {
+            Self::Send { message_name, .. } => Some(message_name),
+            _ => None,
+        }
+    }
+
+    pub fn sender_name(&self) -> Option<&str> {
+        match self {
+            Self::Send { sender_name, .. } => Some(sender_name),
+            _ => None,
+        }
+    }
+
+    pub fn receiver_name(&self) -> Option<&str> {
+        match self {
+            Self::Send { receiver_name, .. } => Some(receiver_name),
+            _ => None,
+        }
+    }
+
+    pub fn party_name(&self) -> Option<&str> {
+        match self {
+            Self::Listen { party_name }
+            | Self::Connect { party_name }
+            | Self::Close { party_name } => Some(party_name),
+            Self::Send { .. } => None,
+        }
+    }
+
+    pub fn participants(&self) -> Vec<&str> {
+        match self {
+            Self::Send {
+                sender_name,
+                receiver_name,
+                ..
+            } => vec![sender_name, receiver_name],
+            Self::Listen { party_name }
+            | Self::Connect { party_name }
+            | Self::Close { party_name } => vec![party_name],
+        }
+    }
+}
+
 /// One step after the model has been indexed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepRecord {
-    /// Original `id` from the model. Not part of [`super::StepId`].
-    pub source_id: String,
+    /// Unique step name. This is the only step reference.
     pub name: String,
-    pub message_name: String,
     pub channel_name: String,
-    pub sender_name: String,
-    pub receiver_name: String,
     pub condition: String,
+    pub action: StepAction,
     /// Position in the model. Selection preserves this order.
     pub index: usize,
+}
+
+impl StepRecord {
+    pub fn message_name(&self) -> Option<&str> {
+        self.action.message_name()
+    }
+
+    pub fn sender_name(&self) -> Option<&str> {
+        self.action.sender_name()
+    }
+
+    pub fn receiver_name(&self) -> Option<&str> {
+        self.action.receiver_name()
+    }
+
+    pub fn party_name(&self) -> Option<&str> {
+        self.action.party_name()
+    }
+
+    pub fn participants(&self) -> Vec<&str> {
+        self.action.participants()
+    }
 }
 
 /// Immutable campaign snapshot.
@@ -217,7 +383,6 @@ pub struct StepRecord {
 pub struct IndexedModel {
     pub protocol_name: String,
     pub complete: bool,
-    pub protocol_id: String,
     pub steps: Vec<StepRecord>,
     pub(crate) messages: BTreeMap<String, Message>,
     pub(crate) channels: BTreeMap<String, Channel>,
@@ -278,7 +443,7 @@ impl IndexedModel {
         names
     }
 
-    /// Whether this step's sender, receiver, and channel parties can be carried.
+    /// Whether this step's actor and channel parties can be carried.
     pub fn carries_step(&self, step: &StepRecord, binding: &Binding) -> bool {
         self.step_is_eligible(step, binding)
     }
@@ -292,8 +457,10 @@ impl IndexedModel {
     }
 
     fn step_is_eligible(&self, step: &StepRecord, binding: &Binding) -> bool {
-        if !binding.role(&step.sender_name).can_carry()
-            || !binding.role(&step.receiver_name).can_carry()
+        if step
+            .participants()
+            .iter()
+            .any(|party| !binding.role(party).can_carry())
         {
             return false;
         }
@@ -333,12 +500,12 @@ pub fn load_model(path: &Path) -> Result<IndexedModel, ModelError> {
         .map_err(|error| ModelError::new(format!("protocol model is not JSON: {error}")))?;
     let file: ModelFile = serde_json::from_value(snapshot.clone()).map_err(|error| {
         ModelError::new(format!(
-            "protocol model does not match schema 7.0.0: {error}"
+            "protocol model does not match schema 8.0.0: {error}"
         ))
     })?;
-    if file.meta.schema_version != "7.0.0" {
+    if file.meta.schema_version != "8.0.0" {
         return Err(ModelError::new(format!(
-            "protocol schema_version is {}, expected 7.0.0",
+            "protocol schema_version is {}, expected 8.0.0",
             file.meta.schema_version
         )));
     }
@@ -389,51 +556,82 @@ pub fn load_model(path: &Path) -> Result<IndexedModel, ModelError> {
         }
     }
     let mut names = BTreeSet::new();
+    let mut network_nodes = BTreeSet::new();
     let mut steps = Vec::new();
     for (index, step) in file.steps.iter().enumerate() {
-        if !names.insert(step.name.clone()) {
-            return Err(ModelError::new(format!(
-                "duplicate step name {}",
-                step.name
-            )));
+        let name = step.name().to_string();
+        if !names.insert(name.clone()) {
+            return Err(ModelError::new(format!("duplicate step name {name}")));
         }
-        if !messages.contains_key(&step.message_name) {
+        let channel_name = step.channel_name().to_string();
+        let Some(channel) = channels.get(&channel_name) else {
             return Err(ModelError::new(format!(
-                "step {} references missing message {}",
-                step.name, step.message_name
+                "step {name} references missing channel {channel_name}"
             )));
+        };
+        let action = step.action();
+        if let Some(message_name) = action.message_name() {
+            if !messages.contains_key(message_name) {
+                return Err(ModelError::new(format!(
+                    "step {name} references missing message {message_name}"
+                )));
+            }
         }
-        if !channels.contains_key(&step.channel_name) {
-            return Err(ModelError::new(format!(
-                "step {} references missing channel {}",
-                step.name, step.channel_name
-            )));
+        if let Some(party_name) = action.party_name() {
+            let key = (party_name.to_string(), channel_name.clone(), action.name());
+            if !network_nodes.insert(key) {
+                return Err(ModelError::new(format!(
+                    "duplicate network action {} for party {party_name} on channel {channel_name}",
+                    action.name()
+                )));
+            }
         }
-        for party in [&step.sender_name, &step.receiver_name] {
+        for party in action.participants() {
             if !parties.contains_key(party) {
                 return Err(ModelError::new(format!(
-                    "step {} references missing party {party}",
-                    step.name
+                    "step {name} references missing party {party}"
+                )));
+            }
+            if !channel
+                .endpoint_party_names
+                .iter()
+                .any(|item| item == party)
+            {
+                return Err(ModelError::new(format!(
+                    "step {name} party is not a channel endpoint"
                 )));
             }
         }
         steps.push(StepRecord {
-            source_id: step.id.clone(),
-            name: step.name.clone(),
-            message_name: step.message_name.clone(),
-            channel_name: step.channel_name.clone(),
-            sender_name: step.sender_name.clone(),
-            receiver_name: step.receiver_name.clone(),
-            condition: step.condition.clone(),
+            name,
+            channel_name,
+            condition: step.condition().to_string(),
+            action,
             index,
         });
     }
-    let known: BTreeSet<&str> = steps.iter().map(|step| step.name.as_str()).collect();
+    let known: BTreeMap<&str, &StepRecord> = steps
+        .iter()
+        .map(|step| (step.name.as_str(), step))
+        .collect();
     for dep in &file.step_dependencies {
-        if !known.contains(dep.prior_step.as_str()) || !known.contains(dep.dependent_step.as_str())
-        {
+        let Some(prior) = known.get(dep.prior_step.as_str()) else {
             return Err(ModelError::new(format!(
                 "dependency {} -> {} references a missing step",
+                dep.prior_step, dep.dependent_step
+            )));
+        };
+        let Some(dependent) = known.get(dep.dependent_step.as_str()) else {
+            return Err(ModelError::new(format!(
+                "dependency {} -> {} references a missing step",
+                dep.prior_step, dep.dependent_step
+            )));
+        };
+        if !dep.field_relations.is_empty()
+            && (prior.message_name().is_none() || dependent.message_name().is_none())
+        {
+            return Err(ModelError::new(format!(
+                "field relations require send steps on both ends of {} -> {}",
                 dep.prior_step, dep.dependent_step
             )));
         }
@@ -445,7 +643,6 @@ pub fn load_model(path: &Path) -> Result<IndexedModel, ModelError> {
     Ok(IndexedModel {
         protocol_name: file.meta.protocol,
         complete: file.meta.complete,
-        protocol_id: protocol_id(&snapshot),
         steps,
         messages,
         channels,

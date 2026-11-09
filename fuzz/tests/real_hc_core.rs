@@ -240,7 +240,7 @@ fn write_campaign(dir: &Path, stub: &Path, stub_args: &[&str], init_timeout: u64
         fs::create_dir_all(dir.join(name)).unwrap();
     }
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let model = manifest.join("../rsc/runs/ftp-gpt-6-sol-high-20261104T031756Z/protocol.json");
+    let model = manifest.join("targets/lightftp/protocol.json");
     let target = manifest.join("targets/lightftp");
     let args = if stub_args.is_empty() {
         "[]".to_string()
@@ -251,8 +251,7 @@ fn write_campaign(dir: &Path, stub: &Path, stub_args: &[&str], init_timeout: u64
         r#"[target]
 binary = "{binary}"
 workdir = "{dir}/work"
-fixture = "{fixture}"
-config_template = "{conf}"
+cleanup_script = "{cleanup}"
 host = "127.0.0.1"
 port = 0
 map_size = 65536
@@ -279,7 +278,7 @@ file_limit = 67108864
 [coverage]
 enabled = false
 
-[protocol_generation]
+[generator_synthesis]
 enabled = true
 model = "{model}"
 profile = "stub"
@@ -301,8 +300,7 @@ args = {args}
 "#,
         binary = target.join("build/fftp").display(),
         dir = dir.display(),
-        fixture = target.join("fixture").display(),
-        conf = target.join("fftp.conf").display(),
+        cleanup = target.join("cleanup.sh").display(),
         python = manifest.join(".venv/bin/python").display(),
         pythonpath = manifest.join("python").display(),
         model = model.display(),
@@ -512,14 +510,13 @@ fn assert_correlation(output: &Path) {
         if !dir.is_dir() {
             continue;
         }
-        let receipt: Value =
-            serde_json::from_slice(&fs::read(dir.join("receipt.json")).unwrap()).unwrap();
+        let proposal: Value =
+            serde_json::from_slice(&fs::read(dir.join("proposal.json")).unwrap()).unwrap();
         let result: Value =
             serde_json::from_slice(&fs::read(dir.join("result.json")).unwrap()).unwrap();
         let request = dir.file_name().unwrap().to_string_lossy();
         assert_eq!(result["request_id"], request.as_ref());
-        assert_eq!(result["protocol_id"], receipt["protocol_id"]);
-        assert_eq!(result["trace_id"], receipt["trace_id"]);
+        assert_eq!(proposal["request_id"], request.as_ref());
         assert_eq!(result["status"], "ok");
         assert!(result["added_steps"]
             .as_array()
@@ -727,9 +724,7 @@ def write_result(text):
         return
     output_dir = field(text, "OUTPUT_DIR=")
     request = field(text, "REQUEST=")
-    protocol = field(text, "PROTOCOL=")
-    trace = field(text, "TRACE=")
-    if not (output_dir and request and protocol and trace):
+    if not (output_dir and request):
         return
     os.makedirs(output_dir, exist_ok=True)
     script = (
@@ -753,8 +748,6 @@ def write_result(text):
         json.dump({"verb": "NOOP", "arg": ""}, handle)
     atomic(os.path.join(output_dir, "result.json"), {
         "request_id": request,
-        "protocol_id": protocol,
-        "trace_id": trace,
         "status": "ok",
         "error": None,
         "added_steps": ["open control connection"],

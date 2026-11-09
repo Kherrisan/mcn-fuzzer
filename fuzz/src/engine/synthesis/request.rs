@@ -14,13 +14,9 @@ use crate::{
 pub(super) struct GeneratorRequest {
     pub(super) id: String,
     pub(super) output_dir: PathBuf,
-    pub(super) protocol_id: String,
     pub(super) session: String,
     pub(super) build: String,
     pub(super) snapshot: String,
-    /// Expected proposal identity for coverage-driven requests.
-    pub(super) proposal_id: Option<String>,
-    pub(super) trace_id: Option<String>,
     pub(super) model: Arc<IndexedModel>,
     pub(super) binding: Binding,
     pub(super) autonomous: bool,
@@ -52,13 +48,7 @@ impl GeneratorRequest {
 
     /// Validate and publish this request's generator artifacts.
     pub(super) fn accept(&self) -> Result<ValidatedGenerator, String> {
-        let (result, params) = super::artifacts::check(
-            &self.output_dir,
-            &self.id,
-            &self.protocol_id,
-            self.trace_id.as_deref().unwrap_or(""),
-            self.proposal_id.as_deref().unwrap_or(""),
-        )?;
+        let (result, params) = super::artifacts::check(&self.output_dir, &self.id)?;
         let proposal = Proposal::read(&self.output_dir.join("proposal.json"))?;
         // A coverage proposal keeps the analysis request id it was created for;
         // the synthesis request id is recorded by result.json and the directory.
@@ -73,7 +63,6 @@ impl GeneratorRequest {
             request_id,
             build: self.build.clone(),
             snapshot: self.snapshot.clone(),
-            protocol_id: self.protocol_id.clone(),
         };
         proposal.validate(&self.model, &self.binding, &identity)?;
         if self.autonomous {
@@ -84,8 +73,8 @@ impl GeneratorRequest {
             if proposal.origin != "coverage" {
                 return Err("coverage synthesis needs a coverage proposal".into());
             }
-            if self.proposal_id.as_deref() != Some(proposal.proposal_id.as_str()) {
-                return Err("proposal id changed between dispatch and acceptance".into());
+            if proposal.request_id != self.id {
+                return Err("proposal request_id does not match this synthesis request".into());
             }
         }
         let published = self.output_dir.join("published");
@@ -119,12 +108,12 @@ impl GeneratorRequest {
         Ok(ValidatedGenerator {
             input: GeneratorInput::new(generator, params),
             origin: TraceOrigin {
-                protocol_id: proposal.protocol_id.clone(),
-                trace_id: proposal.trace_id.clone(),
-                step_ids: proposal
+                request_id: self.id.clone(),
+                session: proposal.session.clone(),
+                step_names: proposal
                     .trace
                     .iter()
-                    .map(|step| step.step_id.clone())
+                    .map(|step| step.name.clone())
                     .collect(),
                 added_steps: added,
             },

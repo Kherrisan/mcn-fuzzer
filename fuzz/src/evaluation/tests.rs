@@ -16,7 +16,7 @@ fn write_model(dir: &Path, steps: &str) -> PathBuf {
     fs::write(
         &path,
         format!(
-            r#"{{"meta":{{"schema_version":"7.0.0","protocol":"demo","complete":false,"documents":[{{"doc_id":"d","rfc":"RFC 1","input_sha256":"aa","document_sha256":"bb","path":"doc.json"}}]}},"parties":[{{"name":"user","description":"u"}},{{"name":"server","description":"s"}}],"messages":[{{"name":"m","associated_fields":[]}}],"channels":[{{"name":"control","description":"c","transport":"TCP","connection":"connection_oriented","endpoint_party_names":["user","server"],"initiator_party_name":"user","acceptor_party_name":"server","endpoint_sources":[]}}],"steps":[{steps}],"step_dependencies":[],"unresolved":[]}}"#
+            r#"{{"meta":{{"schema_version":"8.0.0","protocol":"demo","complete":false,"documents":[{{"doc_id":"d","rfc":"RFC 1","input_sha256":"aa","document_sha256":"bb","path":"doc.json"}}]}},"parties":[{{"name":"user","description":"u"}},{{"name":"server","description":"s"}}],"messages":[{{"name":"m","associated_fields":[]}}],"channels":[{{"name":"control","description":"c","transport":"TCP","connection":"connection_oriented","endpoint_party_names":["user","server"],"initiator_party_name":"user","acceptor_party_name":"server","endpoint_sources":[]}}],"steps":[{steps}],"step_dependencies":[],"unresolved":[]}}"#
         ),
     )
     .unwrap();
@@ -25,7 +25,7 @@ fn write_model(dir: &Path, steps: &str) -> PathBuf {
 
 fn step(name: &str, sender: &str, receiver: &str) -> String {
     format!(
-        r#"{{"id":"{name}","name":"{name}","message_name":"m","channel_name":"control","sender_name":"{sender}","receiver_name":"{receiver}","condition":"c"}}"#
+        r#"{{"name":"{name}","action": "send", "message_name":"m","channel_name":"control","sender_name":"{sender}","receiver_name":"{receiver}","condition":"c"}}"#
     )
 }
 
@@ -35,8 +35,8 @@ fn campaign_text(dir: &Path, executable: &Path, provider: &str) -> String {
 [target]
 binary = "{bin}"
 workdir = "{dir}/w"
-fixture = "{dir}/fixture"
-config_template = "{dir}/template.conf"
+cleanup_script = "{dir}/cleanup.sh"
+args = ["fftp.conf"]
 port = 0
 [timeouts]
 connect_ms = 200
@@ -52,12 +52,13 @@ pythonpath = "{pythonpath}"
 [parties]
 sut = ["server"]
 generator = ["user"]
-[protocol_generation]
+[generator_synthesis]
 enabled = false
 model = "{dir}/protocol.json"
 profile = "stub"
 init_timeout_secs = 2
 task_timeout_secs = 2
+extra_files = ["extra.conf"]
 [agents.profiles.stub]
 provider = "{provider}"
 executable = "{exe}"
@@ -140,8 +141,8 @@ if "REQUEST=" in prompt:
     )
     open(os.path.join(out, "params.json"), "w").write('{"scenario":"login-quit"}')
     open(os.path.join(out, "result.json"), "w").write(
-        '{"request_id":"%s","protocol_id":"%s","trace_id":"%s","status":"ok","added_steps":[]}'
-        % (field("REQUEST"), field("PROTOCOL"), field("TRACE"))
+        '{"request_id":"%s","status":"ok","added_steps":[]}'
+        % field("REQUEST")
     )
     print('{"type":"turn.completed"}')
     print('{"session_id":"%s","type":"result","is_error":false}' % expected)
@@ -160,9 +161,12 @@ raise SystemExit(5)
 }
 
 fn layout(dir: &Path, provider: &str) {
-    fs::create_dir_all(dir.join("fixture")).unwrap();
-    fs::write(dir.join("fixture/hello.txt"), b"hello").unwrap();
-    fs::write(dir.join("template.conf"), b"port=@PORT@\nroot=@ROOT@\n").unwrap();
+    fs::write(
+        dir.join("cleanup.sh"),
+        b"#!/bin/sh\nprintf 'port=%s\\nroot=%s\\n' \"$MCN_FUZZ_PORT\" \"$MCN_FUZZ_WORKDIR\" > fftp.conf\n",
+    )
+    .unwrap();
+    fs::write(dir.join("extra.conf"), b"account=ubuntu\npassword=ubuntu\n").unwrap();
     fs::write(dir.join("sut.py"), b"import sys, time\ntime.sleep(30)\n").unwrap();
     let steps = [
         step("greet", "server", "user"),
@@ -229,8 +233,8 @@ fn trace_keeps_suite_order_and_rejects_bad_names() {
         ["greet", "ask", "greet"]
     );
     let again = trace_from_names(&model, &binding, &["greet".into(), "ask".into()]).unwrap();
-    assert_eq!(again.steps[0].id(), trace.steps[0].id());
-    assert_ne!(trace.id, again.id);
+    assert_eq!(again.steps[0].name, trace.steps[0].name);
+    assert_ne!(trace.steps.len(), again.steps.len());
     assert!(trace_from_names(&model, &binding, &["missing".into()])
         .unwrap_err()
         .contains("not found"));
@@ -291,9 +295,8 @@ fn prompts_share_a_template_and_name_the_sut_owner() {
                 .initialization_prompt("sess", false, &dir.join("init"))
                 .unwrap();
             let trace = StepTrace::new(context.model().steps.clone());
-            assert_eq!(context.model().protocol_id.len(), 8);
-            assert_eq!(trace.id.0.len(), 8);
-            assert!(trace.steps.iter().all(|step| step.id().0.len() == 8));
+            assert!(!context.model().protocol_name.is_empty());
+            assert!(trace.steps.iter().all(|step| !step.name.is_empty()));
             let generation = context
                 .generation_prompt(&dir.join("request"), "req", "sess", "", None, false)
                 .unwrap();
@@ -309,7 +312,13 @@ fn prompts_share_a_template_and_name_the_sut_owner() {
                     assert!(!prompt.contains(&source.display().to_string()));
                 }
                 assert!(prompt.contains("Do not read or search the SUT source code"));
-                assert!(prompt.contains("Generate protocol behavior solely from the proposal"));
+                assert!(prompt.contains("Protocol message semantics, order, and wire behavior"));
+                assert!(
+                    prompt.contains("EXTRA_REFERENCE_FILES")
+                        || prompt.contains("Extra reference files")
+                );
+                assert!(prompt.contains("account=ubuntu") == false);
+                assert!(prompt.contains(&dir.join("extra.conf").display().to_string()));
                 assert!(prompt.contains("Do not assess which features the SUT implements or omits"));
                 assert!(prompt.contains("not for predicted SUT rejection"));
                 assert!(prompt.contains(&format!(
@@ -373,7 +382,7 @@ fn stub_session_is_isolated_and_records_failures() {
         })
         .unwrap();
         let campaign = Campaign::load(&root.join("campaign.toml")).unwrap();
-        assert!(!campaign.protocol_generation.enabled);
+        assert!(!campaign.generator_synthesis.enabled);
         let first = super::generate(&tasks[0]).unwrap();
         assert_eq!(first.stages["generate"].status, "passed");
         assert!(first.provider_session.is_some());
@@ -489,8 +498,7 @@ fn validator_rejects_bad_artifacts_and_accepts_the_production_subset() {
         br#"{"request_id":"r","protocol_id":"p","trace_id":"t","status":"ok","added_steps":[]}"#,
     )
     .unwrap();
-    let error =
-        crate::engine::synthesis::validate_generator_artifacts(&dir, "r", "p", "t").unwrap_err();
+    let error = crate::engine::synthesis::validate_generator_artifacts(&dir, "r").unwrap_err();
     assert!(error.contains("$ref"), "{error}");
     fs::write(
         dir.join("params.schema.json"),
@@ -498,8 +506,7 @@ fn validator_rejects_bad_artifacts_and_accepts_the_production_subset() {
     )
     .unwrap();
     fs::write(dir.join("result.json"), br#"{"request_id":"other","protocol_id":"p","trace_id":"t","status":"ok","added_steps":[]}"#).unwrap();
-    let error =
-        crate::engine::synthesis::validate_generator_artifacts(&dir, "r", "p", "t").unwrap_err();
+    let error = crate::engine::synthesis::validate_generator_artifacts(&dir, "r").unwrap_err();
     assert!(error.contains("does not match"), "{error}");
     fs::write(
         dir.join("result.json"),
@@ -507,12 +514,11 @@ fn validator_rejects_bad_artifacts_and_accepts_the_production_subset() {
     )
     .unwrap();
     fs::write(dir.join("params.json"), br#"{"scenario":1}"#).unwrap();
-    assert!(crate::engine::synthesis::validate_generator_artifacts(&dir, "r", "p", "t").is_err());
+    assert!(crate::engine::synthesis::validate_generator_artifacts(&dir, "r").is_err());
     fs::write(dir.join("params.json"), br#"{"scenario":"login-quit"}"#).unwrap();
-    let validated =
-        crate::engine::synthesis::validate_generator_artifacts(&dir, "r", "p", "t").unwrap();
+    let validated = crate::engine::synthesis::validate_generator_artifacts(&dir, "r").unwrap();
     assert!(validated.input.generator.ends_with("generator.py"));
-    assert_eq!(validated.origin.protocol_id, "p");
+    assert_eq!(validated.origin.request_id, "r");
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -596,7 +602,7 @@ fn replay_classifies_sut_and_python_failures() {
     )
     .unwrap();
     task.target.binary = python_bin();
-    task.target.args = vec![listener.display().to_string(), "@CONFIG@".into()];
+    task.target.args = vec![listener.display().to_string(), "fftp.conf".into()];
     task.target.case_ms = 400;
     let request = task.request_dir();
     let raising = request.join("raising.py");
@@ -634,7 +640,7 @@ fn replay_classifies_sut_and_python_failures() {
 }
 
 #[test]
-fn replay_uses_campaign_environment_and_rendered_paths() {
+fn replay_uses_campaign_environment_and_cleanup_script() {
     require_loopback();
     let dir = std::env::temp_dir().join(format!("mcn-eval-env-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
@@ -642,7 +648,7 @@ fn replay_uses_campaign_environment_and_rendered_paths() {
     let campaign = dir.join("campaign.toml");
     let text = fs::read_to_string(&campaign).unwrap().replace(
         "[target]",
-        "[target]\nextra_env = [[\"EVAL_CONFIG\", \"@CONFIG@\"], [\"EVAL_PORT\", \"@PORT@\"]]",
+        "[target]\nextra_env = [[\"EVAL_PORT\", \"@PORT@\"]]",
     );
     fs::write(&campaign, text).unwrap();
     let tasks = super::prepare(&Options {
@@ -656,15 +662,15 @@ fn replay_uses_campaign_environment_and_rendered_paths() {
     let task_path = &tasks[0];
     super::generate(task_path).unwrap();
     let mut task = super::Task::load(task_path).unwrap();
-    assert_eq!(task.target.extra_env.len(), 2);
+    assert_eq!(task.target.extra_env.len(), 1);
     let sut = dir.join("env-sut.py");
     fs::write(
         &sut,
-        b"import os,pathlib,socket,sys\nassert os.environ['EVAL_CONFIG'] == sys.argv[1]\nconfig=pathlib.Path(sys.argv[1]); assert config.is_file()\nport=int(os.environ['EVAL_PORT']); assert f'port={port}' in config.read_text()\ns=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',port)); s.listen(1)\nconn,_=s.accept(); assert conn.recv(1)==b'x'; conn.close(); s.close()\nconfig.with_name('env-seen').write_text('ok')\n",
+        b"import os,pathlib,socket,sys\nconfig=pathlib.Path(sys.argv[1]); assert config.is_file()\nport=int(os.environ['EVAL_PORT']); assert f'port={port}' in config.read_text()\ns=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',port)); s.listen(1)\nconn,_=s.accept(); assert conn.recv(1)==b'x'; conn.close(); s.close()\nconfig.with_name('env-seen').write_text('ok')\n",
     )
     .unwrap();
     task.target.binary = python_bin();
-    task.target.args = vec![sut.display().to_string(), "@CONFIG@".into()];
+    task.target.args = vec![sut.display().to_string(), "fftp.conf".into()];
     task.target.ready_ms = 2000;
     task.target.sut_exit_ms = 1000;
     let generator = task.request_dir().join("connect.py");
@@ -719,7 +725,7 @@ fn lightftp_suite_prepares_every_case_without_rewriting_the_campaign() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|step| step["name"].as_str().unwrap())
+            .map(|step| step["step"].as_str().unwrap())
             .collect();
         assert_eq!(listed, task.step_names);
         assert!(!task.workspace().join("requests").exists());
@@ -778,9 +784,6 @@ fn handwritten_lightftp_generators_replay() {
             dir.join("result.json"),
             serde_json::to_vec(&serde_json::json!({
                 "request_id": task.request_id,
-                "protocol_id": task.protocol_id,
-                "trace_id": task.trace_id,
-                "proposal_id": task.proposal_id,
                 "status": "ok",
                 "added_steps": [],
             }))
@@ -1003,7 +1006,7 @@ fn late_sut_crash_is_not_a_pass() {
     )
     .unwrap();
     task.target.binary = python_bin();
-    task.target.args = vec![sut.display().to_string(), "@CONFIG@".into()];
+    task.target.args = vec![sut.display().to_string(), "fftp.conf".into()];
     task.target.sut_exit_ms = 1500;
     task.stages
         .insert("replay".into(), super::task::StageRecord::not_run());

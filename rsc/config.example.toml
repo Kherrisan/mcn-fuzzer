@@ -1,0 +1,26 @@
+[workflow]
+batch_target_tokens = 8000
+batch_max_tokens = 12000
+max_review_rounds = 5
+
+[agents]
+default_profile = "codex-luna-max"
+# parser_profile = "pi-deepseek-flash"
+# reviewer_profile = "codex-luna-max"
+
+[agents.profiles.codex-luna-max]
+provider = "codex"
+executable = "codex"
+model = "gpt-6-luna"
+effort = "max"
+args = []
+envs = []
+
+[agents.profiles.pi-deepseek-flash]
+provider = "pi"
+executable = "pi"
+model = "deepseek/deepseek-flash"
+effort = "high"
+args = []
+# Optional: [["SSL_CERT_FILE", "/path/to/ca.pem"]]
+envs = []

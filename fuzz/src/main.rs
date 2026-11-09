@@ -1,4 +1,4 @@
-//! `mcn-fuzz run`, `replay`, `doctor`, and `accept`.
+//! `mcn-fuzz run`, `replay`, `coverage`, `doctor`, and `accept`.
 //! `accept` re-execs one hidden `accept-job` per scenario.
 //! `bench-capture` exists only with `--features stats`.
 
@@ -59,6 +59,19 @@ enum Command {
         campaign: PathBuf,
         #[arg(long)]
         input: PathBuf,
+    },
+    /// Replay a corpus through the coverage binary and write cov_over_time.csv.
+    Coverage {
+        #[arg(long)]
+        campaign: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        /// Defaults to the campaign corpus.
+        #[arg(long)]
+        corpus: Option<PathBuf>,
+        /// Inputs per exported batch. Must be greater than 0.
+        #[arg(long, default_value_t = 1, value_parser = mcn_fuzz::coverage::command::parse_step)]
+        step: u64,
     },
     /// Check the PCGUARD shared map, handshake, and branch feedback.
     Doctor,
@@ -138,9 +151,9 @@ fn main() -> ExitCode {
         }
         if let Command::Run { campaign, .. } = &cli.command {
             if let Ok(loaded) = load(campaign) {
-                if loaded.protocol_generation.enabled || loaded.coverage.analysis_enabled {
-                    let output = if loaded.protocol_generation.enabled {
-                        loaded.protocol_generation.output.clone()
+                if loaded.generator_synthesis.enabled || loaded.coverage.analysis_enabled {
+                    let output = if loaded.generator_synthesis.enabled {
+                        loaded.generator_synthesis.output.clone()
                     } else {
                         loaded.coverage.output.clone()
                     };
@@ -179,7 +192,7 @@ fn main() -> ExitCode {
                 if let Command::Run { campaign, .. } = &cli.command {
                     if let Ok(loaded) = load(campaign) {
                         mcn_fuzz::agents::discard_recorded_runtime(
-                            &loaded.protocol_generation.output,
+                            &loaded.generator_synthesis.output,
                         );
                     }
                 }
@@ -200,6 +213,14 @@ fn main() -> ExitCode {
         Command::Replay { campaign, input } => {
             load(&campaign).and_then(|campaign| app::replay(&campaign, &input))
         }
+        Command::Coverage {
+            campaign,
+            output,
+            corpus,
+            step,
+        } => load(campaign).and_then(|campaign| {
+            mcn_fuzz::coverage::command::run(&campaign, output, corpus.as_deref(), *step)
+        }),
         Command::Doctor => app::doctor(),
         Command::Accept { campaign } => orchestrate_accept(campaign, &cli),
         Command::AcceptJob { campaign, scenario } => {
@@ -230,7 +251,7 @@ fn main() -> ExitCode {
     if !orchestrator(&cli.command) {
         if let Command::Run { campaign, .. } = &cli.command {
             if let Ok(loaded) = load(campaign) {
-                mcn_fuzz::agents::discard_recorded_runtime(&loaded.protocol_generation.output);
+                mcn_fuzz::agents::discard_recorded_runtime(&loaded.generator_synthesis.output);
             }
         }
         mcn_fuzz::runtime::report_child_exit(code);
@@ -245,7 +266,7 @@ fn capture_requested(command: &Command) -> bool {
         | Command::AcceptJob { campaign, .. } => Campaign::load(campaign)
             .map(|campaign| campaign.capture.enabled)
             .unwrap_or(false),
-        Command::Accept { .. } => false,
+        Command::Coverage { .. } | Command::Accept { .. } => false,
         #[cfg(feature = "stats")]
         Command::BenchJob { condition, .. } => condition == "on",
         Command::Doctor => false,
@@ -271,11 +292,12 @@ fn ensure_command_outputs(
             if loaded.coverage.analysis_enabled {
                 paths.push(loaded.coverage.output.clone());
             }
-            if loaded.protocol_generation.enabled {
-                paths.push(loaded.protocol_generation.output.clone());
+            if loaded.generator_synthesis.enabled {
+                paths.push(loaded.generator_synthesis.output.clone());
             }
             paths
         }
+        Command::Coverage { output, .. } => vec![output.clone()],
         #[cfg(feature = "stats")]
         Command::BenchJob { output, .. } | Command::BenchFinalize { output, .. } => {
             vec![output.clone()]
@@ -442,6 +464,47 @@ fn orchestrator(command: &Command) -> bool {
         #[cfg(feature = "stats")]
         Command::BenchCapture { .. } => true,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn coverage_cli_defaults_campaign_corpus_and_step_one() {
+        let cli = Cli::try_parse_from([
+            "mcn-fuzz",
+            "coverage",
+            "--campaign",
+            "campaign.toml",
+            "--output",
+            "out",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Coverage { corpus, step, .. } => {
+                assert!(corpus.is_none());
+                assert_eq!(step, 1);
+            }
+            _ => panic!("coverage arguments were not parsed"),
+        }
+    }
+
+    #[test]
+    fn coverage_cli_rejects_a_zero_step() {
+        let error = Cli::try_parse_from([
+            "mcn-fuzz",
+            "coverage",
+            "--campaign",
+            "campaign.toml",
+            "--output",
+            "out",
+            "--step",
+            "0",
+        ]);
+        assert!(error.is_err());
     }
 }
 

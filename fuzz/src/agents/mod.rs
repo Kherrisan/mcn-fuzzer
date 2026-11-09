@@ -9,7 +9,6 @@ mod hc;
 mod profile;
 mod session;
 mod worker;
-pub(crate) use artifacts::wait_file;
 pub(crate) use session::{redact_text, AgentFailure, TerminalFact};
 pub use session::{AgentSession, SessionPhase};
 pub(crate) use worker::{
@@ -42,6 +41,24 @@ pub(crate) fn campaign_terminal_name(kind: &str, campaign_base: &Path) -> String
         campaign_id
     };
     format!("mcn-fuzzer-{kind}-{campaign_id}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::campaign_terminal_name;
+    use std::path::Path;
+
+    #[test]
+    fn terminal_names_keep_kind_and_campaign_directory() {
+        assert_eq!(
+            campaign_terminal_name("coverage", Path::new("/work/lightftp")),
+            "mcn-fuzzer-coverage-lightftp"
+        );
+        assert_eq!(
+            campaign_terminal_name("synthesis", Path::new("/work/lightftp")),
+            "mcn-fuzzer-synthesis-lightftp"
+        );
+    }
 }
 
 pub use hc::{HcClient, HcError, MockCore, TerminalInfo};
@@ -197,7 +214,7 @@ pub fn bootstrap(plan: &BootPlan, identity: &TargetIdentity) -> Result<BootRecor
         Err(error) => {
             discard_boot_dirs(plan);
             return Err(libafl::Error::unknown(format!(
-                "starting private HC core via {} failed: {error}. protocol generation needs the hc executable",
+                "starting private HC core via {} failed: {error}. generator synthesis needs the hc executable",
                 plan.executable.display()
             )));
         }

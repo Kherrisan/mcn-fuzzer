@@ -8,10 +8,9 @@ from typing import Any
 
 from rsc.artifacts import read_json, write_json
 from rsc.index import build_structural_index, index_summary
-from rsc.protocol import CompileError, compile_protocol
 from rsc.schemas import check_errors, resolve_schemas_dir, validate_instance, validator
 
-__all__ = ["PipelineError", "CompileError", "compile_protocol", "index_document"]
+__all__ = ["PipelineError", "index_document"]
 
 
 class PipelineError(Exception):

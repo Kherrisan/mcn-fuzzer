@@ -9,6 +9,7 @@ use std::{
     fs,
     os::fd::{AsRawFd, OwnedFd},
     path::{Path, PathBuf},
+    process::Command,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -79,16 +80,10 @@ pub struct CaseExecutor {
     result_timeout: Duration,
     sut_grace_kill_is_timeout: bool,
     streaks: TimeoutStreaks,
-    fixture: PathBuf,
+    cleanup_script: Option<PathBuf>,
     workdir: PathBuf,
-    config_template: PathBuf,
     binary: PathBuf,
     report_path: PathBuf,
-    cert: PathBuf,
-    key: PathBuf,
-    ca: PathBuf,
-    config_path: PathBuf,
-    root: PathBuf,
     last_report: Option<CaseReport>,
     last_identity: Option<TraceIdentity>,
 }
@@ -100,12 +95,11 @@ impl CaseExecutor {
         capture.set_worker(crate::runtime::worker_id()?);
         let port = pick_port(campaign.target.port)?;
         let base = &campaign.base;
-        let placeholders = campaign.placeholders(port);
-        restore_tree(&campaign.target.fixture, &campaign.target.workdir)?;
-        write_server_config(
-            &campaign.target.config_template,
-            &placeholders.config,
-            &placeholders,
+        run_cleanup_script(
+            campaign.target.cleanup_script.as_deref(),
+            &campaign.target.workdir,
+            &campaign.target.host,
+            port,
         )?;
         let mut backend = ForkserverBackend::spawn(campaign, port)?;
         let map_len = backend.map_len();
@@ -147,16 +141,10 @@ impl CaseExecutor {
             result_timeout: policy.result_timeout,
             sut_grace_kill_is_timeout: policy.sut_grace_kill_is_timeout,
             streaks: TimeoutStreaks::new(policy.failure_limit),
-            fixture: campaign.target.fixture.clone(),
+            cleanup_script: campaign.target.cleanup_script.clone(),
             workdir: campaign.target.workdir.clone(),
-            config_template: campaign.target.config_template.clone(),
             binary: campaign.target.binary.clone(),
             report_path: base.join("cases.jsonl"),
-            cert: placeholders.cert.clone(),
-            key: placeholders.key.clone(),
-            ca: placeholders.ca.clone(),
-            config_path: placeholders.config.clone(),
-            root: campaign.target.workdir.clone(),
             last_report: None,
             last_identity: None,
         };
@@ -256,17 +244,13 @@ impl CaseExecutor {
         self.backend.map()
     }
 
-    fn restore(&self) -> Result<(), Error> {
-        restore_tree(&self.fixture, &self.workdir)?;
-        let placeholders = crate::app::config::TargetPlaceholders {
-            port: self.port,
-            root: self.root.clone(),
-            config: self.config_path.clone(),
-            cert: self.cert.clone(),
-            key: self.key.clone(),
-            ca: self.ca.clone(),
-        };
-        write_server_config(&self.config_template, &self.config_path, &placeholders)
+    fn run_cleanup(&self) -> Result<(), Error> {
+        run_cleanup_script(
+            self.cleanup_script.as_deref(),
+            &self.workdir,
+            &self.host,
+            self.port,
+        )
     }
 
     fn record(
@@ -386,7 +370,7 @@ impl CaseExecutor {
         self.last_report = None;
         #[cfg(feature = "stats")]
         let setup_at = Instant::now();
-        self.restore()?;
+        self.run_cleanup()?;
         self.backend.prepare_case()?;
         #[cfg(feature = "stats")]
         self.capture
@@ -975,49 +959,37 @@ pub(crate) fn pick_port(requested: u16) -> Result<u16, Error> {
     Ok(port)
 }
 
-pub(crate) fn restore_tree(fixture: &Path, workdir: &Path) -> Result<(), Error> {
-    if !fixture.is_dir() {
+pub(crate) fn run_cleanup_script(
+    script: Option<&Path>,
+    workdir: &Path,
+    host: &str,
+    port: u16,
+) -> Result<(), Error> {
+    fs::create_dir_all(workdir)?;
+    let Some(script) = script else {
+        return Ok(());
+    };
+    if !script.is_file() {
         return Err(Error::illegal_argument(format!(
-            "fixture {} is missing",
-            fixture.display()
+            "cleanup script {} is missing",
+            script.display()
         )));
     }
-    if workdir.exists() {
-        fs::remove_dir_all(workdir)?;
+    let status = Command::new("/bin/sh")
+        .arg(script)
+        .current_dir(workdir)
+        .env("MCN_FUZZ_WORKDIR", workdir)
+        .env("MCN_FUZZ_HOST", host)
+        .env("MCN_FUZZ_PORT", port.to_string())
+        .status()
+        .map_err(|error| {
+            Error::unknown(format!("starting cleanup script {}: {error}", script.display()))
+        })?;
+    if !status.success() {
+        return Err(Error::unknown(format!(
+            "cleanup script {} exited with {status}",
+            script.display()
+        )));
     }
-    copy_tree(fixture, workdir)?;
-    Ok(())
-}
-
-fn copy_tree(from: &Path, to: &Path) -> Result<(), Error> {
-    fs::create_dir_all(to)?;
-    for entry in fs::read_dir(from)? {
-        let entry = entry?;
-        let dest = to.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_tree(&entry.path(), &dest)?;
-        } else {
-            fs::copy(entry.path(), dest)?;
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn write_server_config(
-    template: &Path,
-    destination: &Path,
-    placeholders: &crate::app::config::TargetPlaceholders,
-) -> Result<(), Error> {
-    let text = fs::read_to_string(template).map_err(|error| {
-        Error::unknown(format!(
-            "reading config template {}: {error}",
-            template.display()
-        ))
-    })?;
-    let rendered = placeholders.apply(&text);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(destination, rendered)?;
     Ok(())
 }

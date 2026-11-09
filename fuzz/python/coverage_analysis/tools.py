@@ -3,7 +3,6 @@
 import json
 from pathlib import Path
 
-from coverage_analysis import catalog as ids
 from coverage_analysis import coverage as coverage_mod
 from coverage_analysis.state import StateError
 
@@ -17,7 +16,17 @@ def _schema(properties, required=()):
 
 
 REQUEST = {"type": "string", "description": "registered analysis request id"}
-STEP = {"type": "string", "description": "8-character step id from the catalog"}
+STEP = {"type": "string", "description": "exact step name from the catalog"}
+TRACE_STEP = _schema({
+    "name": {"type": "string", "description": "unique step instance name"},
+    "step": STEP,
+    "channel": {"type": "string"},
+    "sender": {"type": "string"},
+    "receiver": {"type": "string"},
+    "party": {"type": "string"},
+    "reason": {"type": "string"},
+    "constraints": {"type": "array", "items": {"type": "string"}},
+}, ("name", "step", "channel", "reason"))
 PAGE_PROPS = {
     "offset": {"type": "integer", "minimum": 0, "default": 0},
     "limit": {"type": "integer", "minimum": 1, "maximum": PAGE_MAX, "default": PAGE_DEFAULT},
@@ -70,29 +79,32 @@ TOOLS = [
      _schema({"message": {"type": "string"}, "party": {"type": "string"},
               "request_id": REQUEST, **PAGE_PROPS})),
     ("get_step_dependencies", "Dependencies before and after one step in the current transaction.",
-     _schema({"request_id": REQUEST, "step_id": STEP}, ("request_id", "step_id"))),
+     _schema({"request_id": REQUEST, "step": STEP}, ("request_id", "step"))),
     ("update_step_annotations", "Replace analysis annotations and constraints on one step.",
-     _schema({"request_id": REQUEST, "step_id": STEP,
+     _schema({"request_id": REQUEST, "step": STEP,
               "annotations": {"type": "array", "items": {"type": "string"}},
               "constraints": {"type": "array", "items": {"type": "string"}}},
-             ("request_id", "step_id"))),
+             ("request_id", "step"))),
     ("upsert_dependency", "Add or replace a dependency edge in the analysis transaction.",
      _schema({"request_id": REQUEST,
-              "prior_step_id": STEP, "dependent_step_id": STEP,
+              "prior_step": STEP, "dependent_step": STEP,
               "condition": {"type": "string"},
               "field_relations": {"type": "array", "items": {"type": "object"}}},
-             ("request_id", "prior_step_id", "dependent_step_id"))),
+             ("request_id", "prior_step", "dependent_step"))),
     ("remove_dependency", "Remove a dependency edge in the analysis transaction.",
-     _schema({"request_id": REQUEST, "prior_step_id": STEP, "dependent_step_id": STEP},
-             ("request_id", "prior_step_id", "dependent_step_id"))),
+     _schema({"request_id": REQUEST, "prior_step": STEP, "dependent_step": STEP},
+             ("request_id", "prior_step", "dependent_step"))),
     ("begin_analysis", "Open the graph transaction for a registered request.",
      _schema({"request_id": REQUEST}, ("request_id",))),
     ("submit_proposal", "Validate and freeze a proposal, ending graph edits.",
      _schema({"request_id": REQUEST,
               "origin": {"type": "string", "enum": ["coverage", "autonomous"]},
               "goal": {"type": "object"},
-              "trace": {"type": "array", "items": {"type": "object"}}},
-             ("request_id", "trace"))),
+              "parties": {"type": "object"},
+              "channels": {"type": "object"},
+              "mutations": {"type": "array"},
+              "trace": {"type": "array", "items": TRACE_STEP}},
+             ("request_id", "trace", "parties", "channels"))),
 ]
 
 TOOL_NAMES = [name for name, _, _ in TOOLS]
@@ -394,14 +406,15 @@ def tool_get_protocol_steps(state, arguments):
     graph = _protocol(state, arguments.get("request_id"))
     rows = []
     for step in graph.catalog["steps"]:
-        view = graph.view(step["step_id"])
+        view = graph.view(step["name"])
         if arguments.get("message") and view["message"] != arguments["message"]:
             continue
-        if arguments.get("party") and arguments["party"] not in (view["sender"], view["receiver"]):
+        if arguments.get("party") and arguments["party"] not in (
+                view["sender"], view["receiver"], view["party"]):
             continue
         rows.append(view)
-    rows.sort(key=lambda item: item["step_id"])
-    return {"protocol_id": graph.base["protocol_id"],
+    rows.sort(key=lambda item: item["name"])
+    return {"protocol_name": graph.base.get("protocol_name"),
             "binding": graph.catalog.get("binding") or {},
             "steps": coverage_mod.page(rows, arguments.get("offset", 0),
                                        arguments.get("limit", PAGE_DEFAULT)),
@@ -410,7 +423,7 @@ def tool_get_protocol_steps(state, arguments):
 
 def tool_get_step_dependencies(state, arguments):
     graph = state.txn_graph(arguments["request_id"])
-    step = graph.resolve(arguments["step_id"])
+    step = graph.resolve(arguments["step"])
     return {"step": graph.view(step), **graph.dependencies(step),
             "graph_revision": graph.revision}
 
@@ -419,15 +432,15 @@ def tool_update_step_annotations(state, arguments):
     graph = state.txn_graph(arguments["request_id"])
     if "annotations" not in arguments and "constraints" not in arguments:
         raise StateError("bad_request", "provide annotations or constraints")
-    result = graph.annotate(arguments["step_id"], arguments.get("annotations"),
+    result = graph.annotate(arguments["step"], arguments.get("annotations"),
                             arguments.get("constraints"))
     return {"step": result, "graph_revision": graph.revision}
 
 
 def tool_upsert_dependency(state, arguments):
     graph = state.txn_graph(arguments["request_id"])
-    row = graph.upsert_dependency(arguments["prior_step_id"],
-                                  arguments["dependent_step_id"],
+    row = graph.upsert_dependency(arguments["prior_step"],
+                                  arguments["dependent_step"],
                                   arguments.get("condition", ""),
                                   arguments.get("field_relations"))
     return {**row, "graph_revision": graph.revision}
@@ -435,8 +448,8 @@ def tool_upsert_dependency(state, arguments):
 
 def tool_remove_dependency(state, arguments):
     graph = state.txn_graph(arguments["request_id"])
-    row = graph.remove_dependency(arguments["prior_step_id"],
-                                  arguments["dependent_step_id"])
+    row = graph.remove_dependency(arguments["prior_step"],
+                                  arguments["dependent_step"])
     return {**row, "graph_revision": graph.revision}
 
 

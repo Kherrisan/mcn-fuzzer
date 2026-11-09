@@ -4,10 +4,10 @@ RFC documents used to exercise RSC against the protocols in
 [ProFuzzBench](https://github.com/profuzzbench/profuzzbench).
 
 - ProFuzzBench commit: `8573ec81d68f2c1ffc8f5e605dfdd9c61fbeb074`
-- Retrieved: 2026-10-18T13:02:47.173890+00:00
+- Retrieved: 2026-10-18T13:02:47.173890+00:00; TLS additions fetched 2026-11-08
 - Source: <https://www.rfc-editor.org/>
 - Formats: HTML (RFC Editor) and RFCXML for RFC 9147.
-- Files: 28 (27 HTML + 1 RFCXML), about 4.8 MB.
+- Files: 30 (29 HTML + 1 RFCXML), about 4.9 MB.
 - DAAP and DICOM have no IETF RFC and are marked `no_rfc` in the manifest.
 
 | Protocol | Target(s) | RFCs |
@@ -21,7 +21,7 @@ RFC documents used to exercise RSC against the protocols in
 | SIP | Kamailio | RFC 3261, RFC 3262, RFC 3264, RFC 3311, RFC 3326 |
 | SMTP | Exim | RFC 5321, RFC 5322, RFC 1869, RFC 4954, RFC 3207 |
 | SSH | OpenSSH | RFC 4251, RFC 4252, RFC 4253, RFC 4254 |
-| TLS | OpenSSL | RFC 5246, RFC 8446 |
+| TLS | OpenSSL | RFC 5246, RFC 6066, RFC 7301, RFC 8446 |
 
 ## Notes
 

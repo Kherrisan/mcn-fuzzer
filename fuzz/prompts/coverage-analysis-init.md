@@ -43,7 +43,7 @@ A coverage-analysis MCP service is running for this session. Useful calls:
 - `get_loaded_state` — report what is loaded. Empty at session start.
 - `load_protocol` with `{"protocol_path": "MODEL", "catalog_path": "CATALOG"}`
   — load the model and the stable ID catalog.
-- `get_protocol_steps` — list steps with canonical 8-character `step_id` values.
+- `get_protocol_steps` — list steps by their unique `name`.
 
 Call `get_loaded_state`, then `load_protocol`, then `get_protocol_steps` before
 building the mapping. Do not load coverage data or open an analysis transaction
@@ -51,8 +51,8 @@ during initialization.
 
 ## Step table
 
-STEPS is the authoritative ID table. Use its `step_id` values in step_ids; never
-use the model's `source_id`, a step name, or a made-up id in that field.
+STEPS is the authoritative name table. Use its `name` values in step_names.
+Do not invent names or write a digest.
 
 STEPS={{ steps }}
 
@@ -80,12 +80,14 @@ STEPS={{ steps }}
 
 Write OUTPUT_DIR/handlers.json using this schema:
 
-{"version":1,"session":"SESSION above","mappings":[{"message":"exact message name","handlers":[{"symbol":"exact source function symbol","location":"source/path.c:line","evidence":"one short sentence citing the decisive dispatch branch or call site","uncertain":false}],"step_ids":["8-character step ids from STEPS"],"reason":null}]}
+{"version":2,"session":"SESSION above","mappings":[{"message":"exact message name","handlers":[{"symbol":"exact source function symbol","location":"source/path.c:line","evidence":"one short sentence citing the decisive dispatch branch or call site","uncertain":false}],"step_names":["exact step names from STEPS"],"reason":null}]}
 
 Include each inbound message exactly once. For unmatched inbound messages use
 handlers: [] and a concise source-backed reason; this does not make the protocol
-message invalid. step_ids must list the catalog steps whose message matches the
+message invalid. step_names must list the catalog steps whose message matches the
 row's message; an empty list is allowed only when the message has no inbound use.
+A handler is named by its function symbol. When two handlers share a symbol, the
+service qualifies the later name as `relative/source/path.c::symbol`.
 
 Use source paths relative to SOURCE_DIR and the handler definition line in
 location. Keep evidence to one sentence of at most 240 characters. Keep reasons

@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use crate::{
     app::config::TargetPlaceholders,
-    engine::executor::{restore_tree, write_server_config},
+    engine::executor::run_cleanup_script,
     engine::input::ParamValue,
     engine::synthesis::TraceOrigin,
 };
@@ -51,13 +51,8 @@ pub fn validate_task(task: &mut Task) -> Result<(), (String, String)> {
             _ => {}
         }
     }
-    let validated = crate::engine::synthesis::validate_generator_artifacts(
-        &dir,
-        &task.request_id,
-        &task.protocol_id,
-        &task.trace_id,
-    )
-    .map_err(classify_validation)?;
+    let validated = crate::engine::synthesis::validate_generator_artifacts(&dir, &task.request_id)
+        .map_err(classify_validation)?;
     let stored = json!({
         "generator": validated.input.generator,
         "params": params_json(&validated.input.params)?,
@@ -177,7 +172,7 @@ pub fn replay_task(task: &Task) -> Result<ReplayOutcome, (String, String)> {
     );
     let replay_dir = task.instance_dir.join("replays").join(&replay_id);
     let workdir = replay_dir.join("work");
-    restore_tree(&task.target.fixture, &workdir)
+    fs::create_dir_all(&workdir)
         .map_err(|error| ("infrastructure".to_string(), error.to_string()))?;
     let listener = TcpListener::bind(format!("{}:0", task.target.host)).map_err(|error| {
         (
@@ -190,22 +185,17 @@ pub fn replay_task(task: &Task) -> Result<ReplayOutcome, (String, String)> {
         .map_err(|error| ("sut_start_failed".to_string(), error.to_string()))?
         .port();
     drop(listener);
-    let config_path = workdir.join(&task.target.config_output);
+    run_cleanup_script(
+        task.target.cleanup_script.as_deref(),
+        &workdir,
+        &task.target.host,
+        port,
+    )
+    .map_err(|error| ("infrastructure".to_string(), error.to_string()))?;
     let placeholders = TargetPlaceholders {
         port,
         root: workdir.clone(),
-        config: config_path.clone(),
-        cert: workdir.join(&task.target.cert),
-        key: workdir.join(&task.target.key),
-        ca: task
-            .target
-            .ca
-            .clone()
-            .map(|ca| workdir.join(ca))
-            .unwrap_or_else(|| workdir.join("certs/my.pem")),
     };
-    write_server_config(&task.target.config_template, &config_path, &placeholders)
-        .map_err(|error| ("infrastructure".to_string(), error.to_string()))?;
     let args = task
         .target
         .args

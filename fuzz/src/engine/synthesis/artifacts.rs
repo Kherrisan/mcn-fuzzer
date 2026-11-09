@@ -12,19 +12,9 @@ use crate::agents::artifacts::{check_identity, read_json};
 pub(super) fn check(
     output: &Path,
     request: &str,
-    protocol: &str,
-    trace: &str,
-    proposal: &str,
 ) -> Result<(Value, BTreeMap<String, ParamValue>), String> {
     let result = read_json(&output.join("result.json"))?;
-    let mut expected = vec![("request_id", request), ("protocol_id", protocol)];
-    if !trace.is_empty() {
-        expected.push(("trace_id", trace));
-    }
-    if !proposal.is_empty() {
-        expected.push(("proposal_id", proposal));
-    }
-    check_identity(&result, &expected)?;
+    check_identity(&result, &[("request_id", request)])?;
     if result.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(result
             .get("error")

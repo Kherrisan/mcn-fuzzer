@@ -9,10 +9,11 @@ import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
 from rsc import pipeline, schemas
-from rsc.config import ConfigError, load_compile_options, load_llm_config
+from rsc.agents import check_profiles
+from rsc.agents.profiles import print_profiles, selection, selection_arguments
+from rsc.config import ConfigError, load_workflow_config, resolve_profiles
 from rsc.schemas import SchemaValidationError
 from rsc.version import __version__
 
@@ -42,7 +43,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"python {sys.version.split()[0]} ({sys.executable})")
     print(f"schemas {schemas_dir} ({len(schema_files)} files)")
 
-    for module in ("jsonschema", "pydantic", "pydantic_ai", "anthropic", "openai"):
+    for module in ("jsonschema", "pydantic", "tiktoken"):
         try:
             importlib.import_module(module)
             print(f"{module}: available")
@@ -59,16 +60,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print(f"invalid schema {path.name}: {exc}", file=sys.stderr)
             return 1
 
-    if args.config:
-        try:
-            config = load_llm_config(args.config)
-        except ConfigError as exc:
-            print(f"config error: {exc}", file=sys.stderr)
-            return 1
-        print(
-            f"config {args.config}: default={config.default_provider} "
-            f"providers={len(config.providers)} stages={len(config.stages)}"
-        )
+    roles = resolve_profiles(load_workflow_config(args.config), **selection(args))
+    check_profiles(roles)
+    print_profiles(roles)
     return 0
 
 
@@ -158,97 +152,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _key_status(provider: Any) -> str:
-    try:
-        provider.resolve_api_key()
-        return "set"
-    except ConfigError:
-        return "missing"
-
-
 def cmd_config_check(args: argparse.Namespace) -> int:
-    config = load_llm_config(args.config)
-    load_compile_options(args.config)
-    missing: list[str] = []
-    providers: list[dict[str, Any]] = []
-
-    for name, provider in sorted(config.providers.items()):
-        key = "not_checked" if args.no_key_check else _key_status(provider)
-        if key == "missing":
-            missing.append(name)
-        providers.append(
-            {
-                "name": name,
-                "api": provider.api,
-                "model": provider.model,
-                "base_url": provider.base_url,
-                "structured_mode": provider.structured_mode,
-                "max_tokens_param": provider.max_tokens_param,
-                "api_key": key,
-            }
-        )
-
-    stages = {
-        stage: {
-            "provider": config.for_stage(stage).name,
-            "model": config.for_stage(stage).model,
-        }
-        for stage in sorted(config.stages)
-    }
-
-    print(
-        json.dumps(
-            {
-                "default_provider": config.default_provider,
-                "cache_dir": str(config.cache_dir) if config.cache_dir else None,
-                "providers": providers,
-                "stages": stages,
-            },
-            indent=2,
-            ensure_ascii=False,
-        )
-    )
-    return 1 if missing else 0
-
-
-def cmd_llm_check(args: argparse.Namespace) -> int:
-    from rsc.llm import create_client_for_stage
-
-    config = load_llm_config(args.config)
-    stages = [args.stage] if args.stage else (sorted(config.stages) or ["default"])
-    results: list[dict[str, Any]] = []
-    failed = False
-
-    for stage in stages:
-        try:
-            provider = config.for_stage(stage)
-            client = create_client_for_stage(config, stage)
-            key = _key_status(provider)
-            results.append(
-                {
-                    "stage": stage,
-                    "provider": provider.name,
-                    "api": provider.api,
-                    "model": provider.model,
-                    "client": type(client).__name__,
-                    "api_key": key,
-                    "status": "ok" if key == "set" else "missing_key",
-                }
-            )
-            if key != "set":
-                failed = True
-        except Exception as exc:  # construction failures are reported, not raised
-            results.append(
-                {
-                    "stage": stage,
-                    "status": "error",
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-            )
-            failed = True
-
-    print(json.dumps({"stages": results}, indent=2, ensure_ascii=False))
-    return 1 if failed else 0
+    config = load_workflow_config(args.config)
+    print_profiles(resolve_profiles(config, **selection(args)))
+    return 0
 
 
 # --------------------------------------------------------------------------- #
@@ -308,21 +215,6 @@ def cmd_stats(args: argparse.Namespace) -> int:
     return 0
 
 
-def _default_llm_config() -> Path | None:
-    """Find a local LLM config without hard-coding a user-specific path."""
-
-    root = Path(__file__).resolve().parents[1]
-    for candidate in (
-        Path.cwd() / "config.local.json",
-        root / "config.local.json",
-        Path.cwd() / "config.json",
-        root / "config.json",
-    ):
-        if candidate.is_file():
-            return candidate
-    return None
-
-
 def cmd_index(args: argparse.Namespace) -> int:
     summary = pipeline.index_document(
         args.input, out=args.out, force=args.force, schemas_dir=args.schemas_dir
@@ -338,17 +230,6 @@ def cmd_index(args: argparse.Namespace) -> int:
     return 0
 
 
-def _build_llm_client(args: argparse.Namespace, stage: str) -> Any:
-    config_path = Path(args.config).expanduser() if args.config else _default_llm_config()
-    if config_path is None or not config_path.is_file():
-        raise ConfigError("LLM config not found; use --config or config.local.json")
-    from rsc.llm import LLMCache, create_client_for_stage
-
-    llm_config = load_llm_config(config_path)
-    cache = LLMCache(llm_config.cache_dir) if llm_config.cache_dir else None
-    return create_client_for_stage(llm_config, stage, cache=cache)
-
-
 def _print_validation_errors(errors: list[str]) -> None:
     for message in errors[:50]:
         print(message, file=sys.stderr)
@@ -358,61 +239,8 @@ def _print_validation_errors(errors: list[str]) -> None:
 
 
 def cmd_compile(args: argparse.Namespace) -> int:
-    from rsc.protocol.compiler import resolve_options
-
-    config_path = Path(args.config).expanduser() if args.config else _default_llm_config()
-    repair = {
-        key: getattr(args, key)
-        for key in ("objects_max_rounds", "interactions_max_rounds")
-        if getattr(args, key) is not None
-    }
-    if args.no_complete:
-        repair["enabled"] = False
-    context = {
-        key: getattr(args, key)
-        for key in ("max_tokens", "compact_at", "compact_to")
-        if getattr(args, key) is not None
-    }
-    options = resolve_options(
-        config_path,
-        workers=args.workers,
-        objects_workers=args.objects_workers,
-        interactions_workers=args.interactions_workers,
-        block_lists=args.block_lists,
-        repair=repair,
-        context=context,
-    )
-    summary = pipeline.compile_protocol(
-        args.input,
-        args.protocol,
-        args.out,
-        config=config_path,
-        workers=options.workers,
-        objects_workers=options.objects_workers,
-        interactions_workers=options.interactions_workers,
-        block_lists=options.block_lists,
-        force=args.force,
-        schemas_dir=args.schemas_dir,
-        repair_options=options.repair,
-        request_limits=options.request_limits,
-        context_options=options.context,
-        agent_options=options.agent,
-        link_options=options.link,
-    )
-    if args.json:
-        print(json.dumps(summary, indent=2, ensure_ascii=False))
-    else:
-        print(f"{'complete' if summary['complete'] else 'incomplete'}: {summary['path']}")
-        print(
-            f"calls: {summary['calls']}, failures: {summary['failures']}, "
-            f"unresolved: {summary['unresolved']}, model written: {summary['model_written']}"
-        )
-    return summary["exit_code"]
-
-
-# --------------------------------------------------------------------------- #
-# parser
-# --------------------------------------------------------------------------- #
+    print("rsc compile has been replaced by the MCP workflow; use rsc run --help", file=sys.stderr)
+    return 2
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -423,8 +251,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("doctor", help="check environment, SDKs and schemas")
-    p.add_argument("--config", help="optional LLM config to validate")
+    from rsc.workflow.cli import register
+
+    register(sub)
+
+    p = sub.add_parser("doctor", help="check environment, dependencies and schemas")
+    selection_arguments(p)
+    p.add_argument("--config", help="optional workflow config to validate")
     p.add_argument("--schemas-dir", help="override the schema directory")
     p.set_defaults(func=cmd_doctor)
 
@@ -464,51 +297,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--schemas-dir", help="override the schema directory")
     p.set_defaults(func=cmd_index)
 
-    p = sub.add_parser("compile", help="compile all documents in an ingest batch")
-    p.add_argument("input", help="directory containing batch.json")
-    p.add_argument("--protocol", required=True, help="caller-selected protocol and version")
-    p.add_argument("--out", required=True, help="model output directory")
-    p.add_argument("--config", help="LLM config path")
-    p.add_argument(
-        "--workers", type=int, help="extraction concurrency fallback (config or 8); link is serial"
-    )
-    p.add_argument("--objects-workers", type=int, help="concurrent object extraction lists")
-    p.add_argument(
-        "--interactions-workers", type=int, help="concurrent interaction extraction lists"
-    )
-    p.add_argument("--block-lists", type=int, help="fixed source partitions (config or 8)")
-    p.add_argument(
-        "--context-limit-tokens", dest="max_tokens", type=int,
-        help="model context capacity; overrides SDK metadata"
-    )
-    p.add_argument(
-        "--context-compact-at", dest="compact_at", type=float,
-        help="input capacity ratio that triggers compaction (config or 0.8)"
-    )
-    p.add_argument(
-        "--context-compact-to", dest="compact_to", type=float,
-        help="target input capacity ratio after compaction (config or 0.5)"
-    )
-    p.add_argument(
-        "--no-complete",
-        action="store_true",
-        help="disable both completion stages while retaining validation and unresolved issues",
-    )
-    p.add_argument(
-        "--objects-repair-max-rounds",
-        dest="objects_max_rounds",
-        type=int,
-        help="object repair round limit (default: config or 5)",
-    )
-    p.add_argument(
-        "--interactions-repair-max-rounds",
-        dest="interactions_max_rounds",
-        type=int,
-        help="interaction repair round limit (default: config or 5)",
-    )
-    p.add_argument("--force", action="store_true")
-    p.add_argument("--json", action="store_true", help="print a machine-readable summary")
-    p.add_argument("--schemas-dir")
+    p = sub.add_parser("compile", help="removed; use rsc run")
+    p.add_argument("legacy_arguments", nargs=argparse.REMAINDER)
     p.set_defaults(func=cmd_compile)
 
     p = sub.add_parser("schemas", help="inspect JSON Schema contracts")
@@ -532,19 +322,12 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--json", action="store_true", help="force a single JSON value")
     p.set_defaults(func=cmd_validate)
 
-    p = sub.add_parser("config", help="inspect LLM configuration")
+    p = sub.add_parser("config", help="inspect workflow configuration")
     config_sub = p.add_subparsers(dest="config_command", required=True)
-    q = config_sub.add_parser("check", help="validate providers and key presence")
+    q = config_sub.add_parser("check", help="validate workflow and agent settings")
+    selection_arguments(q)
     q.add_argument("--config", required=True)
-    q.add_argument("--no-key-check", action="store_true")
     q.set_defaults(func=cmd_config_check)
-
-    p = sub.add_parser("llm", help="inspect LLM clients")
-    llm_sub = p.add_subparsers(dest="llm_command", required=True)
-    q = llm_sub.add_parser("check", help="build clients without sending requests")
-    q.add_argument("--config", required=True)
-    q.add_argument("--stage", help="check one stage instead of all configured stages")
-    q.set_defaults(func=cmd_llm_check)
 
     return parser
 
@@ -554,7 +337,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except (pipeline.PipelineError, pipeline.CompileError) as exc:
+    except pipeline.PipelineError as exc:
         print(f"rsc: error: {exc}", file=sys.stderr)
         return exc.exit_code
     except SchemaValidationError as exc:

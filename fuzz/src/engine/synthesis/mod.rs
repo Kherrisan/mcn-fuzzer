@@ -13,7 +13,6 @@ use std::{
 };
 
 use libafl::{
-    corpus::Corpus,
     stages::{Restartable, Stage},
     state::{HasCorpus, HasRand},
     Error, HasMetadata,
@@ -23,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     agents::{command_line, CommandLine},
-    app::config::{Campaign, ProtocolGenerationConfig},
+    app::config::{Campaign, GeneratorSynthesisConfig},
     coverage::proposal::ProposalMailbox,
     engine::input::{GeneratorInput, ParamValue},
     engine::stagnation::BitmapProgress,
@@ -33,19 +32,21 @@ use crate::{
 mod agent;
 mod artifacts;
 mod prompts;
+mod queue;
 mod request;
 
 use agent::Client;
 use request::GeneratorRequest;
 
 pub use prompts::{ExecutionMode, SynthesisPromptContext};
+pub use queue::{SynthesisCandidate, SynthesisCandidates};
 pub use request::ValidatedGenerator;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TraceOrigin {
-    pub protocol_id: String,
-    pub trace_id: String,
-    pub step_ids: Vec<String>,
+    pub request_id: String,
+    pub session: String,
+    pub step_names: Vec<String>,
     pub added_steps: Vec<String>,
 }
 
@@ -75,59 +76,55 @@ type Outcome = AgentOutcome<(), ReadyInput>;
 
 #[derive(Debug)]
 pub(crate) struct ReadyInput {
-    request: String,
-    input: GeneratorInput,
-    origin: TraceOrigin,
+    pub(crate) request: String,
+    pub(crate) input: GeneratorInput,
+    pub(crate) origin: TraceOrigin,
 }
 
 /// Run the production artifact checks and publish `generator.py` plus its schema.
 pub fn validate_generator_artifacts(
     output_dir: &Path,
     request_id: &str,
-    protocol_id: &str,
-    trace_id: &str,
 ) -> Result<ValidatedGenerator, String> {
-    artifacts::check(output_dir, request_id, protocol_id, trace_id, "").and_then(
-        |(result, params)| {
-            let published = output_dir.join("published");
-            if published.exists() {
-                return Err("published generator path already exists".to_string());
-            }
-            fs::create_dir_all(&published).map_err(|error| error.to_string())?;
-            fs::copy(
-                output_dir.join("generator.py"),
-                published.join("generator.py"),
-            )
-            .map_err(|error| error.to_string())?;
-            fs::copy(
-                output_dir.join("params.schema.json"),
-                published.join("params.schema.json"),
-            )
-            .map_err(|error| error.to_string())?;
-            let generator = fs::canonicalize(published.join("generator.py"))
-                .map_err(|error| error.to_string())?;
-            let added = result
-                .get("added_steps")
-                .and_then(serde_json::Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(ValidatedGenerator {
-                input: GeneratorInput::new(generator, params),
-                origin: TraceOrigin {
-                    protocol_id: protocol_id.to_string(),
-                    trace_id: trace_id.to_string(),
-                    step_ids: Vec::new(),
-                    added_steps: added,
-                },
+    artifacts::check(output_dir, request_id).and_then(|(result, params)| {
+        let published = output_dir.join("published");
+        if published.exists() {
+            return Err("published generator path already exists".to_string());
+        }
+        fs::create_dir_all(&published).map_err(|error| error.to_string())?;
+        fs::copy(
+            output_dir.join("generator.py"),
+            published.join("generator.py"),
+        )
+        .map_err(|error| error.to_string())?;
+        fs::copy(
+            output_dir.join("params.schema.json"),
+            published.join("params.schema.json"),
+        )
+        .map_err(|error| error.to_string())?;
+        let generator =
+            fs::canonicalize(published.join("generator.py")).map_err(|error| error.to_string())?;
+        let added = result
+            .get("added_steps")
+            .and_then(serde_json::Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .map(str::to_string)
+                    .collect()
             })
-        },
-    )
+            .unwrap_or_default();
+        Ok(ValidatedGenerator {
+            input: GeneratorInput::new(generator, params),
+            origin: TraceOrigin {
+                request_id: request_id.to_string(),
+                session: String::new(),
+                step_names: Vec::new(),
+                added_steps: added,
+            },
+        })
+    })
 }
 
 /// Stage placed before mutation. Disabled campaigns do not load a model.
@@ -135,7 +132,7 @@ pub struct GeneratorSynthesisStage {
     enabled: bool,
     model: Option<Arc<IndexedModel>>,
     binding: Binding,
-    config: ProtocolGenerationConfig,
+    config: GeneratorSynthesisConfig,
     prompt_context: Option<SynthesisPromptContext>,
     output: PathBuf,
     campaign_base: PathBuf,
@@ -164,7 +161,7 @@ pub struct GeneratorSynthesisStage {
 impl GeneratorSynthesisStage {
     pub fn from_campaign(campaign: &Campaign, mailbox: ProposalMailbox) -> Result<Self, Error> {
         let mut stage = Self::disabled(campaign, mailbox);
-        if !campaign.protocol_generation.enabled {
+        if !campaign.generator_synthesis.enabled {
             return Ok(stage);
         }
         let context = SynthesisPromptContext::from_campaign(campaign)?;
@@ -172,34 +169,34 @@ impl GeneratorSynthesisStage {
         let catalog_binding = context.binding().clone();
         let boot = crate::agents::current_boot().ok_or_else(|| {
             Error::unknown(
-                "protocol generation is enabled but the private HC core was not started"
+                "generator synthesis is enabled but the private HC core was not started"
                     .to_string(),
             )
         })?;
         stage.enabled = true;
         stage.model = Some(Arc::new(context.model().clone()));
         stage.binding = context.binding().clone();
-        stage.config = campaign.protocol_generation.clone();
+        stage.config = campaign.generator_synthesis.clone();
         stage.prompt_context = Some(context);
         stage.session = boot.session.clone();
         stage.analysis_enabled = campaign.coverage.analysis_enabled;
         write_catalog(
             &catalog_model,
             &catalog_binding,
-            &campaign.protocol_generation.output.join("catalog.json"),
+            &campaign.generator_synthesis.output.join("catalog.json"),
         )?;
         let launched = command_line(
             campaign
                 .agents
                 .profiles
-                .get(&campaign.protocol_generation.profile)
+                .get(&campaign.generator_synthesis.profile)
                 .ok_or_else(|| {
                     Error::illegal_argument(format!(
                         "agent profile {} is not defined",
-                        campaign.protocol_generation.profile
+                        campaign.generator_synthesis.profile
                     ))
                 })?,
-            &std::path::absolute(&campaign.protocol_generation.output)?,
+            &std::path::absolute(&campaign.generator_synthesis.output)?,
         )?;
         stage.secrets = launched.secrets();
         stage.launch = Some(launched);
@@ -212,9 +209,9 @@ impl GeneratorSynthesisStage {
             enabled: false,
             model: None,
             binding: Binding::default(),
-            config: campaign.protocol_generation.clone(),
+            config: campaign.generator_synthesis.clone(),
             prompt_context: None,
-            output: campaign.protocol_generation.output.clone(),
+            output: campaign.generator_synthesis.output.clone(),
             campaign_base: campaign.base.clone(),
             inflight: false,
             initialization_started: false,
@@ -329,11 +326,9 @@ impl GeneratorSynthesisStage {
         }
     }
 
-    /// Block until the first artifact is evaluated by `accept`.
-    pub fn bootstrap_first<F>(&mut self, rand: &mut impl Rand, mut accept: F) -> Result<(), Error>
-    where
-        F: FnMut(GeneratorInput, TraceOrigin) -> Result<bool, Error>,
-    {
+    /// Block until the first candidate artifact is published. The caller
+    /// enqueues it for baseline + mutation exploration; it is not evaluated here.
+    pub(crate) fn bootstrap_first(&mut self, rand: &mut impl Rand) -> Result<ReadyInput, Error> {
         self.wait_initialized()?;
         self.dispatch_with(rand, true)?;
         let deadline = Instant::now() + Duration::from_secs(self.config.task_timeout_secs.max(1));
@@ -344,14 +339,7 @@ impl GeneratorSynthesisStage {
                 } = outcome
                 {
                     self.finish_request(false);
-                    let kept = accept(ready.input, ready.origin)?;
-                    if !kept {
-                        return Err(Error::unknown(
-                            "the first synthesized generator was not accepted into the corpus"
-                                .to_string(),
-                        ));
-                    }
-                    return Ok(());
+                    return Ok(ready);
                 }
                 if let Outcome::Failed(failure) = outcome {
                     let reason = failure.reason.clone();
@@ -404,57 +392,49 @@ impl GeneratorSynthesisStage {
             None
         };
         let autonomous = proposal.is_none();
-        let (request, output_dir, proposal_id, trace_id, session, build, snapshot) =
-            if let Some(accepted) = &proposal {
-                let request = accepted.proposal.proposal_id.clone();
-                let output_dir = self.output.join("requests").join(&request);
-                if output_dir.exists() {
-                    return Err(Error::illegal_state(format!(
-                        "synthesis request {} already exists",
-                        output_dir.display()
-                    )));
-                }
-                fs::create_dir_all(&output_dir)?;
-                fs::copy(&accepted.path, output_dir.join("proposal.json"))
-                    .map_err(|error| Error::unknown(format!("copying proposal: {error}")))?;
-                (
-                    request,
-                    output_dir,
-                    Some(accepted.proposal.proposal_id.clone()),
-                    Some(accepted.proposal.trace_id.clone()),
-                    self.session.clone(),
-                    accepted.proposal.build.clone(),
-                    accepted.proposal.snapshot.clone(),
-                )
-            } else {
-                let request = format!("{:016x}", rand.next());
-                let output_dir = self.output.join("requests").join(&request);
-                if output_dir.exists() {
-                    return Err(Error::illegal_state(format!(
-                        "synthesis request {} already exists",
-                        output_dir.display()
-                    )));
-                }
-                fs::create_dir_all(&output_dir)?;
-                (
-                    request,
-                    output_dir,
-                    None,
-                    None,
-                    self.session.clone(),
-                    String::new(),
-                    String::new(),
-                )
-            };
+        let (request, output_dir, session, build, snapshot) = if let Some(accepted) = &proposal {
+            let request = accepted.proposal.request_id.clone();
+            let output_dir = self.output.join("requests").join(&request);
+            if output_dir.exists() {
+                return Err(Error::illegal_state(format!(
+                    "synthesis request {} already exists",
+                    output_dir.display()
+                )));
+            }
+            fs::create_dir_all(&output_dir)?;
+            fs::copy(&accepted.path, output_dir.join("proposal.json"))
+                .map_err(|error| Error::unknown(format!("copying proposal: {error}")))?;
+            (
+                request,
+                output_dir,
+                accepted.proposal.session.clone(),
+                accepted.proposal.build.clone(),
+                accepted.proposal.snapshot.clone(),
+            )
+        } else {
+            let request = format!("{:016x}", rand.next());
+            let output_dir = self.output.join("requests").join(&request);
+            if output_dir.exists() {
+                return Err(Error::illegal_state(format!(
+                    "synthesis request {} already exists",
+                    output_dir.display()
+                )));
+            }
+            fs::create_dir_all(&output_dir)?;
+            (
+                request,
+                output_dir,
+                self.session.clone(),
+                String::new(),
+                String::new(),
+            )
+        };
         let generation = GeneratorRequest {
             id: request.clone(),
             output_dir,
-            protocol_id: model.protocol_id.clone(),
             session,
             build,
             snapshot,
-            proposal_id,
-            trace_id,
             model: Arc::clone(model),
             binding: self.binding.clone(),
             autonomous,
@@ -513,10 +493,10 @@ where
 {
     fn perform(
         &mut self,
-        fuzzer: &mut Z,
-        executor: &mut E,
+        _fuzzer: &mut Z,
+        _executor: &mut E,
         state: &mut S,
-        manager: &mut EM,
+        _manager: &mut EM,
     ) -> Result<(), Error> {
         state
             .metadata_or_insert_with(BitmapProgress::default)
@@ -528,7 +508,7 @@ where
             return Ok(());
         }
         while let Some(outcome) = self.recv_one(Duration::from_millis(1)) {
-            self.consume(outcome, fuzzer, executor, state, manager)?;
+            self.consume(outcome, state)?;
         }
         state
             .metadata_or_insert_with(BitmapProgress::default)
@@ -579,17 +559,9 @@ where
 }
 
 impl GeneratorSynthesisStage {
-    fn consume<E, EM, S, Z>(
-        &mut self,
-        outcome: Outcome,
-        fuzzer: &mut Z,
-        executor: &mut E,
-        state: &mut S,
-        manager: &mut EM,
-    ) -> Result<(), Error>
+    fn consume<S>(&mut self, outcome: Outcome, state: &mut S) -> Result<(), Error>
     where
         S: HasCorpus<GeneratorInput> + HasMetadata,
-        Z: libafl::fuzzer::Evaluator<E, EM, GeneratorInput, S>,
     {
         match outcome {
             Outcome::Launched(fact) => {
@@ -687,24 +659,20 @@ impl GeneratorSynthesisStage {
                 }
                 self.finish_request(false);
                 self.record_session("result", SessionPhase::Ready, &fact, None);
-                match fuzzer.evaluate_input(state, executor, manager, &ready.input) {
-                    Ok((_exit, corpus_id)) => {
-                        if let Some(id) = corpus_id {
-                            if let Ok(case) = state.corpus_mut().get(id) {
-                                case.borrow_mut().add_metadata(ready.origin.clone());
-                            }
-                            self.remember(state, &ready);
-                        }
-                        Ok(())
-                    }
-                    Err(error) => {
-                        self.note_failure(
-                            state,
-                            format!("evaluating synthesized input failed: {error}"),
-                        );
-                        Ok(())
-                    }
+                // Accepted artifacts enter the mutation FIFO, never the
+                // corpus as initial parameters. The ordinary mutation stage
+                // runs the baseline once and then mutates through feedback.
+                self.remember(state, &ready);
+                let candidates = state.metadata_or_insert_with(SynthesisCandidates::default);
+                candidates.enqueue(ready.request.clone(), ready.input, ready.origin);
+                if let Err(error) = candidates.save(&self.output.join("candidates.json")) {
+                    log::warn!("persisting synthesis candidates failed: {error:?}");
                 }
+                log::info!(
+                    "synthesis candidate {} queued for mutation exploration",
+                    ready.request
+                );
+                Ok(())
             }
         }
     }
@@ -746,9 +714,9 @@ impl GeneratorSynthesisStage {
 
     fn remember<S: HasMetadata>(&mut self, state: &mut S, ready: &ReadyInput) {
         let progress = state.metadata_or_insert_with(SynthesisProgress::default);
-        progress.attempted.insert(ready.origin.trace_id.clone());
+        progress.attempted.insert(ready.origin.request_id.clone());
         progress.published.insert(
-            ready.origin.trace_id.clone(),
+            ready.origin.request_id.clone(),
             ready.input.generator.display().to_string(),
         );
         progress.session = self.session_state.clone();

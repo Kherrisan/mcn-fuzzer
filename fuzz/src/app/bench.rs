@@ -120,11 +120,15 @@ fn prepare_bench_campaign(
     campaign.campaign.corpus = scratch.join("corpus");
     campaign.campaign.crashes = scratch.join("crashes");
     campaign.target.workdir = work;
-    // The forkserver chdirs into workdir before exec. A relative binary or
-    // `@CONFIG@` would be resolved from that directory and miss the real files.
+    // The forkserver chdirs into workdir before exec, so keep executable and
+    // cleanup paths absolute when the campaign runs in scratch space.
     campaign.target.binary = absolute_path(&campaign.target.binary)?;
-    campaign.target.fixture = absolute_path(&campaign.target.fixture)?;
-    campaign.target.config_template = absolute_path(&campaign.target.config_template)?;
+    campaign.target.cleanup_script = campaign
+        .target
+        .cleanup_script
+        .as_deref()
+        .map(absolute_path)
+        .transpose()?;
     // Do not follow the venv symlink. `python` points at the system interpreter;
     // executing that path drops the venv and cannot import cbor2.
     campaign.campaign.python = absolute_symlink(&campaign.campaign.python)?;

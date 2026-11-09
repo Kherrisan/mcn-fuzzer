@@ -91,10 +91,18 @@ impl HcClient {
                 return Err(HcError::new(format!("HC {method} timed out")));
             }
             let mut response = String::new();
-            let read = self
-                .reader
-                .read_line(&mut response)
-                .map_err(|error| HcError::new(format!("reading HC {method}: {error}")))?;
+            let read = match self.reader.read_line(&mut response) {
+                Ok(read) => read,
+                // Linux reports SO_RCVTIMEO as EAGAIN. That is a poll interval,
+                // not a dead socket, so keep waiting until the call deadline.
+                Err(error) if io_wait(&error) => {
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                Err(error) => {
+                    return Err(HcError::new(format!("reading HC {method}: {error}")));
+                }
+            };
             if read == 0 {
                 return Err(HcError::new(format!("HC socket closed during {method}")));
             }
@@ -214,7 +222,9 @@ impl MockCore {
             std::os::unix::net::UnixListener::bind(&path).map_err(|error| error.to_string())?;
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = stop.clone();
-        let thread = std::thread::spawn(move || mock_loop(listener, flag));
+        let sends = path.with_extension("sends");
+        let _ = std::fs::remove_file(&sends);
+        let thread = std::thread::spawn(move || mock_loop(listener, flag, sends));
         Ok(Self {
             path,
             thread: Some(thread),
@@ -237,6 +247,7 @@ impl Drop for MockCore {
 fn mock_loop(
     listener: std::os::unix::net::UnixListener,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    sends: std::path::PathBuf,
 ) {
     let _ = listener.set_nonblocking(false);
     while !stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -247,6 +258,9 @@ fn mock_loop(
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut writer = stream;
         let mut line = String::new();
+        // Codex 0.166.0 shows this placeholder once the composer accepts input.
+        // `/rename` then puts ` · <name>` on the status line.
+        let mut screen = String::from("OpenAI Codex\nAsk Codex to do anything\n");
         loop {
             line.clear();
             if stop.load(std::sync::atomic::Ordering::Relaxed) {
@@ -279,10 +293,24 @@ fn mock_loop(
                     json!({"address": name, "name": name, "terminal": name, "state": "running", "status": null_status()})
                 }
                 "terminal.send" => {
-                    let _ = apply_prompt(params.get("text").and_then(Value::as_str).unwrap_or(""));
+                    let text = params.get("text").and_then(Value::as_str).unwrap_or("");
+                    if let Ok(mut record) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&sends)
+                    {
+                        let _ = writeln!(record, "{text}");
+                    }
+                    if let Some(name) = text.strip_prefix("/rename ") {
+                        let name = name.trim();
+                        if !name.is_empty() {
+                            screen = format!("OpenAI Codex\n · {name}\n");
+                        }
+                    }
+                    let _ = apply_prompt(text);
                     json!({"ok": true})
                 }
-                "terminal.read" => json!({"text": ""}),
+                "terminal.read" => json!({"text": screen.clone()}),
                 "terminal.get" => {
                     json!({"terminal": params.get("terminal").and_then(Value::as_str).unwrap_or("agent"), "state": "live", "status": "idle"})
                 }
@@ -295,6 +323,13 @@ fn mock_loop(
             let _ = writeln!(writer, "{response}");
         }
     }
+}
+
+fn io_wait(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    ) || error.raw_os_error() == Some(libc::EAGAIN)
 }
 
 fn null_status() -> Value {
@@ -347,7 +382,6 @@ fn apply_prompt(text: &str) -> Result<(), String> {
             "session": identity.get("session").cloned().unwrap_or_default(),
             "build": identity.get("build").cloned().unwrap_or_default(),
             "snapshot": identity.get("snapshot").cloned().unwrap_or_default(),
-            "protocol_id": identity.get("protocol_id").cloned().unwrap_or_default(),
             "status": "no_proposal",
             "error": "mock core does not call MCP tools",
         });
@@ -374,8 +408,6 @@ fn apply_prompt(text: &str) -> Result<(), String> {
             &root.join("result.json"),
             &json!({
                 "request_id": request_id,
-                "protocol_id": field(text, "PROTOCOL="),
-                "trace_id": field(text, "TRACE="),
                 "status": "error",
                 "error": "agent failed",
                 "added_steps": ["connect"],
@@ -421,8 +453,6 @@ fn apply_prompt(text: &str) -> Result<(), String> {
     }
     let mut body = json!({
         "request_id": request_id,
-        "protocol_id": field(text, "PROTOCOL="),
-        "trace_id": field(text, "TRACE="),
         "added_steps": ["open control connection"],
     });
     if mode != "nostatus" {

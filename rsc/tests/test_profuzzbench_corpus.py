@@ -43,7 +43,7 @@ class ProfuzzbenchCorpusTests(unittest.TestCase):
         self.assertEqual(protocols["DICOM"]["status"], "no_rfc")
         self.assertEqual(protocols["DAAP"]["rfcs"], [])
         self.assertEqual(protocols["DICOM"]["rfcs"], [])
-        self.assertEqual(len(self.entries), 28)
+        self.assertEqual(len(self.entries), 30)
 
     def test_manifest_checksums(self) -> None:
         for entry in self.entries:

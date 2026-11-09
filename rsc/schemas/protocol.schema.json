@@ -20,13 +20,13 @@
       "additionalProperties": false,
       "properties": {
         "name": {
-          "description": "Reusable channel name; specialize only for a supported connection distinction.",
+          "description": "Name for a source-supported connection lifecycle. A connection-oriented channel represents one connection lifecycle, beginning with a source-supported connect or listen step and ending with transport close. A reconnect or session-resumption connection uses a different channel even when the parties, addresses, ports, or logical session are unchanged. Distinguish initial and resumed connections. Reuse message definitions, but create channel-specific steps for their exchanges. Preserve cross-channel prerequisites, state, and field relations supported by the source. Describe how earlier exchanges supply or derive values used on a later channel; distinguish direct reuse from derivation without assuming equality. Do not require the initial connection to close before resumption unless the source requires that order. A persistent listener need not listen again for every connection; listening readiness is distinct from an accepted connection. Do not invent missing network operations or expand arbitrary repetitions into infinitely many channels: model the distinct source-supported lifecycle roles and record any unspecified boundaries as unresolved. For connectionless channels, follow source-defined exchange boundaries without inventing connect or close. Reviewer: check lifecycle boundaries, separate resumption channels, and the cross-channel state needed to perform them.",
           "minLength": 1,
           "title": "Name",
           "type": "string"
         },
         "description": {
-          "description": "One short phrase for this connection.",
+          "description": "One short phrase for this connection lifecycle.",
           "minLength": 1,
           "title": "Description",
           "type": "string"
@@ -103,6 +103,92 @@
       "title": "Channel",
       "type": "object"
     },
+    "close_step": {
+      "additionalProperties": false,
+      "description": "The party closes the transport connection. This is not a protocol termination message.",
+      "properties": {
+        "name": {
+          "description": "Unique step name. Dependencies and proposals use this name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "action": {
+          "const": "close",
+          "description": "A step action is send, listen, connect, or close. send is one protocol message between a sender and a receiver. listen means that party starts listening and can accept connections. connect means that party opens the connection. close means that party closes the transport connection. Protocol termination messages stay send; add a separate close step only when the source describes the later transport close. Do not invent a message, sender, or receiver for a network action. Keep one network-action node per party, channel, and action. The same node may occur more than once in an ordered trace. Put occurrence-specific conditions on dependency edges or proposal constraints, not by copying the node. Do not add listen, connect, or close steps when the source does not describe them.",
+          "title": "Action",
+          "type": "string"
+        },
+        "channel_name": {
+          "minLength": 1,
+          "title": "Channel Name",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Condition shared by every occurrence. Put context-specific conditions on dependency edges or proposal constraints.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "party_name": {
+          "description": "Endpoint party that performs this network action.",
+          "minLength": 1,
+          "title": "Party Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "action",
+        "channel_name",
+        "condition",
+        "party_name"
+      ],
+      "title": "CloseStep",
+      "type": "object"
+    },
+    "connect_step": {
+      "additionalProperties": false,
+      "description": "The party actively opens the transport connection.",
+      "properties": {
+        "name": {
+          "description": "Unique step name. Dependencies and proposals use this name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "action": {
+          "const": "connect",
+          "description": "A step action is send, listen, connect, or close. send is one protocol message between a sender and a receiver. listen means that party starts listening and can accept connections. connect means that party opens the connection. close means that party closes the transport connection. Protocol termination messages stay send; add a separate close step only when the source describes the later transport close. Do not invent a message, sender, or receiver for a network action. Keep one network-action node per party, channel, and action. The same node may occur more than once in an ordered trace. Put occurrence-specific conditions on dependency edges or proposal constraints, not by copying the node. Do not add listen, connect, or close steps when the source does not describe them.",
+          "title": "Action",
+          "type": "string"
+        },
+        "channel_name": {
+          "minLength": 1,
+          "title": "Channel Name",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Condition shared by every occurrence. Put context-specific conditions on dependency edges or proposal constraints.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "party_name": {
+          "description": "Endpoint party that performs this network action.",
+          "minLength": 1,
+          "title": "Party Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "action",
+        "channel_name",
+        "condition",
+        "party_name"
+      ],
+      "title": "ConnectStep",
+      "type": "object"
+    },
     "endpoint_source": {
       "additionalProperties": false,
       "properties": {
@@ -117,7 +203,7 @@
           "type": "string"
         },
         "from": {
-          "description": "Field name, constant, or a short source phrase. Example: PASV response.port.",
+          "description": "Field name, constant, or a short source phrase identifying the endpoint source.",
           "minLength": 1,
           "title": "From",
           "type": "string"
@@ -178,6 +264,49 @@
       "title": "Issue",
       "type": "object"
     },
+    "listen_step": {
+      "additionalProperties": false,
+      "description": "The party starts listening and can accept connections. This is not an accept event.",
+      "properties": {
+        "name": {
+          "description": "Unique step name. Dependencies and proposals use this name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "action": {
+          "const": "listen",
+          "description": "A step action is send, listen, connect, or close. send is one protocol message between a sender and a receiver. listen means that party starts listening and can accept connections. connect means that party opens the connection. close means that party closes the transport connection. Protocol termination messages stay send; add a separate close step only when the source describes the later transport close. Do not invent a message, sender, or receiver for a network action. Keep one network-action node per party, channel, and action. The same node may occur more than once in an ordered trace. Put occurrence-specific conditions on dependency edges or proposal constraints, not by copying the node. Do not add listen, connect, or close steps when the source does not describe them.",
+          "title": "Action",
+          "type": "string"
+        },
+        "channel_name": {
+          "minLength": 1,
+          "title": "Channel Name",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Condition shared by every occurrence. Put context-specific conditions on dependency edges or proposal constraints.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "party_name": {
+          "description": "Endpoint party that performs this network action.",
+          "minLength": 1,
+          "title": "Party Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "action",
+        "channel_name",
+        "condition",
+        "party_name"
+      ],
+      "title": "ListenStep",
+      "type": "object"
+    },
     "party": {
       "additionalProperties": false,
       "description": "A direct communication role; retain a container separately only for a distinct role.",
@@ -231,7 +360,7 @@
       "additionalProperties": false,
       "properties": {
         "schema_version": {
-          "const": "7.0.0",
+          "const": "8.0.0",
           "title": "Schema Version",
           "type": "string"
         },
@@ -260,6 +389,60 @@
         "documents"
       ],
       "title": "ProtocolMeta",
+      "type": "object"
+    },
+    "send_step": {
+      "additionalProperties": false,
+      "description": "One directional protocol message, including protocol termination messages.",
+      "properties": {
+        "name": {
+          "description": "Unique step name. Dependencies and proposals use this name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "action": {
+          "const": "send",
+          "description": "A step action is send, listen, connect, or close. send is one protocol message between a sender and a receiver. listen means that party starts listening and can accept connections. connect means that party opens the connection. close means that party closes the transport connection. Protocol termination messages stay send; add a separate close step only when the source describes the later transport close. Do not invent a message, sender, or receiver for a network action. Keep one network-action node per party, channel, and action. The same node may occur more than once in an ordered trace. Put occurrence-specific conditions on dependency edges or proposal constraints, not by copying the node. Do not add listen, connect, or close steps when the source does not describe them.",
+          "title": "Action",
+          "type": "string"
+        },
+        "channel_name": {
+          "minLength": 1,
+          "title": "Channel Name",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Condition shared by every occurrence. Put context-specific conditions on dependency edges or proposal constraints.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "message_name": {
+          "minLength": 1,
+          "title": "Message Name",
+          "type": "string"
+        },
+        "sender_name": {
+          "minLength": 1,
+          "title": "Sender Name",
+          "type": "string"
+        },
+        "receiver_name": {
+          "minLength": 1,
+          "title": "Receiver Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "action",
+        "channel_name",
+        "condition",
+        "message_name",
+        "sender_name",
+        "receiver_name"
+      ],
+      "title": "SendStep",
       "type": "object"
     },
     "source": {
@@ -301,58 +484,6 @@
       "title": "Source",
       "type": "object"
     },
-    "step": {
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "description": "Python-assigned step identity. Not a name reference.",
-          "minLength": 1,
-          "title": "Id",
-          "type": "string"
-        },
-        "name": {
-          "description": "Persistent step name used by dependencies.",
-          "minLength": 1,
-          "title": "Name",
-          "type": "string"
-        },
-        "message_name": {
-          "minLength": 1,
-          "title": "Message Name",
-          "type": "string"
-        },
-        "channel_name": {
-          "minLength": 1,
-          "title": "Channel Name",
-          "type": "string"
-        },
-        "sender_name": {
-          "minLength": 1,
-          "title": "Sender Name",
-          "type": "string"
-        },
-        "receiver_name": {
-          "minLength": 1,
-          "title": "Receiver Name",
-          "type": "string"
-        },
-        "condition": {
-          "title": "Condition",
-          "type": "string"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "message_name",
-        "channel_name",
-        "sender_name",
-        "receiver_name",
-        "condition"
-      ],
-      "title": "Step",
-      "type": "object"
-    },
     "dependency": {
       "additionalProperties": false,
       "description": "A dependency on an earlier occurrence, without requiring adjacency.",
@@ -390,6 +521,31 @@
       ],
       "title": "StepDependency",
       "type": "object"
+    },
+    "step": {
+      "discriminator": {
+        "mapping": {
+          "close": "#/$defs/close_step",
+          "connect": "#/$defs/connect_step",
+          "listen": "#/$defs/listen_step",
+          "send": "#/$defs/send_step"
+        },
+        "propertyName": "action"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/send_step"
+        },
+        {
+          "$ref": "#/$defs/listen_step"
+        },
+        {
+          "$ref": "#/$defs/connect_step"
+        },
+        {
+          "$ref": "#/$defs/close_step"
+        }
+      ]
     }
   },
   "additionalProperties": false,

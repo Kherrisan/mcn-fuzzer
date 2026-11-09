@@ -51,7 +51,6 @@ class Request:
     session: str
     build: str
     snapshot: int
-    protocol_id: str
     output_dir: Path
     snapshot_dir: Path
     manifest: Path
@@ -69,8 +68,7 @@ class Request:
 
     def identity(self):
         return {"session": self.session, "request_id": self.request_id,
-                "build": self.build, "snapshot": f"{self.snapshot:06}",
-                "protocol_id": self.protocol_id}
+                "build": self.build, "snapshot": f"{self.snapshot:06}"}
 
 
 class State:
@@ -229,8 +227,7 @@ class State:
 
     def load_protocol(self, protocol_path, catalog_path, checkpoint_path=None):
         graph = protocol_mod.load_protocol(protocol_path, catalog_path, checkpoint_path)
-        identity = {"protocol_id": graph.base["protocol_id"],
-                    "protocol_name": graph.base["protocol_name"],
+        identity = {"protocol_name": graph.base["protocol_name"],
                     "steps": len(graph.steps), "revision": graph.revision}
         digest = sha256_file(protocol_path)
         loaded = self._store("protocol", graph, digest, identity)
@@ -256,21 +253,16 @@ class State:
 
     # -- requests and transactions --------------------------------------
     def register_request(self, payload):
-        for field in ("request_id", "session", "build", "snapshot", "protocol_id",
+        for field in ("request_id", "session", "build", "snapshot",
                       "output_dir", "snapshot_dir", "manifest", "model", "catalog",
                       "handlers"):
             if payload.get(field) in (None, ""):
                 raise StateError("bad_request", f"request registration needs {field}")
-        protocol_loaded = self.latest.get("protocol")
-        if protocol_loaded and protocol_loaded.identity["protocol_id"] != payload["protocol_id"]:
-            raise StateError("incompatible_data",
-                             "registered protocol_id does not match the loaded model")
         request = Request(
             request_id=str(payload["request_id"]),
             session=str(payload["session"]),
             build=str(payload["build"]),
             snapshot=int(payload["snapshot"]),
-            protocol_id=str(payload["protocol_id"]),
             output_dir=Path(payload["output_dir"]),
             snapshot_dir=Path(payload["snapshot_dir"]),
             manifest=Path(payload["manifest"]),
@@ -324,41 +316,44 @@ class State:
             goal=payload.get("goal") or {},
             trace=payload.get("trace") or [],
             handlers=handlers,
+            parties=payload.get("parties") or {},
+            channels=payload.get("channels") or {},
+            mutations=payload.get("mutations") or [],
             graph_revision=graph.revision,
         )
         proposal_mod.validate_proposal(proposal, graph, handlers, request.identity())
         path = proposal_mod.freeze(request.output_dir / "proposal.json", proposal)
         request.proposal = proposal
         request.proposal_digest = sha256_file(path)
-        checkpoint = graph.checkpoint(proposal["proposal_id"])
+        checkpoint = graph.checkpoint(request.request_id)
         checkpoint_path = request.output_dir / "graph-checkpoint.json"
         proposal_mod.freeze(checkpoint_path, checkpoint)
-        return {"proposal_id": proposal["proposal_id"], "trace_id": proposal["trace_id"],
+        return {"request_id": request_id,
                 "graph_revision": graph.revision,
                 "proposal_sha256": request.proposal_digest,
                 "path": str(path)}
 
-    def commit_analysis(self, request_id, proposal_id, proposal_sha256):
+    def commit_analysis(self, request_id, proposal_sha256):
         request = self.request(request_id)
         graph = self.txn_graph(request_id)
         if request.proposal is None:
             raise StateError("no_proposal", "no proposal was submitted for this request")
-        if request.proposal["proposal_id"] != proposal_id:
-            raise StateError("mismatch", "proposal id does not match the submitted proposal")
+        if request.proposal.get("request_id") != request_id:
+            raise StateError("mismatch", "proposal does not belong to this request")
         path = request.output_dir / "proposal.json"
         if not path.is_file() or sha256_file(path) != proposal_sha256:
-            raise StateError("mismatch", "frozen proposal digest does not match")
+            raise StateError("mismatch", "frozen proposal bytes do not match")
         if request.committed:
-            return {"request_id": request_id, "proposal_id": proposal_id,
+            return {"request_id": request_id,
                     "graph_revision": self.graph_revision, "committed": True}
         graph.revision = self.graph_revision + 1
         self.graph_revision = graph.revision
         self.committed = graph
-        self.committed_checkpoint = graph.checkpoint(proposal_id)
+        self.committed_checkpoint = graph.checkpoint(request_id)
         self.committed_proposal = request.proposal
         request.committed = True
         self._persist_commit()
-        return {"request_id": request_id, "proposal_id": proposal_id,
+        return {"request_id": request_id,
                 "graph_revision": self.graph_revision, "committed": True}
 
     def _persist_commit(self):
@@ -383,5 +378,5 @@ class State:
                           if loaded else {"loaded": False})
         state["graph_revision"] = self.graph_revision
         state["committed_proposal"] = (
-            self.committed_proposal["proposal_id"] if self.committed_proposal else None)
+            self.committed_proposal["request_id"] if self.committed_proposal else None)
         return state

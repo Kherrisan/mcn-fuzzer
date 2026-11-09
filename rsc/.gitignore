@@ -1,6 +1,8 @@
 .rsc-cache/
 config.json
 config.local.json
+config.local.toml
+config.*.local.toml
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -12,6 +14,7 @@ dist/
 
 # Generated RFC runs
 work/
+runs/
 
 # Local provider keys
 config.deepseek.local.json

@@ -59,7 +59,7 @@ def test_ftp_connection_direction_and_endpoint_sources():
     assert all(set(source) == {"party_name", "parameter", "from"} for source in sources)
     assert any("PORT" in source["from"] for source in sources)
     assert {step["sender_name"] for step in model["steps"]} == {"user-PI", "server-PI"}
-    assert all(step["name"] and step["id"] for step in model["steps"])
+    assert all(step["name"] and "id" not in step for step in model["steps"])
     assert all("effects" not in step for step in model["steps"])
     assert all(
         set(field) == {"name"}

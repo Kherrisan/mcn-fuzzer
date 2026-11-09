@@ -75,40 +75,40 @@
   "interactions": {
     "steps": [
       {
-        "id": "s-setup",
         "name": "send SETUP request",
         "message_name": "SETUP request",
         "channel_name": "UDP control",
         "sender_name": "client",
         "receiver_name": "server",
-        "condition": ""
+        "condition": "",
+        "action": "send"
       },
       {
-        "id": "s-setup-ok",
         "name": "send SETUP response",
         "message_name": "SETUP response",
         "channel_name": "UDP control",
         "sender_name": "server",
         "receiver_name": "client",
-        "condition": ""
+        "condition": "",
+        "action": "send"
       },
       {
-        "id": "s-play",
         "name": "send PLAY request",
         "message_name": "PLAY request",
         "channel_name": "UDP control",
         "sender_name": "client",
         "receiver_name": "server",
-        "condition": ""
+        "condition": "",
+        "action": "send"
       },
       {
-        "id": "s-play-ok",
         "name": "send PLAY response",
         "message_name": "PLAY response",
         "channel_name": "UDP control",
         "sender_name": "server",
         "receiver_name": "client",
-        "condition": ""
+        "condition": "",
+        "action": "send"
       }
     ],
     "step_dependencies": [

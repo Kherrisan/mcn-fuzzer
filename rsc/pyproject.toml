@@ -15,12 +15,8 @@ classifiers = [
   "Topic :: Software Development :: Testing",
 ]
 dependencies = [
-  "anthropic==1.17.0",
-  "openai==3.41.0",
-  "httpx2==2.16.0",
   "jsonschema>=4.22",
-  "logfire==5.4.0",
-  "pydantic-ai-slim[openai,anthropic]==2.64.0",
+  "pydantic>=2,<3",
   "tiktoken==0.14.0",
 ]
 
@@ -48,6 +44,7 @@ include = ["rsc*"]
 
 [tool.setuptools.package-data]
 rsc = ["py.typed"]
+"rsc.agents" = ["*.mjs"]
 
 [tool.setuptools.data-files]
 "share/rsc/schemas" = ["schemas/*.schema.json"]

@@ -7,23 +7,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 from rsc.artifacts import read_jsonl, write_json, write_jsonl
 from rsc.cli import _validator
-from rsc.config import ProviderConfig
 from rsc.ingest import IngestOptions, ingest_path
-from rsc.llm import AnthropicClient, OpenAIClient
-from rsc.llm.errors import (
-    LLMAuthError,
-    LLMConnectionError,
-    LLMContextLengthError,
-    LLMProviderError,
-    LLMRateLimitError,
-    LLMTimeoutError,
-    StructuredOutputUnsupported,
-)
 from rsc.schemas import validator
 
 
@@ -90,65 +78,7 @@ class ArtifactAndStageTests(unittest.TestCase):
             [sys.executable, "-c", "import rsc.pipeline, sys; assert 'rsc.cli' not in sys.modules"],
             capture_output=True,
             text=True,
+            cwd=Path(__file__).resolve().parents[1],
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIs(_validator, validator)
-
-
-class SharedProviderTests(unittest.TestCase):
-    def test_sdk_constructor_overrides(self) -> None:
-        for cls, api, constructor in (
-            (OpenAIClient, "openai", "OpenAI"),
-            (AnthropicClient, "anthropic", "Anthropic"),
-        ):
-            config = ProviderConfig(
-                name="p",
-                api=api,
-                model="m",
-                api_key="local",
-                base_url="https://example.test",
-                timeout_s=20,
-                max_retries=2,
-                default_headers={"x-test": "1"},
-                extra_client_kwargs={"timeout": 7},
-            )
-            with self.subTest(api=api), patch(f"{api}.{constructor}") as build:
-                cls(config)
-                build.assert_called_once_with(
-                    api_key="local",
-                    base_url="https://example.test",
-                    timeout=7,
-                    max_retries=2,
-                    default_headers={"x-test": "1"},
-                )
-
-    def test_sdk_error_mapping_and_metadata(self) -> None:
-        cases = (
-            ("AuthenticationError", "bad key", LLMAuthError),
-            ("RateLimitError", "slow down", LLMRateLimitError),
-            ("APITimeoutError", "timeout", LLMTimeoutError),
-            ("APIConnectionError", "connection failed", LLMConnectionError),
-            ("BadRequestError", "maximum context length", LLMContextLengthError),
-            ("BadRequestError", "invalid payload", LLMProviderError),
-            ("APIStatusError", "server error", LLMProviderError),
-        )
-        sdk = SimpleNamespace(**{name: type(name, (Exception,), {}) for name, _, _ in cases})
-        for cls, api in ((OpenAIClient, "openai"), (AnthropicClient, "anthropic")):
-            client = cls(ProviderConfig(name="p", api=api, model="m"), sdk_client=object())
-            client._sdk = sdk
-            for name, message, expected in cases:
-                with self.subTest(api=api, name=name, message=message):
-                    error = getattr(sdk, name)(message)
-                    error.status_code, error.request_id = 400, "req-test"
-                    mapped = client._map_error(error)
-                    self.assertIsInstance(mapped, expected)
-                    self.assertEqual((mapped.status_code, mapped.request_id), (400, "req-test"))
-            unsupported = client._map_error(sdk.BadRequestError("response_format unsupported"))
-            expected = StructuredOutputUnsupported if api == "openai" else LLMProviderError
-            self.assertIsInstance(unsupported, expected)
-            existing = LLMProviderError("already mapped")
-            self.assertIs(client._map_error(existing), existing)
-
-
-if __name__ == "__main__":
-    unittest.main()

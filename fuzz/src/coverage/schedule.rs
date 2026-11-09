@@ -69,26 +69,32 @@ fn inbound_messages(model: &IndexedModel, binding: &Binding) -> BTreeSet<String>
     model
         .steps
         .iter()
-        .filter(|step| binding.role(&step.receiver_name) == PartyRole::Sut)
-        .map(|step| step.message_name.clone())
+        .filter(|step| {
+            step.receiver_name()
+                .is_some_and(|name| binding.role(name) == PartyRole::Sut)
+        })
+        .filter_map(|step| step.message_name().map(str::to_string))
         .collect()
 }
 
 /// Validate the initialized mapping and freeze an accepted copy for the service.
 fn accept_handlers(context: &CoverageInit, output_dir: &Path) -> Result<(), String> {
     let value = read_json(&output_dir.join("handlers.json"))?;
-    if value.get("version").and_then(Value::as_u64) != Some(1) {
-        return Err("handlers.json must have version 1".into());
+    if value.get("version").and_then(Value::as_u64) != Some(2) {
+        return Err("handlers.json must have version 2".into());
     }
     let mappings = value
         .get("mappings")
         .and_then(Value::as_array)
         .ok_or("handlers.json needs a mappings array")?;
-    let by_hash: std::collections::BTreeMap<String, String> = context
+    let by_name: std::collections::BTreeMap<String, String> = context
         .model
         .steps
         .iter()
-        .map(|step| (step.id().0, step.message_name.clone()))
+        .filter_map(|step| {
+            step.message_name()
+                .map(|message| (step.name.clone(), message.to_string()))
+        })
         .collect();
     let mut covered = BTreeSet::new();
     for row in mappings {
@@ -116,13 +122,18 @@ fn accept_handlers(context: &CoverageInit, output_dir: &Path) -> Result<(), Stri
                 return Err(format!("handler for {message} has an empty symbol"));
             }
         }
+        if row.get("step_ids").is_some() {
+            return Err(format!(
+                "handler mapping for {message} uses removed step_ids; use step_names"
+            ));
+        }
         for step in row
-            .get("step_ids")
+            .get("step_names")
             .and_then(Value::as_array)
-            .ok_or_else(|| format!("handler mapping for {message} has no step_ids"))?
+            .ok_or_else(|| format!("handler mapping for {message} has no step_names"))?
         {
             let step = step.as_str().unwrap_or("");
-            let Some(expected) = by_hash.get(step) else {
+            let Some(expected) = by_name.get(step) else {
                 return Err(format!(
                     "handler mapping for {message} references unknown step {step}"
                 ));
@@ -158,7 +169,6 @@ struct AnalysisRequest {
     snapshot: u64,
     session: String,
     build: String,
-    protocol_id: String,
     output_dir: PathBuf,
     model: IndexedModel,
     binding: Binding,
@@ -185,7 +195,6 @@ impl AgentTask for AnalysisRequest {
                 ("session", &self.session),
                 ("build", &self.build),
                 ("snapshot", &format!("{:06}", self.snapshot)),
-                ("protocol_id", &self.protocol_id),
             ],
         )?;
         match result.get("status").and_then(Value::as_str).unwrap_or("") {
@@ -210,14 +219,9 @@ impl AgentTask for AnalysisRequest {
             request_id: self.id.clone(),
             build: self.build.clone(),
             snapshot: format!("{:06}", self.snapshot),
-            protocol_id: self.protocol_id.clone(),
         };
         proposal.validate(&self.model, &self.binding, &identity)?;
         let sha256 = sha256_file(&path)?;
-        if result.get("proposal_id").and_then(Value::as_str) != Some(proposal.proposal_id.as_str())
-        {
-            return Err("result.json proposal_id does not match proposal.json".into());
-        }
         Ok(PreparedProposal {
             proposal,
             path,
@@ -273,7 +277,7 @@ impl CoverageAnalysisStage {
                 "coverage analysis is enabled but the private HC core was not started".to_string(),
             )
         })?;
-        let model = load_model(&campaign.protocol_generation.model)?;
+        let model = load_model(&campaign.generator_synthesis.model)?;
         let binding = Binding::new(
             campaign
                 .parties
@@ -532,12 +536,12 @@ impl CoverageAnalysisStage {
         let output_dir = self.analysis_root.join("requests").join(&request);
         fs::create_dir_all(&output_dir)?;
         let snapshot_dir = self.snapshot_dir(snapshot);
+        let (sut_stdout_log, sut_stderr_log) = snapshot_sut_logs(&snapshot_dir, snapshot)?;
         let identity = json!({
             "request_id": request,
             "session": self.session,
             "build": self.fingerprint,
             "snapshot": format!("{snapshot:06}"),
-            "protocol_id": model.protocol_id,
         });
         fs::write(
             output_dir.join("request.json"),
@@ -546,8 +550,10 @@ impl CoverageAnalysisStage {
                 serde_json::to_string_pretty(&json!({
                     "identity": identity,
                     "snapshot_dir": snapshot_dir,
+                    "sut_stdout_log": sut_stdout_log,
+                    "sut_stderr_log": sut_stderr_log,
                     "manifest": self.campaign.coverage.build_manifest,
-                    "model": self.campaign.protocol_generation.model,
+                    "model": self.campaign.generator_synthesis.model,
                     "catalog": self.catalog,
                     "handlers": self.handlers_path,
                     "output_dir": output_dir,
@@ -564,16 +570,23 @@ impl CoverageAnalysisStage {
             "session": self.session,
             "build": self.fingerprint,
             "snapshot": format!("{snapshot:06}"),
-            "protocol_id": model.protocol_id,
             "output_dir": output_dir,
             "snapshot_dir": snapshot_dir,
             "manifest": self.campaign.coverage.build_manifest,
-            "model": self.campaign.protocol_generation.model,
+            "model": self.campaign.generator_synthesis.model,
             "catalog": self.catalog,
             "handlers": self.handlers_path,
             "source_dir": self.campaign.target.source_dir,
         }))?;
-        let prompt = render_task(self, model, &request, &output_dir, snapshot, &snapshot_dir);
+        let prompt = render_task(
+            self,
+            &request,
+            &output_dir,
+            snapshot,
+            &snapshot_dir,
+            &sut_stdout_log,
+            &sut_stderr_log,
+        );
         self.worker
             .as_ref()
             .ok_or_else(|| Error::unknown("analysis worker is not running"))?
@@ -583,7 +596,6 @@ impl CoverageAnalysisStage {
                     snapshot,
                     session: self.session.clone(),
                     build: self.fingerprint.clone(),
-                    protocol_id: model.protocol_id.clone(),
                     output_dir: output_dir.clone(),
                     model: model.clone(),
                     binding: self.binding.clone(),
@@ -630,11 +642,7 @@ impl CoverageAnalysisStage {
         let Some(mcp) = self.mcp.as_ref() else {
             return;
         };
-        match mcp.commit(
-            &inflight.request,
-            &proposal.proposal.proposal_id,
-            &proposal.sha256,
-        ) {
+        match mcp.commit(&inflight.request, &proposal.sha256) {
             Ok(committed) => {
                 let accepted = AcceptedProposal {
                     proposal: proposal.proposal.clone(),
@@ -647,11 +655,9 @@ impl CoverageAnalysisStage {
                     json!({
                         "request": inflight.request,
                         "snapshot": inflight.snapshot,
-                        "proposal_id": proposal.proposal.proposal_id,
-                        "trace_id": proposal.proposal.trace_id,
                         "goal_handlers": proposal.proposal.goal.handler_ids,
-                        "steps": proposal.proposal.trace.iter().map(|step| step.step_id.clone()).collect::<Vec<_>>(),
-                        "replaced": replaced.map(|item| item.proposal.proposal_id),
+                        "steps": proposal.proposal.trace.iter().map(|step| step.name.clone()).collect::<Vec<_>>(),
+                        "replaced": replaced.map(|item| item.proposal.request_id),
                         "commit": committed,
                     }),
                 );
@@ -847,12 +853,13 @@ fn render_init(
         .iter()
         .map(|step| {
             json!({
-                "step_id": step.id().0,
                 "name": step.name,
-                "message": step.message_name,
+                "action": step.action.name(),
+                "message": step.message_name(),
                 "channel": step.channel_name,
-                "sender": step.sender_name,
-                "receiver": step.receiver_name,
+                "sender": step.sender_name(),
+                "receiver": step.receiver_name(),
+                "party": step.party_name(),
                 "condition": step.condition,
             })
         })
@@ -868,7 +875,7 @@ fn render_init(
             "{{ model }}",
             &stage
                 .campaign
-                .protocol_generation
+                .generator_synthesis
                 .model
                 .display()
                 .to_string(),
@@ -886,13 +893,28 @@ fn render_init(
         )
 }
 
+fn snapshot_sut_logs(snapshot_dir: &Path, snapshot: u64) -> Result<(PathBuf, PathBuf), Error> {
+    let stdout = snapshot_dir.join("sut.stdout.log");
+    let stderr = snapshot_dir.join("sut.stderr.log");
+    for path in [&stdout, &stderr] {
+        if !path.is_file() {
+            return Err(Error::unknown(format!(
+                "coverage snapshot {snapshot:06} is missing required SUT output log {}",
+                path.display()
+            )));
+        }
+    }
+    Ok((stdout, stderr))
+}
+
 fn render_task(
     stage: &CoverageAnalysisStage,
-    model: &IndexedModel,
     request: &str,
     output_dir: &Path,
     snapshot: u64,
     snapshot_dir: &Path,
+    sut_stdout_log: &Path,
+    sut_stderr_log: &Path,
 ) -> String {
     TASK_PROMPT
         .replace("{{ session_id }}", &stage.session)
@@ -921,14 +943,21 @@ fn render_task(
             "{{ model }}",
             &stage
                 .campaign
-                .protocol_generation
+                .generator_synthesis
                 .model
                 .display()
                 .to_string(),
         )
         .replace("{{ catalog }}", &stage.catalog.display().to_string())
         .replace("{{ handlers }}", &stage.handlers_path.display().to_string())
-        .replace("{{ protocol_id }}", &model.protocol_id)
+        .replace(
+            "{{ sut_stdout_log }}",
+            &sut_stdout_log.display().to_string(),
+        )
+        .replace(
+            "{{ sut_stderr_log }}",
+            &sut_stderr_log.display().to_string(),
+        )
         .replace(
             "{{ source_dir }}",
             &stage
@@ -939,4 +968,27 @@ fn render_task(
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_sut_logs_are_required_and_absolute() {
+        let dir = std::env::temp_dir().join(format!("mcn-sut-log-paths-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let error = snapshot_sut_logs(&dir, 7).unwrap_err();
+        assert!(format!("{error:?}").contains("sut.stdout.log"), "{error:?}");
+        fs::write(dir.join("sut.stdout.log"), b"out").unwrap();
+        let error = snapshot_sut_logs(&dir, 7).unwrap_err();
+        assert!(format!("{error:?}").contains("sut.stderr.log"), "{error:?}");
+        fs::write(dir.join("sut.stderr.log"), b"err").unwrap();
+        let (stdout, stderr) = snapshot_sut_logs(&dir, 7).unwrap();
+        assert_eq!(stdout, dir.join("sut.stdout.log"));
+        assert_eq!(stderr, dir.join("sut.stderr.log"));
+        assert!(stdout.is_absolute());
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

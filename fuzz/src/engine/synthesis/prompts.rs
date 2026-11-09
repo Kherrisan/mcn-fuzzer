@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeSet,
+    fs,
     path::{absolute, Path, PathBuf},
 };
 
@@ -36,6 +37,7 @@ pub(super) struct CampaignContext {
     generator_validator: PathBuf,
     catalog: PathBuf,
     proposal_tool: PathBuf,
+    extra_files: Vec<PathBuf>,
     target: TargetContext,
     budgets: Budgets,
 }
@@ -44,9 +46,7 @@ pub(super) struct CampaignContext {
 struct TargetContext {
     binary: PathBuf,
     workdir: PathBuf,
-    fixture: PathBuf,
-    config_template: PathBuf,
-    config_file: PathBuf,
+    cleanup_script: Option<PathBuf>,
     args: Vec<String>,
     host: String,
     configured_port: u16,
@@ -64,10 +64,28 @@ struct Budgets {
 
 impl CampaignContext {
     pub(super) fn from_campaign(campaign: &Campaign) -> Result<Self, libafl::Error> {
-        let model = absolute(&campaign.protocol_generation.model)?;
+        let model = absolute(&campaign.generator_synthesis.model)?;
+        let mut extra_files = Vec::new();
+        for (index, path) in campaign.generator_synthesis.extra_files.iter().enumerate() {
+            let absolute_path = absolute(path)?;
+            let context = format!(
+                "generator_synthesis.extra_files[{index}] {}",
+                absolute_path.display()
+            );
+            let metadata = fs::metadata(&absolute_path)
+                .map_err(|error| libafl::Error::illegal_argument(format!("{context}: {error}")))?;
+            if !metadata.is_file() {
+                return Err(libafl::Error::illegal_argument(format!(
+                    "{context}: not a regular file"
+                )));
+            }
+            fs::File::open(&absolute_path)
+                .map_err(|error| libafl::Error::illegal_argument(format!("{context}: {error}")))?;
+            extra_files.push(absolute_path);
+        }
         Ok(Self {
             campaign_dir: absolute(&campaign.base)?,
-            workspace: absolute(&campaign.protocol_generation.output)?,
+            workspace: absolute(&campaign.generator_synthesis.output)?,
             documents_dir: model
                 .parent()
                 .expect("absolute model path has a parent")
@@ -79,23 +97,27 @@ impl CampaignContext {
                 .join("skills/protocol-modules/SKILL.md"),
             generator_validator: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("skills/protocol-modules/scripts/validate_generator.py"),
-            catalog: absolute(&campaign.protocol_generation.output)?.join("catalog.json"),
+            catalog: absolute(&campaign.generator_synthesis.output)?.join("catalog.json"),
             proposal_tool: absolute(&campaign.campaign.pythonpath)?
                 .join("coverage_analysis")
                 .join("server.py"),
+            extra_files,
             target: TargetContext {
                 binary: absolute(&campaign.target.binary)?,
                 workdir: absolute(&campaign.target.workdir)?,
-                fixture: absolute(&campaign.target.fixture)?,
-                config_template: absolute(&campaign.target.config_template)?,
-                config_file: absolute(campaign.server_config())?,
+                cleanup_script: campaign
+                    .target
+                    .cleanup_script
+                    .as_deref()
+                    .map(absolute)
+                    .transpose()?,
                 args: campaign.target.args.clone(),
                 host: campaign.target.host.clone(),
                 configured_port: campaign.target.port,
             },
             budgets: Budgets {
-                initialization_secs: campaign.protocol_generation.init_timeout_secs.max(1),
-                generation_secs: campaign.protocol_generation.task_timeout_secs.max(1),
+                initialization_secs: campaign.generator_synthesis.init_timeout_secs.max(1),
+                generation_secs: campaign.generator_synthesis.task_timeout_secs.max(1),
                 connect_ms: campaign.timeouts.connect_ms,
                 io_ms: campaign.timeouts.io_ms,
                 case_ms: campaign.timeouts.case_ms,
@@ -108,7 +130,7 @@ impl CampaignContext {
 /// Who launches the SUT. Production and evaluation share one template.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExecutionMode {
-    /// The fuzzer restores fixtures and owns the SUT process.
+    /// The fuzzer runs the optional cleanup script before each case and owns the SUT process.
     Fuzzer,
     /// The evaluation framework starts an ordinary SUT process.
     Evaluation,
@@ -127,12 +149,12 @@ pub struct SynthesisPromptContext {
 impl SynthesisPromptContext {
     /// Load the model and party binding described by a campaign snapshot.
     pub fn from_campaign(campaign: &Campaign) -> Result<Self, libafl::Error> {
-        if campaign.protocol_generation.model.as_os_str().is_empty() {
+        if campaign.generator_synthesis.model.as_os_str().is_empty() {
             return Err(libafl::Error::illegal_argument(
-                "protocol_generation.model is required to build a synthesis prompt".to_string(),
+                "generator_synthesis.model is required to build a synthesis prompt".to_string(),
             ));
         }
-        let model = load_model(&campaign.protocol_generation.model)?;
+        let model = load_model(&campaign.generator_synthesis.model)?;
         let parties = campaign.parties.as_ref().ok_or_else(|| {
             libafl::Error::illegal_argument(
                 "synthesis prompts require [parties].sut and [parties].generator".to_string(),
@@ -215,7 +237,6 @@ impl SynthesisPromptContext {
             "session": session,
             "hold": if hold { "1" } else { "0" },
             "output_dir": absolute(output_dir)?,
-            "protocol_id": self.model.protocol_id,
             "protocol_name": self.model.protocol_name,
             "model_complete": self.model.complete,
             "parties": parties,
@@ -256,25 +277,14 @@ impl SynthesisPromptContext {
             .map(|(rfc, path)| Ok(serde_json::json!({"rfc": rfc, "path": absolute(path)?})))
             .collect::<Result<Vec<_>, libafl::Error>>()?;
         let proposal_path = proposal.map(|path| absolute(path)).transpose()?;
-        let (proposal_id, trace_id) = proposal_path
-            .as_ref()
-            .and_then(|path| crate::coverage::proposal::Proposal::read(path).ok())
-            .map(|proposal| (proposal.proposal_id, proposal.trace_id))
-            .unwrap_or_default();
         let result_ok_json = serde_json::json!({
             "request_id": request_id,
-            "protocol_id": self.model.protocol_id,
-            "proposal_id": proposal_id,
-            "trace_id": trace_id,
             "status": "ok",
             "added_steps": [],
         })
         .to_string();
         let result_error_json = serde_json::json!({
             "request_id": request_id,
-            "protocol_id": self.model.protocol_id,
-            "proposal_id": proposal_id,
-            "trace_id": trace_id,
             "status": "error",
             "error": "",
             "added_steps": [],
@@ -287,12 +297,9 @@ impl SynthesisPromptContext {
             "output_dir": output_dir,
             "request_id": request_id,
             "session": session,
-            "protocol_id": self.model.protocol_id,
             "protocol_name": self.model.protocol_name,
             "mode": mode,
             "autonomous": autonomous,
-            "proposal_id": proposal_id,
-            "trace_id": trace_id,
             "proposal": proposal_path,
             "proposal_draft": draft_path,
             "proposal_tool": self.campaign.proposal_tool,
@@ -317,11 +324,11 @@ fn execution_text(mode: ExecutionMode) -> Value {
     let (summary, lifecycle) = match mode {
         ExecutionMode::Fuzzer => (
             "Rust and LibAFL run the real system under test (SUT), select target step traces, mutate input parameters, execute cases, and collect coverage. The fuzzer runs the real SUT; implement every necessary generator-side participant and supporting service that lets the selected interactions occur. Do not start, replace, or terminate a fuzzer-managed SUT.",
-            "These paths describe runtime endpoints and fixture resources only. Do not use them to inspect or assess SUT implementation capabilities. The fuzzer restores fixtures, renders placeholders such as @PORT@, and launches the SUT. Do not edit these files or start, replace, or terminate a fuzzer-managed SUT.",
+            "These paths describe runtime endpoints only. Do not use them to inspect or assess SUT implementation capabilities. The fuzzer runs the configured cleanup script before each case and launches the SUT. Do not edit campaign files or start, replace, or terminate a fuzzer-managed SUT.",
         ),
         ExecutionMode::Evaluation => (
             "The evaluation framework starts the real SUT as an ordinary process for this instance and replays the published generator against it. Implement every necessary generator-side participant and supporting service that lets the selected interactions occur. Do not start, replace, or terminate an evaluation-managed SUT.",
-            "These paths describe runtime endpoints and fixture resources only. Do not use them to inspect or assess SUT implementation capabilities. The evaluation framework restores fixtures, renders placeholders such as @PORT@, and launches the SUT. Do not edit these files or start, replace, or terminate an evaluation-managed SUT.",
+            "These paths describe runtime endpoints only. Do not use them to inspect or assess SUT implementation capabilities. The evaluation framework runs the configured cleanup script before each case and launches the SUT. Do not edit campaign files or start, replace, or terminate an evaluation-managed SUT.",
         ),
     };
     serde_json::json!({ "summary": summary, "lifecycle": lifecycle })
@@ -334,7 +341,11 @@ pub(super) fn generator_parties(
 ) -> Vec<String> {
     let mut names = BTreeSet::new();
     for step in steps {
-        let mut parties = vec![step.sender_name.clone(), step.receiver_name.clone()];
+        let mut parties = step
+            .participants()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
         parties.extend(model.channel_party_names(&step.channel_name));
         for name in parties {
             if binding.role(&name) == PartyRole::Generator {
@@ -376,5 +387,173 @@ mod tests {
     fn missing_prompt_fields_fail_rendering() {
         assert!(render_initialization(serde_json::json!({})).is_err());
         assert!(render_generation(serde_json::json!({})).is_err());
+    }
+}
+
+#[cfg(test)]
+mod extra_file_tests {
+    use super::*;
+    use std::{
+        fs,
+        os::unix::fs::{symlink, PermissionsExt},
+        path::Path,
+    };
+
+    fn campaign(dir: &Path, extra: &[&str]) -> Campaign {
+        let model = dir.join("protocol.json");
+        fs::write(
+            &model,
+            serde_json::json!({
+                "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": true, "documents": []},
+                "parties": [{"name": "client", "description": "c"}, {"name": "server", "description": "s"}],
+                "messages": [{"name": "hello", "associated_fields": []}],
+                "channels": [{"name": "control", "description": "c", "transport": "TCP",
+                              "connection": "connection_oriented",
+                              "endpoint_party_names": ["client", "server"],
+                              "initiator_party_name": "client", "acceptor_party_name": "server",
+                              "endpoint_sources": []}],
+                "steps": [{"name": "hello", "action": "send", "message_name": "hello",
+                           "channel_name": "control", "sender_name": "client",
+                           "receiver_name": "server", "condition": "start"}],
+                "step_dependencies": [],
+                "unresolved": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let quoted = extra
+            .iter()
+            .map(|name| format!("{:?}", name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let path = dir.join("campaign.toml");
+        fs::write(
+            &path,
+            format!(
+                r#"
+[target]
+binary = "b"
+workdir = "w"
+cleanup_script = "cleanup.sh"
+port = 0
+[timeouts]
+connect_ms = 1
+io_ms = 1
+case_ms = 1
+exit_grace_ms = 1
+[campaign]
+seeds = "s"
+corpus = "co"
+crashes = "cr"
+python = "python"
+pythonpath = "pp"
+[parties]
+sut = ["server"]
+generator = ["client"]
+[generator_synthesis]
+enabled = false
+model = "protocol.json"
+output = "out"
+extra_files = [{quoted}]
+"#
+            ),
+        )
+        .unwrap();
+        Campaign::load(&path).unwrap()
+    }
+
+    #[test]
+    fn extra_files_are_validated_and_listed_as_absolute_paths() {
+        let dir = std::env::temp_dir().join(format!("mcn-extra-prompt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("real.conf"), b"account=ubuntu\n").unwrap();
+        symlink(dir.join("real.conf"), dir.join("linked.conf")).unwrap();
+        let campaign = campaign(&dir, &["real.conf", "linked.conf"]);
+        let context = SynthesisPromptContext::from_campaign(&campaign)
+            .unwrap()
+            .with_execution(ExecutionMode::Fuzzer);
+        let init = context
+            .initialization_prompt("s", false, &dir.join("init"))
+            .unwrap();
+        let generation = context
+            .generation_prompt(&dir.join("request"), "r", "s", "", None, false)
+            .unwrap();
+        for prompt in [&init, &generation] {
+            assert!(prompt.contains(&dir.join("real.conf").display().to_string()));
+            assert!(prompt.contains(&dir.join("linked.conf").display().to_string()));
+            assert!(prompt.contains("deployment") || prompt.contains("account"));
+            assert!(
+                !prompt.contains("account=ubuntu"),
+                "file content was injected"
+            );
+        }
+        assert!(init.contains("EXTRA_REFERENCE_FILES"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_directory_and_unreadable_extra_files_are_explicit_errors() {
+        let dir = std::env::temp_dir().join(format!("mcn-extra-errors-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(dir.join("directory.conf")).unwrap();
+        fs::write(dir.join("secret.conf"), b"x").unwrap();
+        let mut permissions = fs::metadata(dir.join("secret.conf")).unwrap().permissions();
+        permissions.set_mode(0o000);
+        fs::set_permissions(dir.join("secret.conf"), permissions).unwrap();
+
+        for (name, needle) in [
+            ("missing.conf", "not found"),
+            ("directory.conf", "not a regular file"),
+        ] {
+            let campaign = campaign(&dir, &[name]);
+            let error = match SynthesisPromptContext::from_campaign(&campaign) {
+                Ok(_) => panic!("expected an extra_files error for {name}"),
+                Err(error) => error,
+            };
+            let message = format!("{error:?}");
+            assert!(
+                message.contains("generator_synthesis.extra_files[0]"),
+                "{message}"
+            );
+            assert!(message.contains(name), "{message}");
+            assert!(
+                message.contains(needle) || error.to_string().contains("No such file"),
+                "{message}"
+            );
+        }
+        if unsafe { libc::geteuid() } != 0 {
+            let campaign = campaign(&dir, &["secret.conf"]);
+            let error = match SynthesisPromptContext::from_campaign(&campaign) {
+                Ok(_) => panic!("expected an unreadable extra_files error"),
+                Err(error) => error,
+            };
+            let message = format!("{error:?}");
+            assert!(
+                message.contains("generator_synthesis.extra_files[0]"),
+                "{message}"
+            );
+            assert!(message.contains("secret.conf"), "{message}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_extra_files_render_the_no_files_message() {
+        let dir = std::env::temp_dir().join(format!("mcn-extra-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let campaign = campaign(&dir, &[]);
+        let context = SynthesisPromptContext::from_campaign(&campaign).unwrap();
+        let init = context
+            .initialization_prompt("s", false, &dir.join("init"))
+            .unwrap();
+        let generation = context
+            .generation_prompt(&dir.join("request"), "r", "s", "", None, false)
+            .unwrap();
+        assert!(init.contains("none provided"));
+        assert!(generation.contains("none provided"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }

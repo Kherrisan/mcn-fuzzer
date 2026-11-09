@@ -116,31 +116,31 @@
   "interactions": {
     "steps": [
       {
-        "id": "send-port",
         "name": "send PORT",
         "message_name": "PORT",
         "channel_name": "control",
         "sender_name": "user-PI",
         "receiver_name": "server-PI",
-        "condition": ""
+        "condition": "",
+        "action": "send"
       },
       {
-        "id": "send-pasv",
         "name": "send PASV",
         "message_name": "PASV",
         "channel_name": "control",
         "sender_name": "user-PI",
         "receiver_name": "server-PI",
-        "condition": ""
+        "condition": "",
+        "action": "send"
       },
       {
-        "id": "send-227",
         "name": "send 227",
         "message_name": "227",
         "channel_name": "control",
         "sender_name": "server-PI",
         "receiver_name": "user-PI",
-        "condition": ""
+        "condition": "",
+        "action": "send"
       }
     ],
     "step_dependencies": [

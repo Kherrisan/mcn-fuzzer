@@ -4,7 +4,10 @@ import copy
 
 from protocol_samples import base, document, interactions
 
-from rsc.protocol.proposals import empty_model
+from rsc.protocol.contract import COLLECTIONS
+
+def empty_model():
+    return {kind: [] for kind in COLLECTIONS}
 from rsc.protocol.validate import object_errors, prune_invalid
 
 

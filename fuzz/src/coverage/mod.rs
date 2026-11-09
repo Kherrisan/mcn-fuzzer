@@ -6,10 +6,13 @@
 //! are replaced only after that batch's forkserver has exited.
 
 pub mod capture;
+pub mod command;
 pub mod events;
 pub mod mcp;
+pub mod mutations;
 pub mod proposal;
 pub mod schedule;
+mod sut_output;
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -20,7 +23,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitStatus},
     thread::sleep,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use flate2::{write::ZlibEncoder, Compression};
@@ -35,6 +38,8 @@ use libafl_bolts::impl_serdeany;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+
+use sut_output::SutLog;
 
 use crate::{
     app::config::{Campaign, SourceCoverageConfig},
@@ -94,6 +99,28 @@ pub struct CoverageSummary {
     pub branches: u64,
     /// Covered function instantiations.
     pub instantiations: u64,
+    /// Total lines from `llvm-cov`. Missing checkpoint fields stay zero.
+    #[serde(default)]
+    pub lines_total: u64,
+    /// Total branches from `llvm-cov`. Missing checkpoint fields stay zero.
+    #[serde(default)]
+    pub branches_total: u64,
+}
+
+/// One published batch. The stage keeps `progress`; the coverage command also
+/// writes a CSV row from the cumulative summary and the failure, if any.
+#[derive(Clone, Debug)]
+pub struct BatchReport {
+    /// Checkpoint after this batch. Unchanged when nothing was published.
+    pub progress: SourceCoverageProgress,
+    /// Cumulative covered and total counts.
+    pub summary: CoverageSummary,
+    /// Summary before this batch.
+    pub previous: CoverageSummary,
+    /// Inputs whose profiles were kept in this batch.
+    pub succeeded: u64,
+    /// Replay stopped after a published prefix, or after no successful input.
+    pub failure: Option<String>,
 }
 
 impl CoverageSummary {
@@ -392,15 +419,15 @@ where
         config,
         &root,
         &fingerprint,
-        main_forkserver,
-        main_generator,
+        Some(main_forkserver),
+        Some(main_generator),
         &pending,
         &progress,
         timings,
     );
     match result {
-        Ok(updated) => {
-            state.add_metadata(updated);
+        Ok(report) => {
+            state.add_metadata(report.progress);
             Ok(())
         }
         Err(error) => Err(error),
@@ -489,24 +516,40 @@ fn replay_pending(
     config: &SourceCoverageConfig,
     root: &Path,
     fingerprint: &str,
-    main_forkserver: i32,
-    main_generator: i32,
+    main_forkserver: Option<i32>,
+    main_generator: Option<i32>,
     pending: &[PendingCase],
     progress: &SourceCoverageProgress,
     mut timings: BatchTimings,
-) -> Result<SourceCoverageProgress, Error> {
+) -> Result<BatchReport, Error> {
+    let main_forkserver = main_forkserver.unwrap_or(0);
+    let main_generator = main_generator.unwrap_or(0);
     let work_raw = root.join("work-raw");
     let rollback_raw = root.join("rollback-raw");
     prepare_work_raw(root, &work_raw)?;
     let profile = work_raw.join("%m%c.profraw");
     let started = Instant::now();
-    let mut session = CoverageSession::start(campaign, config, &profile)?;
+    let batch = format!(
+        "{}-{}-{}",
+        fingerprint,
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_nanos())
+            .unwrap_or(0)
+    );
+    let log = SutLog::open(root, batch)?;
+    let mut session = CoverageSession::start(campaign, config, &profile, log)?;
     let mut succeeded = Vec::new();
     let mut failures = Vec::new();
     let mut failed = false;
     for case in pending {
-        copy_dir(&work_raw, &rollback_raw)?;
-        match session.replay(&case.input, main_forkserver, main_generator) {
+        if let Err(error) = copy_dir(&work_raw, &rollback_raw) {
+            session.close(main_forkserver, main_generator);
+            let _ = session.log.batch_end(&format!("failed: {error:?}"));
+            return Err(error);
+        }
+        match session.replay(case, main_forkserver, main_generator) {
             Ok(outcome) if profile_usable(&work_raw) => {
                 succeeded.push(RecordedCase {
                     id: case.id.key(),
@@ -539,7 +582,20 @@ fn replay_pending(
     }
     timings.replay = started.elapsed();
     session.close(main_forkserver, main_generator);
-    if !session.forkserver_reaped {
+    let reaped = session.forkserver_reaped;
+    let batch_outcome = if !reaped {
+        if failed {
+            format!("cleanup_incomplete; failures: {}", failures.join("; "))
+        } else {
+            "cleanup_incomplete".to_string()
+        }
+    } else if failed {
+        format!("failed: {}", failures.join("; "))
+    } else {
+        "replayed".to_string()
+    };
+    session.log.batch_end(&batch_outcome)?;
+    if !reaped {
         return Err(Error::illegal_state(
             "coverage forkserver was still alive after the batch; the raw profile was not replaced or indexed"
                 .to_string(),
@@ -554,7 +610,7 @@ fn replay_pending(
         if failed {
             return Err(Error::unknown(failures.join("; ")));
         }
-        return Ok(progress.clone());
+        return Ok(unchanged_report(progress));
     }
     let indexed = root.join("coverage.profdata.tmp");
     let index_at = Instant::now();
@@ -608,6 +664,7 @@ fn replay_pending(
         &config.llvm_cov,
         replay_executions,
         &mut timings,
+        &session.log,
     );
     let publish_ok = match published {
         Ok(()) => true,
@@ -642,13 +699,32 @@ fn replay_pending(
     updated.replay_executions = replay_executions;
     updated.attribution = "batch".to_string();
     updated.fingerprint = fingerprint.to_string();
-    if failed {
+    let failure = if failed {
+        let message = failures.join("; ");
         log::warn!(
-            "source coverage batch ended early after publishing the successful prefix: {}",
-            failures.join("; ")
+            "source coverage batch ended early after publishing the successful prefix: {message}"
         );
+        Some(message)
+    } else {
+        None
+    };
+    Ok(BatchReport {
+        progress: updated,
+        summary,
+        previous: progress.last_summary,
+        succeeded: succeeded.len() as u64,
+        failure,
+    })
+}
+
+fn unchanged_report(progress: &SourceCoverageProgress) -> BatchReport {
+    BatchReport {
+        progress: progress.clone(),
+        summary: progress.last_summary,
+        previous: progress.last_summary,
+        succeeded: 0,
+        failure: None,
     }
-    Ok(updated)
 }
 
 struct RecordedCase {
@@ -673,6 +749,7 @@ struct CoverageSession {
     streaks: TimeoutStreaks,
     next_case: u64,
     grace_is_timeout: bool,
+    log: SutLog,
 }
 
 impl CoverageSession {
@@ -680,38 +757,55 @@ impl CoverageSession {
         campaign: &Campaign,
         config: &SourceCoverageConfig,
         profile: &Path,
+        mut log: SutLog,
     ) -> Result<Self, Error> {
-        let mut owned = campaign.clone();
-        owned.target.binary = config.binary.clone();
-        owned.capture.enabled = false;
-        let port = executor::pick_port(0)?;
-        let work = std::env::temp_dir().join(format!(
-            "mcn-cov-{}-{}",
-            std::process::id(),
-            profile
-                .parent()
-                .and_then(|path| path.file_name())
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "raw".to_string())
-        ));
-        let _ = fs::remove_dir_all(&work);
-        executor::restore_tree(&campaign.target.fixture, &work)?;
-        owned.target.workdir = work;
-        let placeholders = owned.placeholders(port);
-        executor::write_server_config(
-            &campaign.target.config_template,
-            &owned.server_config(),
-            &placeholders,
-        )?;
-        let backend =
-            ForkserverBackend::spawn_coverage(&owned, port, &profile.display().to_string())?;
-        let log_path = owned.base.join("coverage-generator.log");
-        let generator = GeneratorClient::spawn_tagged(
-            &campaign.campaign.python,
-            &campaign.campaign.pythonpath,
-            &log_path,
-            "-cov",
-        )?;
+        log.batch_start()?;
+        let parts = (|| -> Result<(ForkserverBackend, GeneratorClient, Campaign, u16), Error> {
+            let mut owned = campaign.clone();
+            owned.target.binary = config.binary.clone();
+            owned.capture.enabled = false;
+            let port = executor::pick_port(0)?;
+            let work = std::env::temp_dir().join(format!(
+                "mcn-cov-{}-{}",
+                std::process::id(),
+                profile
+                    .parent()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "raw".to_string())
+            ));
+            let _ = fs::remove_dir_all(&work);
+            owned.target.workdir = work;
+            executor::run_cleanup_script(
+                owned.target.cleanup_script.as_deref(),
+                &owned.target.workdir,
+                &owned.target.host,
+                port,
+            )?;
+            let (stdout, stderr) = log.observer_files()?;
+            let backend = ForkserverBackend::spawn_coverage_with_output(
+                &owned,
+                port,
+                &profile.display().to_string(),
+                Some(stdout),
+                Some(stderr),
+            )?;
+            let log_path = owned.base.join("coverage-generator.log");
+            let generator = GeneratorClient::spawn_tagged(
+                &campaign.campaign.python,
+                &campaign.campaign.pythonpath,
+                &log_path,
+                "-cov",
+            )?;
+            Ok((backend, generator, owned, port))
+        })();
+        let (backend, generator, owned, port) = match parts {
+            Ok(parts) => parts,
+            Err(error) => {
+                let _ = log.batch_end(&format!("start_failed: {error:?}"));
+                return Err(error);
+            }
+        };
         let policy = job_policy();
         Ok(Self {
             backend,
@@ -723,12 +817,41 @@ impl CoverageSession {
             streaks: TimeoutStreaks::new(policy.failure_limit),
             next_case: 1,
             grace_is_timeout: policy.sut_grace_kill_is_timeout,
+            log,
         })
     }
 
-    /// One coverage case. Does not touch the main execution counter or PCGUARD map.
-    /// A timeout does not restart this batch's forkserver or Python server.
+    /// One coverage case with SUT output markers around the existing replay.
     fn replay(
+        &mut self,
+        case: &PendingCase,
+        main_forkserver: i32,
+        main_generator: i32,
+    ) -> Result<ReplayOutcome, Error> {
+        let case_no = self
+            .log
+            .case_start(&case.id.key(), case.location.filename.as_deref())?;
+        let result = self.replay_inner(&case.input, main_forkserver, main_generator);
+        let mut outcome = match &result {
+            Ok(outcome) => outcome.exit_kind.clone(),
+            Err(error) => format!("error: {error:?}"),
+        };
+        if result.is_err() {
+            match self.reap_case(main_forkserver, main_generator) {
+                Ok(()) => {}
+                Err(error) => outcome.push_str(&format!("; cleanup failed: {error:?}")),
+            }
+        }
+        if let Err(error) = self.log.case_end(case_no, &case.id.key(), &outcome) {
+            return Err(Error::unknown(format!(
+                "SUT log case_end marker failed after {outcome}: {error:?}"
+            )));
+        }
+        result
+    }
+
+    /// Existing replay body; callers wrap it with SUT output markers.
+    fn replay_inner(
         &mut self,
         input: &GeneratorInput,
         main_forkserver: i32,
@@ -742,12 +865,11 @@ impl CoverageSession {
             ));
         }
         self.generator.drain_tombstones()?;
-        executor::restore_tree(&self.campaign.target.fixture, &self.campaign.target.workdir)?;
-        let placeholders = self.campaign.placeholders(self.port);
-        executor::write_server_config(
-            &self.campaign.target.config_template,
-            &self.campaign.server_config(),
-            &placeholders,
+        executor::run_cleanup_script(
+            self.campaign.target.cleanup_script.as_deref(),
+            &self.campaign.target.workdir,
+            &self.campaign.target.host,
+            self.port,
         )?;
         if let Err(error) = self.backend.begin_start() {
             return Err(error);
@@ -1512,18 +1634,20 @@ fn parse_summary(json: &str) -> Result<CoverageSummary, Error> {
         .cloned()
         .unwrap_or(Value::Null);
     Ok(CoverageSummary {
-        functions: covered(&totals, "functions"),
-        lines: covered(&totals, "lines"),
-        regions: covered(&totals, "regions"),
-        branches: covered(&totals, "branches"),
-        instantiations: covered(&totals, "instantiations"),
+        functions: metric(&totals, "functions", "covered"),
+        lines: metric(&totals, "lines", "covered"),
+        regions: metric(&totals, "regions", "covered"),
+        branches: metric(&totals, "branches", "covered"),
+        instantiations: metric(&totals, "instantiations", "covered"),
+        lines_total: metric(&totals, "lines", "count"),
+        branches_total: metric(&totals, "branches", "count"),
     })
 }
 
-fn covered(totals: &Value, name: &str) -> u64 {
+fn metric(totals: &Value, name: &str, field: &str) -> u64 {
     totals
         .get(name)
-        .and_then(|item| item.get("covered"))
+        .and_then(|item| item.get(field))
         .and_then(Value::as_u64)
         .unwrap_or(0)
 }
@@ -1546,6 +1670,7 @@ fn publish_snapshot(
     cov_tool: &str,
     replay_executions: u64,
     timings: &mut BatchTimings,
+    sut_log: &SutLog,
 ) -> Result<(), Error> {
     let incoming = root
         .join("snapshots")
@@ -1569,6 +1694,7 @@ fn publish_snapshot(
     if let Some(json) = json {
         fs::write(incoming.join("coverage.json"), json)?;
     }
+    let sut_copy = sut_log.copy_to(&incoming)?;
     copy_dir(work_raw, &incoming.join("checkpoint").join("raw"))?;
     timings.persist = persist_at.elapsed();
     let metadata = serde_json::json!({
@@ -1600,6 +1726,16 @@ fn publish_snapshot(
             "persist": timings.persist.as_millis(),
         },
         "exit_kinds": succeeded.iter().map(|case| &case.exit_kind).collect::<Vec<_>>(),
+        "sut_output": {
+            "stdout": {
+                "file": sut_output::STDOUT_LOG,
+                "bytes": sut_copy.stdout_bytes,
+            },
+            "stderr": {
+                "file": sut_output::STDERR_LOG,
+                "bytes": sut_copy.stderr_bytes,
+            },
+        },
     });
     fs::write(
         incoming.join("metadata.json"),
@@ -1742,6 +1878,12 @@ mod tests {
     use libafl::corpus::CorpusId;
     use std::{collections::BTreeMap, io::Read};
 
+    fn test_sut_log(dir: &Path) -> SutLog {
+        let mut log = SutLog::open(dir, "test-batch").unwrap();
+        log.batch_start().unwrap();
+        log
+    }
+
     #[test]
     fn batch_growth_attributes_every_valid_case_and_a_failed_publish_does_not() {
         let decision = BatchDecision {
@@ -1779,6 +1921,7 @@ mod tests {
             regions: 3,
             branches: 4,
             instantiations: 5,
+            ..CoverageSummary::default()
         };
         assert!(!base.grew_from(base));
         assert!(CoverageSummary { lines: 3, ..base }.grew_from(base));
@@ -1830,6 +1973,70 @@ mod tests {
         assert_eq!(summary.functions, 2);
         assert_eq!(summary.lines, 5);
         assert_eq!(summary.instantiations, 3);
+        assert_eq!(summary.lines_total, 0);
+        assert_eq!(summary.branches_total, 0);
+        let with_totals = r#"{"data":[{"totals":{"lines":{"covered":1,"count":4},"branches":{"covered":2,"count":0}}}]}"#;
+        let totals = parse_summary(with_totals).unwrap();
+        assert_eq!(totals.lines, 1);
+        assert_eq!(totals.lines_total, 4);
+        assert_eq!(totals.branches, 2);
+        assert_eq!(totals.branches_total, 0);
+        assert!(!totals.grew_from(CoverageSummary {
+            lines: 1,
+            branches: 2,
+            lines_total: 9,
+            ..CoverageSummary::default()
+        }));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cli_batches_match_one_stage_replay_of_the_same_probe_inputs() {
+        let dir = std::env::temp_dir().join(format!("mcn-cov-cli-probe-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("work")).unwrap();
+        fs::write(dir.join("work").join("mode"), b"a").unwrap();
+        let binary = compile_coverage_probe(&dir);
+        let script = dir.join("gen.py");
+        fs::write(&script, b"def generate(ctx, params):\n    return None\n").unwrap();
+        let corpus = dir.join("corpus");
+        fs::create_dir_all(&corpus).unwrap();
+        for (name, n) in [("a.json", 1), ("b.json", 2)] {
+            fs::write(
+                corpus.join(name),
+                format!(
+                    "{{\"generator\":\"{}\",\"params\":{{\"n\":{n}}}}}\n",
+                    script.display()
+                ),
+            )
+            .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _env = EnvGuard::set("__AFL_SHM_ID", "unit-cli-shm");
+        let mut campaign = probe_campaign(&dir.join("work"), &binary);
+        campaign.coverage.binary = binary;
+        campaign.campaign.python =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".venv/bin/python");
+        campaign.campaign.pythonpath = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("python");
+        let cli_out = dir.join("cli-out");
+        super::command::run(&campaign, &cli_out, Some(corpus.as_path()), 1)
+            .unwrap_or_else(|error| panic!("cli coverage failed: {error}"));
+        let report =
+            super::command::replay_directory_once(&campaign, &dir.join("stage-root"), &corpus)
+                .unwrap_or_else(|error| panic!("stage batch failed: {error}"));
+        assert!(report.failure.is_none(), "{:?}", report.failure);
+        assert_eq!(report.succeeded, 2);
+        let csv = fs::read_to_string(cli_out.join("cov_over_time.csv")).unwrap();
+        let last = csv.lines().last().unwrap();
+        let cols: Vec<_> = last.split(',').collect();
+        assert_eq!(cols[7], "2", "{csv}");
+        assert_eq!(cols[2], report.summary.lines.to_string(), "{csv}");
+        assert_eq!(cols[4], report.summary.branches.to_string(), "{csv}");
+        assert_eq!(cols[5], report.summary.lines_total.to_string(), "{csv}");
+        assert_eq!(cols[6], report.summary.branches_total.to_string(), "{csv}");
+        assert!(report.summary.lines_total > 0, "{:?}", report.summary);
+        assert_eq!(csv.lines().count(), 3, "{csv}");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1886,6 +2093,7 @@ mod tests {
                 replay: Duration::from_millis(3),
                 ..BatchTimings::default()
             },
+            &test_sut_log(&dir),
         )
         .unwrap();
         let compressed = fs::read(dir.join("snapshots/000001/coverage.profdata.zlib")).unwrap();
@@ -1901,6 +2109,11 @@ mod tests {
         assert_eq!(metadata["case_ids"][0], "corpus:abc");
         assert_eq!(metadata["coverage_delta"]["lines"], 3);
         assert_eq!(metadata["coverage_delta"]["functions"], 0);
+        assert_eq!(metadata["sut_output"]["stdout"]["file"], "sut.stdout.log");
+        assert_eq!(metadata["sut_output"]["stderr"]["file"], "sut.stderr.log");
+        assert!(metadata["sut_output"]["stdout"]["bytes"].as_u64().unwrap() > 0);
+        assert!(dir.join("snapshots/000001/sut.stdout.log").is_file());
+        assert!(dir.join("snapshots/000001/sut.stderr.log").is_file());
         assert!(dir.join("current.profdata").is_file());
         assert!(dir.join("latest.json").is_file());
         let progress: SourceCoverageProgress = serde_json::from_str(
@@ -1986,6 +2199,7 @@ mod tests {
             "llvm-cov-18",
             1,
             &mut BatchTimings::default(),
+            &test_sut_log(&dir),
         )
         .unwrap();
         let committed = load_checkpoint(&dir).unwrap();
@@ -2021,6 +2235,7 @@ mod tests {
             "llvm-cov-18",
             2,
             &mut BatchTimings::default(),
+            &test_sut_log(&dir),
         )
         .is_err());
         let after = load_checkpoint(&dir).unwrap();
@@ -2267,13 +2482,8 @@ fn probe_campaign(workdir: &Path, binary: &Path) -> Campaign {
             binary: binary.to_path_buf(),
             source_dir: None,
             workdir: workdir.to_path_buf(),
-            fixture: workdir.to_path_buf(),
-            config_template: workdir.join("mode"),
-            config_output: "mode".to_string(),
+            cleanup_script: None,
             args: vec![workdir.join("mode").display().to_string()],
-            cert: "certs/my.crt".to_string(),
-            key: "certs/my.pem".to_string(),
-            ca: None,
             host: "127.0.0.1".to_string(),
             port: 0,
             extra_env: Vec::new(),
@@ -2295,7 +2505,8 @@ fn probe_campaign(workdir: &Path, binary: &Path) -> Campaign {
         capture: crate::app::config::CaptureConfig::default(),
         coverage: crate::app::config::CoverageConfig::default(),
         _legacy_source_coverage: (),
-        protocol_generation: crate::app::config::ProtocolGenerationConfig::default(),
+        _legacy_generator_synthesis: (),
+        generator_synthesis: crate::app::config::GeneratorSynthesisConfig::default(),
         agents: crate::app::config::AgentCatalog::default(),
         parties: None,
         base: workdir.to_path_buf(),
@@ -2314,6 +2525,7 @@ fn compile_coverage_probe(dir: &Path) -> PathBuf {
         r#"
 #include <signal.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 __attribute__((noinline)) int func_a(void) { volatile int x = 1; return x; }
 __attribute__((noinline)) int func_b(void) { volatile int y = 2; return y; }
@@ -2321,6 +2533,17 @@ int main(int argc, char **argv) {
     FILE *file = fopen(argc > 1 ? argv[1] : "", "r");
     int mode = file ? fgetc(file) : 'a';
     if (file) fclose(file);
+    if (mode != 'z') {
+        write(1, "probe-out\n", 10);
+        write(2, "probe-err\n", 10);
+    }
+    if (mode == 'l') {
+        static unsigned char big[300000];
+        memset(big, 0xff, sizeof big);
+        write(1, big, sizeof big);
+        write(2, "ERR-LAST\n", 9);
+        return 0;
+    }
     if (mode == 'b') { func_b(); return 0; }
     if (mode == 'z') return 9;
     if (mode == 'c') { func_a(); raise(SIGSEGV); }
@@ -2358,6 +2581,158 @@ int main(int argc, char **argv) {
         String::from_utf8_lossy(&output.stderr)
     );
     binary
+}
+
+#[cfg(test)]
+fn spawn_probe_with_log(campaign: &Campaign, log: &SutLog, profile: &Path) -> ForkserverBackend {
+    let (stdout, stderr) = log.observer_files().unwrap();
+    ForkserverBackend::spawn_coverage_with_output(
+        campaign,
+        0,
+        &profile.display().to_string(),
+        Some(stdout),
+        Some(stderr),
+    )
+    .unwrap_or_else(|error| panic!("coverage probe handshake failed: {error:?}"))
+}
+
+#[cfg(test)]
+fn marker_positions(bytes: &[u8], event: &str) -> Vec<usize> {
+    let text = String::from_utf8_lossy(bytes);
+    text.match_indices(&format!("\"event\":\"{event}\""))
+        .map(|(index, _)| index)
+        .collect()
+}
+
+#[test]
+#[serial_test::serial]
+fn replay_captures_split_output_across_batches_and_freezes_snapshots() {
+    let dir = std::env::temp_dir().join(format!("mcn-cov-output-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("raw")).unwrap();
+    fs::create_dir_all(dir.join("work")).unwrap();
+    let binary = compile_coverage_probe(&dir);
+    let mode = dir.join("work").join("mode");
+    fs::write(&mode, b"a").unwrap();
+    let _env = EnvGuard::set("__AFL_SHM_ID", "unit-output-shm");
+    let campaign = probe_campaign(&dir.join("work"), &binary);
+    let profile = dir.join("raw").join("%m%c.profraw");
+
+    let mut first = SutLog::open(&dir, "batch-one").unwrap();
+    first.batch_start().unwrap();
+    let mut backend = spawn_probe_with_log(&campaign, &first, &profile);
+    for (value, case_id) in [
+        (b"a".as_slice(), "corpus:a"),
+        (b"z".as_slice(), "corpus:z"),
+        (b"c".as_slice(), "corpus:c"),
+    ] {
+        let case = first.case_start(case_id, Some("seed.json")).unwrap();
+        let (_pid, stop) = drive_probe(&mut backend, &mode, value, false);
+        first.case_end(case, case_id, &format!("{stop:?}")).unwrap();
+    }
+    backend.retire();
+    assert!(wait_dead(backend.forkserver_pid()));
+    first.batch_end("replayed").unwrap();
+    let snapshot = dir.join("snapshot-one");
+    let copied = first.copy_to(&snapshot).unwrap();
+    assert!(copied.stdout_bytes > 0);
+    assert!(copied.stderr_bytes > 0);
+    let frozen_stdout = fs::read(snapshot.join(sut_output::STDOUT_LOG)).unwrap();
+    let frozen_stderr = fs::read(snapshot.join(sut_output::STDERR_LOG)).unwrap();
+
+    let mut second = SutLog::open(&dir, "batch-two").unwrap();
+    second.batch_start().unwrap();
+    let mut backend = spawn_probe_with_log(&campaign, &second, &profile);
+    let case = second.case_start("corpus:large", None).unwrap();
+    let (_pid, stop) = drive_probe(&mut backend, &mode, b"l", false);
+    second
+        .case_end(case, "corpus:large", &format!("{stop:?}"))
+        .unwrap();
+    backend.retire();
+    assert!(wait_dead(backend.forkserver_pid()));
+    second.batch_end("replayed").unwrap();
+    drop(second);
+
+    let live_stdout = fs::read(dir.join(sut_output::STDOUT_LOG)).unwrap();
+    let live_stderr = fs::read(dir.join(sut_output::STDERR_LOG)).unwrap();
+    assert_eq!(
+        fs::read(snapshot.join(sut_output::STDOUT_LOG)).unwrap(),
+        frozen_stdout,
+        "a later batch changed an old snapshot"
+    );
+    assert_eq!(
+        fs::read(snapshot.join(sut_output::STDERR_LOG)).unwrap(),
+        frozen_stderr,
+        "a later batch changed an old snapshot"
+    );
+    assert!(live_stdout.len() >= 300_000, "large stdout was truncated");
+    assert!(
+        live_stdout
+            .windows(3)
+            .any(|window| window == [0xff, 0xff, 0xff]),
+        "non-UTF-8 stdout bytes were altered"
+    );
+    assert!(live_stderr.windows(9).any(|window| window == b"ERR-LAST\n"));
+    let stdout_text = String::from_utf8_lossy(&live_stdout);
+    let stderr_text = String::from_utf8_lossy(&live_stderr);
+    assert!(stdout_text.contains("probe-out"));
+    assert!(stderr_text.contains("probe-err"));
+    assert!(
+        !stdout_text.contains("probe-err"),
+        "stderr leaked into stdout"
+    );
+    assert!(
+        !stderr_text.contains("probe-out"),
+        "stdout leaked into stderr"
+    );
+    assert_eq!(marker_positions(&live_stdout, "case_start").len(), 4);
+    assert_eq!(marker_positions(&live_stdout, "case_end").len(), 4);
+    assert_eq!(marker_positions(&live_stdout, "batch_start").len(), 2);
+    assert_eq!(marker_positions(&live_stdout, "batch_end").len(), 2);
+    assert!(frozen_stdout
+        .windows(9)
+        .any(|window| window == b"batch_end"));
+    let text = String::from_utf8_lossy(&live_stdout);
+    for case_id in ["corpus:a", "corpus:z", "corpus:c"] {
+        let start = text.find(&format!("\"case_id\":\"{case_id}\"")).unwrap();
+        let end = text[start..].find("\"event\":\"case_end\"").unwrap() + start;
+        if case_id == "corpus:z" {
+            assert!(
+                !text[start..end].contains("probe-out"),
+                "empty-output case carried another case's output"
+            );
+        }
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[serial_test::serial]
+fn coverage_start_failure_keeps_output_markers_and_no_snapshot() {
+    let dir = std::env::temp_dir().join(format!("mcn-cov-start-fail-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("work")).unwrap();
+    fs::write(dir.join("work").join("mode"), b"a").unwrap();
+    let mut campaign = probe_campaign(
+        &dir.join("work"),
+        Path::new("/tmp/mcn-no-such-coverage-binary"),
+    );
+    campaign.coverage.binary = PathBuf::from("/tmp/mcn-no-such-coverage-binary");
+    let mut log = SutLog::open(&dir, "start-failure").unwrap();
+    log.batch_start().unwrap();
+    let profile = dir.join("raw").join("%m%c.profraw");
+    let error = match CoverageSession::start(&campaign, &campaign.coverage, &profile, log) {
+        Ok(_) => panic!("missing coverage binary must fail start"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:?}").contains("missing"), "{error:?}");
+    let text = fs::read_to_string(dir.join(sut_output::STDOUT_LOG)).unwrap();
+    assert!(text.contains("\"event\":\"batch_start\""));
+    assert!(text.contains("\"event\":\"batch_end\""));
+    assert!(text.contains("start_failed"));
+    assert!(!dir.join("snapshots").exists());
+    let _ = fs::remove_dir_all(&dir);
 }
 
 #[cfg(test)]

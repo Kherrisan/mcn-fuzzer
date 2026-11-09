@@ -4,7 +4,7 @@
       "additionalProperties": false,
       "properties": {
         "name": {
-          "description": "Protocol name of the field actually carried by the enclosing message. Retain only information needed for correlation, connection setup, branching or interaction state.",
+          "description": "Protocol field name. Do not invent a hash or sequence.",
           "minLength": 1,
           "title": "Name",
           "type": "string"
@@ -14,20 +14,19 @@
         "name"
       ],
       "title": "AssociatedField",
-      "type": "object",
-      "description": "A field actually carried by its enclosing message and needed for correlation, connection setup, interaction branching or interaction state. Fields carry names only."
+      "type": "object"
     },
     "channel": {
       "additionalProperties": false,
       "properties": {
         "name": {
-          "description": "Reusable channel name; specialize only for a supported connection distinction.",
+          "description": "Name for a source-supported connection lifecycle. A connection-oriented channel represents one connection lifecycle, beginning with a source-supported connect or listen step and ending with transport close. A reconnect or session-resumption connection uses a different channel even when the parties, addresses, ports, or logical session are unchanged. Distinguish initial and resumed connections. Reuse message definitions, but create channel-specific steps for their exchanges. Preserve cross-channel prerequisites, state, and field relations supported by the source. Describe how earlier exchanges supply or derive values used on a later channel; distinguish direct reuse from derivation without assuming equality. Do not require the initial connection to close before resumption unless the source requires that order. A persistent listener need not listen again for every connection; listening readiness is distinct from an accepted connection. Do not invent missing network operations or expand arbitrary repetitions into infinitely many channels: model the distinct source-supported lifecycle roles and record any unspecified boundaries as unresolved. For connectionless channels, follow source-defined exchange boundaries without inventing connect or close. Reviewer: check lifecycle boundaries, separate resumption channels, and the cross-channel state needed to perform them.",
           "minLength": 1,
           "title": "Name",
           "type": "string"
         },
         "description": {
-          "description": "One short phrase for this connection.",
+          "description": "One short phrase for this connection lifecycle.",
           "minLength": 1,
           "title": "Description",
           "type": "string"
@@ -44,8 +43,7 @@
             "connectionless"
           ],
           "title": "Connection",
-          "type": "string",
-          "description": "Whether the channel requires connection establishment. Connectionless channels have null initiator_party_name and acceptor_party_name."
+          "type": "string"
         },
         "endpoint_party_names": {
           "description": "Names of the actual communication endpoints.",
@@ -103,8 +101,93 @@
         "endpoint_sources"
       ],
       "title": "Channel",
-      "type": "object",
-      "description": "A reusable connection or communication endpoint. Identity follows communication purpose, underlying transport, endpoint roles and connection establishment direction rather than payload or wording."
+      "type": "object"
+    },
+    "close_step": {
+      "additionalProperties": false,
+      "description": "The party closes the transport connection. This is not a protocol termination message.",
+      "properties": {
+        "name": {
+          "description": "Unique step name. Dependencies and proposals use this name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "action": {
+          "const": "close",
+          "description": "A step action is send, listen, connect, or close. send is one protocol message between a sender and a receiver. listen means that party starts listening and can accept connections. connect means that party opens the connection. close means that party closes the transport connection. Protocol termination messages stay send; add a separate close step only when the source describes the later transport close. Do not invent a message, sender, or receiver for a network action. Keep one network-action node per party, channel, and action. The same node may occur more than once in an ordered trace. Put occurrence-specific conditions on dependency edges or proposal constraints, not by copying the node. Do not add listen, connect, or close steps when the source does not describe them.",
+          "title": "Action",
+          "type": "string"
+        },
+        "channel_name": {
+          "minLength": 1,
+          "title": "Channel Name",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Condition shared by every occurrence. Put context-specific conditions on dependency edges or proposal constraints.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "party_name": {
+          "description": "Endpoint party that performs this network action.",
+          "minLength": 1,
+          "title": "Party Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "action",
+        "channel_name",
+        "condition",
+        "party_name"
+      ],
+      "title": "CloseStep",
+      "type": "object"
+    },
+    "connect_step": {
+      "additionalProperties": false,
+      "description": "The party actively opens the transport connection.",
+      "properties": {
+        "name": {
+          "description": "Unique step name. Dependencies and proposals use this name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "action": {
+          "const": "connect",
+          "description": "A step action is send, listen, connect, or close. send is one protocol message between a sender and a receiver. listen means that party starts listening and can accept connections. connect means that party opens the connection. close means that party closes the transport connection. Protocol termination messages stay send; add a separate close step only when the source describes the later transport close. Do not invent a message, sender, or receiver for a network action. Keep one network-action node per party, channel, and action. The same node may occur more than once in an ordered trace. Put occurrence-specific conditions on dependency edges or proposal constraints, not by copying the node. Do not add listen, connect, or close steps when the source does not describe them.",
+          "title": "Action",
+          "type": "string"
+        },
+        "channel_name": {
+          "minLength": 1,
+          "title": "Channel Name",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Condition shared by every occurrence. Put context-specific conditions on dependency edges or proposal constraints.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "party_name": {
+          "description": "Endpoint party that performs this network action.",
+          "minLength": 1,
+          "title": "Party Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "action",
+        "channel_name",
+        "condition",
+        "party_name"
+      ],
+      "title": "ConnectStep",
+      "type": "object"
     },
     "endpoint_source": {
       "additionalProperties": false,
@@ -112,17 +195,15 @@
         "party_name": {
           "minLength": 1,
           "title": "Party Name",
-          "type": "string",
-          "description": "Name of the endpoint role whose parameter is being configured; this is not necessarily the role that sends the source message."
+          "type": "string"
         },
         "parameter": {
           "minLength": 1,
           "title": "Parameter",
-          "type": "string",
-          "description": "Name of the endpoint parameter whose value is supplied by the source expression."
+          "type": "string"
         },
         "from": {
-          "description": "A short expression identifying the source message field, default constant or other RFC-defined source. Retain any condition needed to interpret the value.",
+          "description": "Field name, constant, or a short source phrase identifying the endpoint source.",
           "minLength": 1,
           "title": "From",
           "type": "string"
@@ -134,20 +215,19 @@
         "from"
       ],
       "title": "EndpointSource",
-      "type": "object",
-      "description": "The source of one endpoint parameter. Parameter ownership and the sender of a message carrying the value are separate concepts."
+      "type": "object"
     },
     "relation": {
       "additionalProperties": false,
       "properties": {
         "prior_field": {
-          "description": "Field carried by the prior step message, referenced by its field name or qualified message and field name.",
+          "description": "Field name, optionally qualified as Message.field.",
           "minLength": 1,
           "title": "Prior Field",
           "type": "string"
         },
         "dependent_field": {
-          "description": "Field carried by the dependent step message, referenced by its field name or qualified message and field name.",
+          "description": "Field name, optionally qualified as Message.field.",
           "minLength": 1,
           "title": "Dependent Field",
           "type": "string"
@@ -158,8 +238,7 @@
         "dependent_field"
       ],
       "title": "FieldRelation",
-      "type": "object",
-      "description": "Names of the message fields involved in a dependency between two step occurrences."
+      "type": "object"
     },
     "issue": {
       "additionalProperties": false,
@@ -167,8 +246,7 @@
         "description": {
           "minLength": 1,
           "title": "Description",
-          "type": "string",
-          "description": "A concise explanation of what remains unresolved or needs correction."
+          "type": "string"
         },
         "object_names": {
           "description": "Names of affected objects or fields. Empty when none apply.",
@@ -184,12 +262,54 @@
         "object_names"
       ],
       "title": "Issue",
-      "type": "object",
-      "description": "An unresolved question, ambiguity, conflict or incomplete extraction or link result. Runtime tracking details are stored outside the final Issue."
+      "type": "object"
+    },
+    "listen_step": {
+      "additionalProperties": false,
+      "description": "The party starts listening and can accept connections. This is not an accept event.",
+      "properties": {
+        "name": {
+          "description": "Unique step name. Dependencies and proposals use this name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "action": {
+          "const": "listen",
+          "description": "A step action is send, listen, connect, or close. send is one protocol message between a sender and a receiver. listen means that party starts listening and can accept connections. connect means that party opens the connection. close means that party closes the transport connection. Protocol termination messages stay send; add a separate close step only when the source describes the later transport close. Do not invent a message, sender, or receiver for a network action. Keep one network-action node per party, channel, and action. The same node may occur more than once in an ordered trace. Put occurrence-specific conditions on dependency edges or proposal constraints, not by copying the node. Do not add listen, connect, or close steps when the source does not describe them.",
+          "title": "Action",
+          "type": "string"
+        },
+        "channel_name": {
+          "minLength": 1,
+          "title": "Channel Name",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Condition shared by every occurrence. Put context-specific conditions on dependency edges or proposal constraints.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "party_name": {
+          "description": "Endpoint party that performs this network action.",
+          "minLength": 1,
+          "title": "Party Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "action",
+        "channel_name",
+        "condition",
+        "party_name"
+      ],
+      "title": "ListenStep",
+      "type": "object"
     },
     "party": {
       "additionalProperties": false,
-      "description": "A direct communication role in the selected protocol. A containing process and its components are separate roles only when the RFC assigns distinct communication duties.",
+      "description": "A direct communication role; retain a container separately only for a distinct role.",
       "properties": {
         "name": {
           "description": "Reuse the existing name for the same communication role; otherwise use an RFC term.",
@@ -234,28 +354,24 @@
         "associated_fields"
       ],
       "title": "ProtocolMessage",
-      "type": "object",
-      "description": "A concrete exchanged protocol message or independently exchanged transfer unit. Its associated fields describe only information needed by later protocol interactions."
+      "type": "object"
     },
     "meta": {
       "additionalProperties": false,
       "properties": {
         "schema_version": {
-          "const": "7.0.0",
+          "const": "8.0.0",
           "title": "Schema Version",
-          "type": "string",
-          "description": "Version of the final protocol output contract; must be 7.0.0."
+          "type": "string"
         },
         "protocol": {
           "minLength": 1,
           "title": "Protocol",
-          "type": "string",
-          "description": "Protocol and version identifier selected by the caller for this RFC set."
+          "type": "string"
         },
         "complete": {
           "title": "Complete",
-          "type": "boolean",
-          "description": "Whether compilation completed without unresolved issues or stage failures. False also permits validated partial results."
+          "type": "boolean"
         },
         "documents": {
           "items": {
@@ -263,8 +379,7 @@
           },
           "minItems": 1,
           "title": "Documents",
-          "type": "array",
-          "description": "The selected RFC documents used to produce this protocol model, with identities, checksums and snapshot paths."
+          "type": "array"
         }
       },
       "required": [
@@ -274,8 +389,61 @@
         "documents"
       ],
       "title": "ProtocolMeta",
-      "type": "object",
-      "description": "Protocol version, compilation completeness and the caller-selected source document set."
+      "type": "object"
+    },
+    "send_step": {
+      "additionalProperties": false,
+      "description": "One directional protocol message, including protocol termination messages.",
+      "properties": {
+        "name": {
+          "description": "Unique step name. Dependencies and proposals use this name.",
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "action": {
+          "const": "send",
+          "description": "A step action is send, listen, connect, or close. send is one protocol message between a sender and a receiver. listen means that party starts listening and can accept connections. connect means that party opens the connection. close means that party closes the transport connection. Protocol termination messages stay send; add a separate close step only when the source describes the later transport close. Do not invent a message, sender, or receiver for a network action. Keep one network-action node per party, channel, and action. The same node may occur more than once in an ordered trace. Put occurrence-specific conditions on dependency edges or proposal constraints, not by copying the node. Do not add listen, connect, or close steps when the source does not describe them.",
+          "title": "Action",
+          "type": "string"
+        },
+        "channel_name": {
+          "minLength": 1,
+          "title": "Channel Name",
+          "type": "string"
+        },
+        "condition": {
+          "description": "Condition shared by every occurrence. Put context-specific conditions on dependency edges or proposal constraints.",
+          "title": "Condition",
+          "type": "string"
+        },
+        "message_name": {
+          "minLength": 1,
+          "title": "Message Name",
+          "type": "string"
+        },
+        "sender_name": {
+          "minLength": 1,
+          "title": "Sender Name",
+          "type": "string"
+        },
+        "receiver_name": {
+          "minLength": 1,
+          "title": "Receiver Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "action",
+        "channel_name",
+        "condition",
+        "message_name",
+        "sender_name",
+        "receiver_name"
+      ],
+      "title": "SendStep",
+      "type": "object"
     },
     "source": {
       "additionalProperties": false,
@@ -283,32 +451,27 @@
         "doc_id": {
           "minLength": 1,
           "title": "Doc Id",
-          "type": "string",
-          "description": "Identity of the source document within the selected input batch."
+          "type": "string"
         },
         "rfc": {
           "minLength": 1,
           "title": "Rfc",
-          "type": "string",
-          "description": "RFC identifier of the selected source document."
+          "type": "string"
         },
         "input_sha256": {
           "minLength": 1,
           "title": "Input Sha256",
-          "type": "string",
-          "description": "SHA-256 digest of the original input RFC file bytes."
+          "type": "string"
         },
         "document_sha256": {
           "minLength": 1,
           "title": "Document Sha256",
-          "type": "string",
-          "description": "Digest of the parsed document snapshot, computed by the compiler document_digest function."
+          "type": "string"
         },
         "path": {
           "minLength": 1,
           "title": "Path",
-          "type": "string",
-          "description": "Path to the parsed document snapshot relative to the directory containing protocol.json."
+          "type": "string"
         }
       },
       "required": [
@@ -319,70 +482,11 @@
         "path"
       ],
       "title": "Source",
-      "type": "object",
-      "description": "Identity and checksums of one selected RFC together with the location of its parsed document snapshot."
-    },
-    "step": {
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "description": "Python-assigned step identity. Not a name reference.",
-          "minLength": 1,
-          "title": "Id",
-          "type": "string"
-        },
-        "name": {
-          "description": "Persistent step name used by dependencies.",
-          "minLength": 1,
-          "title": "Name",
-          "type": "string"
-        },
-        "message_name": {
-          "minLength": 1,
-          "title": "Message Name",
-          "type": "string",
-          "description": "Name of the protocol message exchanged in this step."
-        },
-        "channel_name": {
-          "minLength": 1,
-          "title": "Channel Name",
-          "type": "string",
-          "description": "Name of the channel used by this message interaction."
-        },
-        "sender_name": {
-          "minLength": 1,
-          "title": "Sender Name",
-          "type": "string",
-          "description": "Name of the role sending the message; message direction is independent of connection establishment direction."
-        },
-        "receiver_name": {
-          "minLength": 1,
-          "title": "Receiver Name",
-          "type": "string",
-          "description": "Name of the role receiving the message."
-        },
-        "condition": {
-          "title": "Condition",
-          "type": "string",
-          "description": "Short applicability condition for the interaction, or an empty string when there is no additional condition."
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "message_name",
-        "channel_name",
-        "sender_name",
-        "receiver_name",
-        "condition"
-      ],
-      "title": "Step",
-      "type": "object",
-      "description": "A reusable one-way message interaction specifying the message, channel, sender, receiver and applicability condition."
+      "type": "object"
     },
     "dependency": {
       "additionalProperties": false,
-      "description": "A dependency on a previous step occurrence under a condition, without requiring immediate adjacency. Cycles and self-dependencies may refer to different occurrences.",
+      "description": "A dependency on an earlier occurrence, without requiring adjacency.",
       "properties": {
         "prior_step": {
           "description": "Name of the earlier step.",
@@ -406,8 +510,7 @@
             "$ref": "#/$defs/relation"
           },
           "title": "Field Relations",
-          "type": "array",
-          "description": "Field-name pairs involved in this dependency. Use an empty list when no field association is needed."
+          "type": "array"
         }
       },
       "required": [
@@ -418,61 +521,79 @@
       ],
       "title": "StepDependency",
       "type": "object"
+    },
+    "step": {
+      "discriminator": {
+        "mapping": {
+          "close": "#/$defs/close_step",
+          "connect": "#/$defs/connect_step",
+          "listen": "#/$defs/listen_step",
+          "send": "#/$defs/send_step"
+        },
+        "propertyName": "action"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/send_step"
+        },
+        {
+          "$ref": "#/$defs/listen_step"
+        },
+        {
+          "$ref": "#/$defs/connect_step"
+        },
+        {
+          "$ref": "#/$defs/close_step"
+        }
+      ]
     }
   },
   "additionalProperties": false,
   "properties": {
     "meta": {
-      "$ref": "#/$defs/meta",
-      "description": "Compilation metadata and selected source documents for one protocol version."
+      "$ref": "#/$defs/meta"
     },
     "parties": {
       "items": {
         "$ref": "#/$defs/party"
       },
       "title": "Parties",
-      "type": "array",
-      "description": "Named roles that directly communicate in the target protocol."
+      "type": "array"
     },
     "messages": {
       "items": {
         "$ref": "#/$defs/message"
       },
       "title": "Messages",
-      "type": "array",
-      "description": "Concrete protocol message definitions and the associated fields actually carried by each message."
+      "type": "array"
     },
     "channels": {
       "items": {
         "$ref": "#/$defs/channel"
       },
       "title": "Channels",
-      "type": "array",
-      "description": "Reusable connections or communication endpoints used by the protocol steps."
+      "type": "array"
     },
     "steps": {
       "items": {
         "$ref": "#/$defs/step"
       },
       "title": "Steps",
-      "type": "array",
-      "description": "Reusable one-way interactions referencing messages, channels and roles by name. Only steps retain Python-assigned definition IDs."
+      "type": "array"
     },
     "step_dependencies": {
       "items": {
         "$ref": "#/$defs/dependency"
       },
       "title": "Step Dependencies",
-      "type": "array",
-      "description": "Conditional dependencies between step occurrences, referenced by step names, with optional field-name pairs."
+      "type": "array"
     },
     "unresolved": {
       "items": {
         "$ref": "#/$defs/issue"
       },
       "title": "Unresolved",
-      "type": "array",
-      "description": "Problems that remain after extraction, link and completion. A complete model has no unresolved issues."
+      "type": "array"
     }
   },
   "required": [
@@ -487,6 +608,5 @@
   "title": "Protocol interaction model",
   "type": "object",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rsc.local/schemas/protocol.schema.json",
-  "description": "Final protocol interaction model compiled from a caller-selected RFC set to guide protocol-message generator code. This is the final output contract, not a per-block Agent response schema. Names reference semantic objects; source identifiers and Python-assigned step IDs remain separate."
+  "$id": "https://rsc.local/schemas/protocol.schema.json"
 }

@@ -302,11 +302,10 @@ impl McpClient {
         self.call(json!({"op": "begin_analysis", "request_id": request_id}))
     }
 
-    pub fn commit(&self, request_id: &str, proposal_id: &str, sha256: &str) -> Result<Value> {
+    pub fn commit(&self, request_id: &str, sha256: &str) -> Result<Value> {
         self.call(json!({
             "op": "commit_analysis",
             "request_id": request_id,
-            "proposal_id": proposal_id,
             "proposal_sha256": sha256,
         }))
     }

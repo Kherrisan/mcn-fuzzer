@@ -3,8 +3,8 @@ use std::{fs, path::PathBuf, sync::Arc};
 use serde_json::json;
 
 use super::request::GeneratorRequest;
-use crate::coverage::proposal::{proposal_id, Proposal, ProposalGoal, ProposalStep};
-use crate::protocol::{load_model, Binding, PartyRole, TraceId};
+use crate::coverage::proposal::instantiate;
+use crate::protocol::{load_model, Binding, PartyRole};
 
 fn fixture() -> (crate::protocol::IndexedModel, Binding, PathBuf) {
     let dir = std::env::temp_dir().join(format!(
@@ -17,7 +17,7 @@ fn fixture() -> (crate::protocol::IndexedModel, Binding, PathBuf) {
     ));
     fs::create_dir_all(&dir).unwrap();
     let body = json!({
-        "meta": {"schema_version": "7.0.0", "protocol": "demo", "complete": true, "documents": []},
+        "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": true, "documents": []},
         "parties": [{"name": "client", "description": "c"}, {"name": "server", "description": "s"}],
         "messages": [{"name": "hello", "associated_fields": []}],
         "channels": [{"name": "control", "description": "c", "transport": "TCP",
@@ -25,7 +25,7 @@ fn fixture() -> (crate::protocol::IndexedModel, Binding, PathBuf) {
                       "endpoint_party_names": ["client", "server"],
                       "initiator_party_name": "client", "acceptor_party_name": "server",
                       "endpoint_sources": []}],
-        "steps": [{"id": "step-001", "name": "hello", "message_name": "hello",
+        "steps": [{"name": "hello", "action": "send", "message_name": "hello",
                    "channel_name": "control", "sender_name": "client",
                    "receiver_name": "server", "condition": "start"}],
         "step_dependencies": [],
@@ -51,39 +51,18 @@ fn write_request(
     session: &str,
     request: &str,
     origin: &str,
-    proposal_id_value: Option<&str>,
-    trace_id: Option<&str>,
 ) {
-    let step = &model.steps[0];
-    let trace_id = trace_id
-        .map(str::to_string)
-        .unwrap_or_else(|| TraceId::from_steps(std::slice::from_ref(step)).0);
-    let mut proposal = Proposal {
-        version: 1,
-        proposal_id: String::new(),
-        origin: origin.to_string(),
-        session: session.to_string(),
-        request_id: request.to_string(),
-        build: String::new(),
-        snapshot: String::new(),
-        protocol_id: model.protocol_id.clone(),
-        graph_revision: 0,
-        trace_id: trace_id.clone(),
-        goal: ProposalGoal {
-            handler_ids: vec![],
-            reason: "goal".into(),
-        },
-        trace: vec![ProposalStep {
-            step_id: step.id().0,
-            handler_ids: vec![],
-            reason: "target".into(),
-            constraints: vec![],
-        }],
-        context: json!({}),
-    };
-    proposal.proposal_id = proposal_id_value
-        .map(str::to_string)
-        .unwrap_or_else(|| proposal_id(&proposal).unwrap());
+    let mut proposal = instantiate(model, &model.steps).unwrap();
+    proposal.origin = origin.to_string();
+    proposal.session = session.to_string();
+    proposal.request_id = request.to_string();
+    proposal.goal.reason = "goal".into();
+    if origin == "coverage" {
+        proposal.goal.handler_ids = vec!["handle_hello".into()];
+    }
+    for item in &mut proposal.trace {
+        item.reason = "target".into();
+    }
     fs::write(
         dir.join("proposal.json"),
         serde_json::to_vec_pretty(&proposal).unwrap(),
@@ -102,9 +81,6 @@ fn write_request(
     fs::write(dir.join("params.json"), "{}").unwrap();
     let result = json!({
         "request_id": request,
-        "protocol_id": model.protocol_id,
-        "proposal_id": proposal.proposal_id,
-        "trace_id": trace_id,
         "status": "ok",
         "added_steps": [],
     });
@@ -116,19 +92,14 @@ fn request(
     binding: &Binding,
     dir: PathBuf,
     id: &str,
-    proposal_id: Option<String>,
-    trace_id: Option<String>,
     autonomous: bool,
 ) -> GeneratorRequest {
     GeneratorRequest {
         id: id.to_string(),
         output_dir: dir,
-        protocol_id: model.protocol_id.clone(),
         session: "s".into(),
         build: String::new(),
         snapshot: String::new(),
-        proposal_id,
-        trace_id,
         model: Arc::new(model.clone()),
         binding: binding.clone(),
         autonomous,
@@ -138,63 +109,35 @@ fn request(
 #[test]
 fn autonomous_request_accepts_its_own_proposal_without_a_receipt() {
     let (model, binding, dir) = fixture();
-    write_request(&dir, &model, "s", "r1", "autonomous", None, None);
-    let request = request(&model, &binding, dir.clone(), "r1", None, None, true);
+    write_request(&dir, &model, "s", "r1", "autonomous");
+    let request = request(&model, &binding, dir.clone(), "r1", true);
     let validated = request.accept().unwrap();
-    assert_eq!(validated.origin.step_ids, vec![model.steps[0].id().0]);
+    assert_eq!(validated.origin.step_names, vec!["hello".to_string()]);
+    assert_eq!(validated.origin.request_id, "r1");
     assert!(dir.join("published/generator.py").is_file());
     assert!(!dir.join("receipt.json").exists());
 }
 
 #[test]
-fn coverage_request_rejects_a_different_proposal() {
+fn coverage_request_rejects_a_different_request() {
     let (model, binding, dir) = fixture();
-    write_request(&dir, &model, "s", "r1", "coverage", Some("deadbeef"), None);
-    let request = request(
-        &model,
-        &binding,
-        dir.clone(),
-        "r1",
-        Some("cafebabe".into()),
-        None,
-        false,
-    );
+    write_request(&dir, &model, "s", "analysis-1", "coverage");
+    let request = request(&model, &binding, dir.clone(), "synth-1", false);
     let error = request.accept().unwrap_err();
-    assert!(error.contains("proposal_id"), "{error}");
+    assert!(error.contains("request_id"), "{error}");
 }
 
 #[test]
 fn coverage_proposal_keeps_its_analysis_request_identity() {
     let (model, binding, dir) = fixture();
-    write_request(&dir, &model, "s", "analysis-1", "coverage", None, None);
-    let mut proposal =
-        crate::coverage::proposal::Proposal::read(&dir.join("proposal.json")).unwrap();
-    proposal.goal.handler_ids = vec!["h1".into()];
-    proposal.trace[0].handler_ids = vec!["h1".into()];
-    proposal.proposal_id = proposal_id(&proposal).unwrap();
+    write_request(&dir, &model, "s", "analysis-1", "coverage");
     fs::write(
-        dir.join("proposal.json"),
-        serde_json::to_vec_pretty(&proposal).unwrap(),
+        dir.join("result.json"),
+        json!({"request_id": "analysis-1", "status": "ok", "added_steps": []}).to_string(),
     )
     .unwrap();
-    let result = json!({
-        "request_id": "synth-1",
-        "protocol_id": model.protocol_id,
-        "proposal_id": proposal.proposal_id,
-        "trace_id": proposal.trace_id,
-        "status": "ok",
-        "added_steps": [],
-    });
-    fs::write(dir.join("result.json"), result.to_string()).unwrap();
-    let request = request(
-        &model,
-        &binding,
-        dir.clone(),
-        "synth-1",
-        Some(proposal.proposal_id.clone()),
-        Some(proposal.trace_id.clone()),
-        false,
-    );
+    let request = request(&model, &binding, dir.clone(), "analysis-1", false);
     let validated = request.accept().unwrap();
-    assert_eq!(validated.origin.trace_id, proposal.trace_id);
+    assert_eq!(validated.origin.request_id, "analysis-1");
+    assert_eq!(validated.origin.step_names, vec!["hello".to_string()]);
 }

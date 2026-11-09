@@ -23,20 +23,8 @@ fn default_map_size() -> usize {
     65_536
 }
 
-fn default_config_output() -> String {
-    "fftp.conf".to_string()
-}
-
 fn default_args() -> Vec<String> {
-    vec!["@CONFIG@".to_string()]
-}
-
-fn default_cert() -> String {
-    "certs/my.crt".to_string()
-}
-
-fn default_key() -> String {
-    "certs/my.pem".to_string()
+    vec!["fftp.conf".to_string()]
 }
 
 fn default_file_limit() -> u64 {
@@ -83,27 +71,14 @@ pub struct TargetConfig {
     /// Optional SUT source directory. Coverage analysis reads it. Synthesis prompts do not.
     #[serde(default)]
     pub source_dir: Option<PathBuf>,
-    /// Directory restored from `fixture` before every case.
+    /// Directory in which the target runs.
     pub workdir: PathBuf,
-    /// Snapshot copied over `workdir`.
-    pub fixture: PathBuf,
-    /// Config template. Placeholders are replaced when it is written.
-    pub config_template: PathBuf,
-    /// File name written under `workdir`. LightFTP uses `fftp.conf`.
-    #[serde(default = "default_config_output")]
-    pub config_output: String,
-    /// Arguments after the program. `@CONFIG@` is the rendered config path.
+    /// Optional shell script run before startup and before every testcase.
+    #[serde(default)]
+    pub cleanup_script: Option<PathBuf>,
+    /// Arguments after the program. `@PORT@` and `@ROOT@` are substituted.
     #[serde(default = "default_args")]
     pub args: Vec<String>,
-    /// Certificate path relative to `fixture`.
-    #[serde(default = "default_cert")]
-    pub cert: String,
-    /// Private key path relative to `fixture`.
-    #[serde(default = "default_key")]
-    pub key: String,
-    /// CA path relative to `fixture`. Omitted keeps the LightFTP CA lookup.
-    #[serde(default)]
-    pub ca: Option<String>,
     #[serde(default = "default_host")]
     pub host: String,
     /// Control port. `0` picks a free port once for the campaign.
@@ -117,32 +92,20 @@ pub struct TargetConfig {
     pub debug_child: bool,
 }
 
-/// Values substituted into arguments, environment values, and the config template.
+/// Values substituted into arguments and environment values.
 #[derive(Clone, Debug)]
 pub struct TargetPlaceholders {
     /// Campaign control port.
     pub port: u16,
     /// Directory the target uses as its root.
     pub root: PathBuf,
-    /// Rendered config file.
-    pub config: PathBuf,
-    /// Certificate file.
-    pub cert: PathBuf,
-    /// Private key file.
-    pub key: PathBuf,
-    /// CA bundle.
-    pub ca: PathBuf,
 }
 
 impl TargetPlaceholders {
-    /// Replace `@PORT@`, `@ROOT@`, `@CONFIG@`, `@CERT@`, `@KEY@`, and `@CA@`.
+    /// Replace `@PORT@` and `@ROOT@`.
     pub fn apply(&self, text: &str) -> String {
         text.replace("@PORT@", &self.port.to_string())
             .replace("@ROOT@", &self.root.display().to_string())
-            .replace("@CONFIG@", &self.config.display().to_string())
-            .replace("@CERT@", &self.cert.display().to_string())
-            .replace("@KEY@", &self.key.display().to_string())
-            .replace("@CA@", &self.ca.display().to_string())
     }
 }
 
@@ -343,7 +306,7 @@ fn default_mcp_ready() -> u64 {
 /// Optional protocol-driven generator synthesis. Omitted or disabled leaves the campaign unchanged.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ProtocolGenerationConfig {
+pub struct GeneratorSynthesisConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -352,6 +315,9 @@ pub struct ProtocolGenerationConfig {
     pub profile: String,
     #[serde(default = "default_synthesis_output")]
     pub output: PathBuf,
+    /// Extra read-only campaign files offered to the synthesizer.
+    #[serde(default)]
+    pub extra_files: Vec<PathBuf>,
     /// Rejected. Roles now come from `[parties]`.
     #[serde(
         default,
@@ -403,7 +369,7 @@ where
 {
     serde::de::IgnoredAny::deserialize(deserializer)?;
     Err(serde::de::Error::custom(
-        "protocol_generation trace selection settings are obsolete; traces come from a proposal",
+        "generator_synthesis trace selection settings are obsolete; traces come from a proposal",
     ))
 }
 
@@ -413,7 +379,17 @@ where
 {
     serde::de::IgnoredAny::deserialize(deserializer)?;
     Err(serde::de::Error::custom(
-        "protocol_generation.hc_executable has moved to [agents].hc_executable",
+        "generator_synthesis.hc_executable has moved to [agents].hc_executable",
+    ))
+}
+
+fn reject_legacy_generator_synthesis_table<'de, D>(deserializer: D) -> Result<(), D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde::de::IgnoredAny::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(
+        "[protocol_generation] has been renamed to [generator_synthesis]; move enabled, model, profile, output, init_timeout_secs, task_timeout_secs, and extra_files",
     ))
 }
 
@@ -433,7 +409,7 @@ where
 {
     serde::de::IgnoredAny::deserialize(deserializer)?;
     Err(serde::de::Error::custom(
-        "protocol_generation.bindings has been removed; set [parties].sut and [parties].generator to a non-empty party list or \"*\"",
+        "generator_synthesis.bindings has been removed; set [parties].sut and [parties].generator to a non-empty party list or \"*\"",
     ))
 }
 
@@ -583,13 +559,14 @@ fn default_synthesis_output() -> PathBuf {
     PathBuf::from("synthesis")
 }
 
-impl Default for ProtocolGenerationConfig {
+impl Default for GeneratorSynthesisConfig {
     fn default() -> Self {
         Self {
             enabled: false,
             model: PathBuf::new(),
             profile: String::new(),
             output: PathBuf::from("synthesis"),
+            extra_files: Vec::new(),
             _legacy_bindings: (),
             init_timeout_secs: default_init_timeout(),
             task_timeout_secs: default_task_timeout(),
@@ -620,13 +597,20 @@ pub struct Campaign {
         deserialize_with = "reject_legacy_source_coverage"
     )]
     pub(crate) _legacy_source_coverage: (),
+    /// Rejected. The table was renamed to `[generator_synthesis]`.
+    #[serde(
+        default,
+        rename = "protocol_generation",
+        deserialize_with = "reject_legacy_generator_synthesis_table"
+    )]
+    pub(crate) _legacy_generator_synthesis: (),
     /// Protocol generator synthesis. Missing from the file keeps it off.
     #[serde(default)]
-    pub protocol_generation: ProtocolGenerationConfig,
-    /// Named agent profiles referenced by protocol generation.
+    pub generator_synthesis: GeneratorSynthesisConfig,
+    /// Named agent profiles referenced by generator synthesis.
     #[serde(default)]
     pub agents: AgentCatalog,
-    /// SUT and generator party sets. Required only when protocol generation is enabled.
+    /// SUT and generator party sets. Required only when generator synthesis is enabled.
     #[serde(default)]
     pub parties: Option<PartiesConfig>,
     /// Directory that contained the TOML file. Not read from the file.
@@ -663,8 +647,11 @@ impl Campaign {
             .as_ref()
             .map(|path| resolve(&base, path));
         campaign.target.workdir = resolve(&base, &campaign.target.workdir);
-        campaign.target.fixture = resolve(&base, &campaign.target.fixture);
-        campaign.target.config_template = resolve(&base, &campaign.target.config_template);
+        campaign.target.cleanup_script = campaign
+            .target
+            .cleanup_script
+            .as_ref()
+            .map(|path| resolve(&base, path));
         campaign.campaign.seeds = resolve(&base, &campaign.campaign.seeds);
         campaign.campaign.corpus = resolve(&base, &campaign.campaign.corpus);
         campaign.campaign.crashes = resolve(&base, &campaign.campaign.crashes);
@@ -733,22 +720,28 @@ impl Campaign {
                 ));
             }
         }
-        if !campaign.protocol_generation.model.as_os_str().is_empty() {
-            campaign.protocol_generation.model =
-                resolve(&base, &campaign.protocol_generation.model);
+        if !campaign.generator_synthesis.model.as_os_str().is_empty() {
+            campaign.generator_synthesis.model =
+                resolve(&base, &campaign.generator_synthesis.model);
         }
-        campaign.protocol_generation.output = resolve(&base, &campaign.protocol_generation.output);
-        if campaign.protocol_generation.enabled && campaign.parties.is_none() {
+        campaign.generator_synthesis.output = resolve(&base, &campaign.generator_synthesis.output);
+        campaign.generator_synthesis.extra_files = campaign
+            .generator_synthesis
+            .extra_files
+            .iter()
+            .map(|path| resolve(&base, path))
+            .collect();
+        if campaign.generator_synthesis.enabled && campaign.parties.is_none() {
             return Err(Error::illegal_argument(
-                "protocol generation requires [parties].sut and [parties].generator".to_string(),
+                "generator synthesis requires [parties].sut and [parties].generator".to_string(),
             ));
         }
         if let Some(parties) = &campaign.parties {
             parties.check_shape()?;
-            let model_path = &campaign.protocol_generation.model;
+            let model_path = &campaign.generator_synthesis.model;
             if model_path.as_os_str().is_empty() {
                 return Err(Error::illegal_argument(
-                    "protocol_generation.model is required to resolve [parties]".to_string(),
+                    "generator_synthesis.model is required to resolve [parties]".to_string(),
                 ));
             }
             let model = crate::protocol::load_model(model_path)?;
@@ -758,43 +751,11 @@ impl Campaign {
         Ok(campaign)
     }
 
-    /// Generated server configuration path.
-    pub fn server_config(&self) -> PathBuf {
-        self.target.workdir.join(&self.target.config_output)
-    }
-
-    /// Certificate copied with the fixture.
-    pub fn cert_path(&self) -> PathBuf {
-        self.target.fixture.join(&self.target.cert)
-    }
-
-    /// Private key copied with the fixture.
-    pub fn key_path(&self) -> PathBuf {
-        self.target.fixture.join(&self.target.key)
-    }
-
-    /// CA bundle. An omitted path keeps the previous LightFTP lookup.
-    pub fn ca_path(&self) -> PathBuf {
-        if let Some(ca) = &self.target.ca {
-            return self.target.fixture.join(ca);
-        }
-        let system = PathBuf::from("/etc/ssl/certs/ca-certificates.crt");
-        if system.is_file() {
-            system
-        } else {
-            self.target.fixture.join("certs").join("my.pem")
-        }
-    }
-
-    /// Placeholder values for this campaign's fixed port.
+    /// Placeholder values for this campaign's port.
     pub fn placeholders(&self, port: u16) -> TargetPlaceholders {
         TargetPlaceholders {
             port,
             root: self.target.workdir.clone(),
-            config: self.server_config(),
-            cert: self.cert_path(),
-            key: self.key_path(),
-            ca: self.ca_path(),
         }
     }
 }
@@ -842,8 +803,6 @@ mod tests {
 [target]
 binary = "b"
 workdir = "w"
-fixture = "f"
-config_template = "c"
 port = 0
 {extra}
 [timeouts]
@@ -897,7 +856,7 @@ pythonpath = "pp"
         let legacy = format!("{}\n[source_coverage]\nenabled = false\n", sample("", ""));
         let error = toml::from_str::<Campaign>(&legacy).unwrap_err();
         assert!(error.to_string().contains("[source_coverage]"), "{error}");
-        for section in ["coverage", "protocol_generation"] {
+        for section in ["coverage", "generator_synthesis"] {
             let text = format!("{}\n[{section}]\ninterval = 1\n", sample("", ""));
             let error = toml::from_str::<Campaign>(&text).unwrap_err();
             assert!(
@@ -910,24 +869,16 @@ pythonpath = "pp"
     #[test]
     fn omitted_launch_fields_keep_lightftp_defaults() {
         let campaign: Campaign = toml::from_str(&sample("", "")).unwrap();
-        assert_eq!(campaign.target.config_output, "fftp.conf");
-        assert_eq!(campaign.target.args, vec!["@CONFIG@".to_string()]);
-        assert_eq!(campaign.target.cert, "certs/my.crt");
-        assert_eq!(campaign.target.key, "certs/my.pem");
-        assert_eq!(campaign.target.ca, None);
+        assert_eq!(campaign.target.args, vec!["fftp.conf".to_string()]);
+        assert_eq!(campaign.target.cleanup_script, None);
         assert!(!campaign.capture.enabled);
         assert_eq!(campaign.capture.file_limit, 67_108_864);
         assert_eq!(campaign.capture.drain_quiet_ms, 5);
         assert_eq!(campaign.capture.drain_timeout_ms, 100);
         let rendered = campaign.placeholders(2200).apply(&campaign.target.args[0]);
         assert!(rendered.ends_with("fftp.conf"), "{rendered}");
-        let conf = campaign
-            .placeholders(2200)
-            .apply("port=@PORT@ cert=@CERT@ key=@KEY@ ca=@CA@ root=@ROOT@ cfg=@CONFIG@");
+        let conf = campaign.placeholders(2200).apply("port=@PORT@ root=@ROOT@");
         assert!(conf.contains("port=2200"), "{conf}");
-        assert!(conf.contains("certs/my.crt"), "{conf}");
-        assert!(conf.contains("certs/my.pem"), "{conf}");
-        assert!(conf.contains("fftp.conf"), "{conf}");
     }
 
     #[test]
@@ -969,20 +920,12 @@ pythonpath = "pp"
     }
 
     #[test]
-    fn openssl_campaign_points_openssl_conf_at_rendered_config() {
+    fn openssl_campaign_uses_explicit_runtime_paths() {
         let campaign =
             Campaign::load(Path::new("targets/openssl/campaign.toml")).expect("openssl campaign");
         let placeholders = campaign.placeholders(4433);
-        let value = campaign
-            .target
-            .extra_env
-            .iter()
-            .find(|(key, _)| key == "OPENSSL_CONF")
-            .map(|(_, value)| placeholders.apply(value));
-        let expected = placeholders.config.display().to_string();
-        assert_eq!(value.as_deref(), Some(expected.as_str()));
-        assert!(expected.ends_with("openssl.cnf"));
         assert!(campaign.target.args.iter().any(|arg| arg == "-naccept"));
+        assert!(campaign.target.args.iter().any(|arg| arg.contains("@PORT@")));
     }
 
     #[test]
@@ -997,21 +940,72 @@ pythonpath = "pp"
     }
 
     #[test]
-    fn omitted_protocol_generation_stays_off_and_profiles_keep_env_pairs() {
+    fn generator_synthesis_resolves_relative_and_absolute_extra_files() {
+        let dir = std::env::temp_dir().join(format!("mcn-cfg-extra-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("conf")).unwrap();
+        fs::write(dir.join("conf/a.conf"), b"account=ubuntu\n").unwrap();
+        fs::write(dir.join("conf/b.conf"), b"permission=upload\n").unwrap();
+        let absolute = dir.join("conf/b.conf");
+        let path = dir.join("campaign.toml");
+        let text = format!(
+            "{}\n[generator_synthesis]\nenabled = false\noutput = \"out\"\nextra_files = [\"conf/a.conf\", {:?}]\n",
+            sample("", ""),
+            absolute.display().to_string()
+        );
+        fs::write(&path, text).unwrap();
+        let campaign = Campaign::load(&path).unwrap();
+        assert_eq!(
+            campaign.generator_synthesis.extra_files,
+            vec![dir.join("conf/a.conf"), absolute]
+        );
+        assert!(!campaign.generator_synthesis.enabled);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_protocol_generation_table_is_rejected_with_a_migration_hint() {
+        for text in [
+            format!("{}\n[protocol_generation]\nenabled = false\n", sample("", "")),
+            format!(
+                "{}\n[generator_synthesis]\nenabled = false\n[protocol_generation]\nenabled = false\n",
+                sample("", "")
+            ),
+        ] {
+            let error = toml::from_str::<Campaign>(&text).unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("[protocol_generation]"), "{message}");
+            assert!(message.contains("[generator_synthesis]"), "{message}");
+        }
+    }
+
+    #[test]
+    fn generator_synthesis_rejects_unknown_keys() {
+        let text = format!(
+            "{}\n[generator_synthesis]\nenabled = false\nextra_filez = []\n",
+            sample("", "")
+        );
+        let error = toml::from_str::<Campaign>(&text).unwrap_err();
+        assert!(error.to_string().contains("extra_filez"), "{error}");
+    }
+
+    #[test]
+    fn omitted_generator_synthesis_stays_off_and_profiles_keep_env_pairs() {
         let plain: Campaign = toml::from_str(&sample("", "")).unwrap();
-        assert!(!plain.protocol_generation.enabled);
-        assert!(plain.protocol_generation.model.as_os_str().is_empty());
-        assert_eq!(plain.protocol_generation.init_timeout_secs, 300);
+        assert!(!plain.generator_synthesis.enabled);
+        assert!(plain.generator_synthesis.model.as_os_str().is_empty());
+        assert!(plain.generator_synthesis.extra_files.is_empty());
+        assert_eq!(plain.generator_synthesis.init_timeout_secs, 300);
         assert_eq!(plain.coverage.analysis_init_timeout_secs, 300);
-        assert_eq!(plain.protocol_generation.task_timeout_secs, 600);
+        assert_eq!(plain.generator_synthesis.task_timeout_secs, 600);
         assert!(plain.agents.profiles.is_empty());
         let text = format!(
-            "{}\n[protocol_generation]\nenabled = false\nmodel = \"protocol.json\"\nprofile = \"codex\"\n[agents.profiles.codex]\nprovider = \"codex\"\nexecutable = \"/bin/true\"\nmodel = \"gpt\"\neffort = \"low\"\nargs = [\"--sandbox\", \"workspace-write\"]\nenv = [[\"NO_COLOR\", \"1\"]]\n",
+            "{}\n[generator_synthesis]\nenabled = false\nmodel = \"protocol.json\"\nprofile = \"codex\"\n[agents.profiles.codex]\nprovider = \"codex\"\nexecutable = \"/bin/true\"\nmodel = \"gpt\"\neffort = \"low\"\nargs = [\"--sandbox\", \"workspace-write\"]\nenv = [[\"NO_COLOR\", \"1\"]]\n",
             sample("", "")
         );
         let campaign: Campaign = toml::from_str(&text).unwrap();
-        assert!(!campaign.protocol_generation.enabled);
-        assert_eq!(campaign.protocol_generation.profile, "codex");
+        assert!(!campaign.generator_synthesis.enabled);
+        assert_eq!(campaign.generator_synthesis.profile, "codex");
         let profile = campaign.agents.profiles.get("codex").unwrap();
         assert_eq!(profile.env, vec![("NO_COLOR".to_string(), "1".to_string())]);
         let line = crate::agents::command_line(profile, Path::new("/tmp/synthesis")).unwrap();
@@ -1020,10 +1014,12 @@ pythonpath = "pp"
             vec![
                 "/bin/true".to_string(),
                 "--no-daemon".to_string(),
+                "-c".to_string(),
+                "check_for_update_on_startup=false".to_string(),
                 "--model".to_string(),
                 "gpt".to_string(),
-                "--effort".to_string(),
-                "low".to_string(),
+                "-c".to_string(),
+                "model_reasoning_effort=low".to_string(),
                 "--sandbox".to_string(),
                 "workspace-write".to_string(),
             ]
@@ -1038,7 +1034,7 @@ pythonpath = "pp"
         let path = dir.join("protocol.json");
         std::fs::write(
             &path,
-            br#"{"meta":{"schema_version":"7.0.0","protocol":"p","complete":false,"documents":[{"doc_id":"d","rfc":"RFC 1","input_sha256":"a","document_sha256":"b","path":"doc.json"}]},"parties":[{"name":"alpha","description":"a"},{"name":"beta","description":"b"},{"name":"gamma","description":"c"}],"messages":[{"name":"m","associated_fields":[]}],"channels":[{"name":"c","description":"c","transport":"TCP","connection":"connection_oriented","endpoint_party_names":["alpha","beta"],"initiator_party_name":"alpha","acceptor_party_name":"beta","endpoint_sources":[]}],"steps":[{"id":"1","name":"s","message_name":"m","channel_name":"c","sender_name":"alpha","receiver_name":"beta","condition":"go"}],"step_dependencies":[],"unresolved":[]}"#,
+            br#"{"meta":{"schema_version":"8.0.0","protocol":"p","complete":false,"documents":[{"doc_id":"d","rfc":"RFC 1","input_sha256":"a","document_sha256":"b","path":"doc.json"}]},"parties":[{"name":"alpha","description":"a"},{"name":"beta","description":"b"},{"name":"gamma","description":"c"}],"messages":[{"name":"m","associated_fields":[]}],"channels":[{"name":"c","description":"c","transport":"TCP","connection":"connection_oriented","endpoint_party_names":["alpha","beta"],"initiator_party_name":"alpha","acceptor_party_name":"beta","endpoint_sources":[]}],"steps":[{"name":"s","action": "send", "message_name":"m","channel_name":"c","sender_name":"alpha","receiver_name":"beta","condition":"go"}],"step_dependencies":[],"unresolved":[]}"#,
         )
         .unwrap();
         path
@@ -1051,7 +1047,7 @@ pythonpath = "pp"
         std::fs::write(
             &path,
             format!(
-                "{}\n[protocol_generation]\nenabled = {enabled}\nmodel = \"{model}\"\nprofile = \"codex\"\n{parties}\n",
+                "{}\n[generator_synthesis]\nenabled = {enabled}\nmodel = \"{model}\"\nprofile = \"codex\"\n{parties}\n",
                 sample("", "")
             ),
         )
@@ -1159,7 +1155,7 @@ pythonpath = "pp"
         std::fs::write(
             &path,
             format!(
-                "{}\n[protocol_generation]\nenabled = false\nbindings = [[\"alpha\", \"sut\"]]\n",
+                "{}\n[generator_synthesis]\nenabled = false\nbindings = [[\"alpha\", \"sut\"]]\n",
                 sample("", "")
             ),
         )
@@ -1167,14 +1163,14 @@ pythonpath = "pp"
         let error = Campaign::load(&path).expect_err("legacy bindings");
         let message = format!("{error:?}");
         assert!(
-            message.contains("protocol_generation.bindings has been removed"),
+            message.contains("generator_synthesis.bindings has been removed"),
             "{message}"
         );
         assert!(message.contains("[parties]"), "{message}");
         let omitted = party_campaign(&dir, "", false);
         let campaign = Campaign::load(&omitted).unwrap();
         assert!(campaign.parties.is_none());
-        assert!(!campaign.protocol_generation.enabled);
+        assert!(!campaign.generator_synthesis.enabled);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1184,7 +1180,7 @@ pythonpath = "pp"
         std::fs::write(
             &path,
             format!(
-                "{}\n[protocol_generation]\nenabled = {enabled}\nmodel = \"{model}\"\nprofile = \"codex\"\n{parties}\n",
+                "{}\n[generator_synthesis]\nenabled = {enabled}\nmodel = \"{model}\"\nprofile = \"codex\"\n{parties}\n",
                 sample("", "")
             ),
         )
@@ -1228,7 +1224,7 @@ pythonpath = "pp"
         let error = Campaign::load(&missing).expect_err("missing model");
         let message = format!("{error:?}");
         assert!(
-            message.contains("protocol_generation.model is required to resolve [parties]"),
+            message.contains("generator_synthesis.model is required to resolve [parties]"),
             "{message}"
         );
         let _ = std::fs::remove_dir_all(&dir);

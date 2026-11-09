@@ -1,23 +1,24 @@
-//! Proposal v1: the only generation guidance handed from coverage to synthesis.
+//! Proposal v2: ordered step instances, party/channel instances, and mutations.
 //!
-//! The Python service validates handler associations and freezes the file. Rust
-//! rechecks identity, references, party binding, and both content digests before
-//! copying the proposal into a synthesis request.
+//! The Python service fills action, condition, and message from the model and
+//! freezes the file. Rust rechecks names, endpoints, campaign binding, and
+//! mutations. Request identity is the session and request id, not a digest.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::protocol::{Binding, IndexedModel, StepRecord, TraceId};
+use super::mutations::{self, expand_named};
+use crate::protocol::{Binding, IndexedModel, StepRecord};
 
-pub const PROPOSAL_VERSION: u32 = 1;
-const ID_LEN: usize = 8;
+pub const PROPOSAL_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProposalGoal {
@@ -27,31 +28,59 @@ pub struct ProposalGoal {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProposalChannel {
+    pub channel: String,
+    pub endpoints: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ProposalStep {
-    pub step_id: String,
+    pub name: String,
+    pub step: String,
+    pub action: String,
     #[serde(default)]
-    pub handler_ids: Vec<String>,
+    pub condition: String,
+    #[serde(default)]
+    pub message: Option<String>,
+    pub channel: String,
+    #[serde(default)]
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub receiver: Option<String>,
+    #[serde(default)]
+    pub party: Option<String>,
     pub reason: String,
     #[serde(default)]
     pub constraints: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+impl mutations::Named for ProposalStep {
+    fn instance_name(&self) -> &str {
+        &self.name
+    }
+    fn model_step(&self) -> &str {
+        &self.step
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Proposal {
     pub version: u32,
-    pub proposal_id: String,
     pub origin: String,
     pub session: String,
     pub request_id: String,
     pub build: String,
     pub snapshot: String,
-    pub protocol_id: String,
     pub graph_revision: u64,
-    pub trace_id: String,
     pub goal: ProposalGoal,
+    pub parties: BTreeMap<String, String>,
+    pub channels: BTreeMap<String, ProposalChannel>,
     pub trace: Vec<ProposalStep>,
     #[serde(default)]
-    pub context: Value,
+    pub mutations: Vec<Value>,
 }
 
 /// Frozen proposal plus the on-disk bytes accepted by Rust.
@@ -63,8 +92,8 @@ pub struct AcceptedProposal {
 }
 
 impl AcceptedProposal {
-    pub fn id(&self) -> &str {
-        &self.proposal.proposal_id
+    pub fn request_id(&self) -> &str {
+        &self.proposal.request_id
     }
 }
 
@@ -97,14 +126,77 @@ impl ProposalMailbox {
     }
 }
 
-/// Identity of the analysis request a proposal must belong to.
+/// Identity of the analysis or synthesis request a proposal must belong to.
 #[derive(Clone, Debug)]
 pub struct ProposalIdentity {
     pub session: String,
     pub request_id: String,
     pub build: String,
     pub snapshot: String,
-    pub protocol_id: String,
+}
+
+/// One party instance, one channel instance, and one step instance per model step.
+pub fn instantiate(model: &IndexedModel, steps: &[StepRecord]) -> Result<Proposal, String> {
+    let mut parties = BTreeMap::new();
+    let mut channels: BTreeMap<String, ProposalChannel> = BTreeMap::new();
+    let mut seen = BTreeMap::<String, usize>::new();
+    let mut trace = Vec::new();
+    for step in steps {
+        for party in step.participants() {
+            parties
+                .entry(party.to_string())
+                .or_insert_with(|| party.to_string());
+        }
+        let entry = channels
+            .entry(step.channel_name.clone())
+            .or_insert_with(|| ProposalChannel {
+                channel: step.channel_name.clone(),
+                endpoints: Vec::new(),
+            });
+        for party in step.participants() {
+            if !entry.endpoints.iter().any(|name| name == party) {
+                entry.endpoints.push(party.to_string());
+            }
+        }
+        let count = seen.entry(step.name.clone()).or_insert(0);
+        *count += 1;
+        let name = if steps.iter().filter(|item| item.name == step.name).count() == 1 {
+            step.name.clone()
+        } else {
+            format!("{}_{}", step.name, *count)
+        };
+        trace.push(ProposalStep {
+            name,
+            step: step.name.clone(),
+            action: step.action.name().to_string(),
+            condition: step.condition.clone(),
+            message: step.message_name().map(str::to_string),
+            channel: step.channel_name.clone(),
+            sender: step.sender_name().map(str::to_string),
+            receiver: step.receiver_name().map(str::to_string),
+            party: step.party_name().map(str::to_string),
+            reason: format!("step {}", step.name),
+            constraints: Vec::new(),
+        });
+    }
+    let _ = model;
+    Ok(Proposal {
+        version: PROPOSAL_VERSION,
+        origin: "autonomous".into(),
+        session: String::new(),
+        request_id: String::new(),
+        build: String::new(),
+        snapshot: String::new(),
+        graph_revision: 0,
+        goal: ProposalGoal {
+            handler_ids: Vec::new(),
+            reason: String::new(),
+        },
+        parties,
+        channels,
+        trace,
+        mutations: Vec::new(),
+    })
 }
 
 impl Proposal {
@@ -115,7 +207,7 @@ impl Proposal {
             .map_err(|error| format!("parsing {}: {error}", path.display()))
     }
 
-    /// Validate references and digests, then return the ordered model steps.
+    /// Validate names, endpoints, binding, and mutations. Returns the model steps in trace order.
     pub fn validate(
         &self,
         model: &IndexedModel,
@@ -133,14 +225,16 @@ impl Proposal {
             ("request_id", &self.request_id, &expected.request_id),
             ("build", &self.build, &expected.build),
             ("snapshot", &self.snapshot, &expected.snapshot),
-            ("protocol_id", &self.protocol_id, &expected.protocol_id),
         ] {
+            if self.origin == "autonomous"
+                && (name == "build" || name == "snapshot")
+                && wanted.is_empty()
+            {
+                continue;
+            }
             if !wanted.is_empty() && actual != wanted {
                 return Err(format!("proposal.{name} does not match the frozen request"));
             }
-        }
-        if self.protocol_id != model.protocol_id {
-            return Err("proposal protocol_id does not match the model".into());
         }
         if self.origin == "coverage" && self.goal.handler_ids.is_empty() {
             return Err("coverage proposals need goal.handler_ids".into());
@@ -151,47 +245,144 @@ impl Proposal {
         if self.trace.is_empty() {
             return Err("proposal trace must not be empty".into());
         }
+        let names = mutations::instance_names(&self.trace)?;
+        if names.len() != names.iter().collect::<BTreeSet<_>>().len() {
+            return Err("duplicate instance name".into());
+        }
+        for (instance, party) in &self.parties {
+            if party.is_empty() || model.party_names().get(party).is_none() {
+                return Err(format!(
+                    "party instance {instance} does not name a model party"
+                ));
+            }
+        }
+        for (instance, channel) in &self.channels {
+            if model.channel(&channel.channel).is_none() {
+                return Err(format!(
+                    "channel instance {instance} does not name a model channel"
+                ));
+            }
+            for endpoint in &channel.endpoints {
+                if !self.parties.contains_key(endpoint) {
+                    return Err(format!(
+                        "channel {instance} endpoint {endpoint} is not a party instance"
+                    ));
+                }
+            }
+        }
         let mut steps = Vec::with_capacity(self.trace.len());
         for item in &self.trace {
             let step = model
                 .steps
                 .iter()
-                .find(|step| step.id().0 == item.step_id)
-                .ok_or_else(|| format!("unknown step id {}", item.step_id))?;
-            if !model.carries_step(step, binding) {
+                .find(|step| step.name == item.step)
+                .ok_or_else(|| format!("unknown step {}", item.step))?
+                .clone();
+            if !model.carries_step(&step, binding) {
                 return Err(format!(
                     "step {} cannot be carried by this campaign",
-                    item.step_id
+                    item.step
                 ));
             }
+            self.check_binding(model, item, &step)?;
             if item.reason.trim().is_empty() {
-                return Err(format!("step {} needs a reason", item.step_id));
+                return Err(format!("instance {} needs a reason", item.name));
             }
-            steps.push(step.clone());
+            steps.push(step);
         }
-        let trace_id = TraceId::from_steps(&steps);
-        if trace_id.0 != self.trace_id {
-            return Err("proposal.trace_id does not match the ordered trace".into());
-        }
-        if self.origin == "coverage" {
-            let carried: Vec<&str> = self
-                .trace
-                .iter()
-                .flat_map(|item| item.handler_ids.iter().map(String::as_str))
-                .collect();
-            for handler in &self.goal.handler_ids {
-                if !carried.contains(&handler.as_str()) {
-                    return Err(format!(
-                        "goal handler {handler} is not associated with any trace step"
-                    ));
-                }
-            }
-        }
-        let expected_id = proposal_id(self)?;
-        if expected_id != self.proposal_id {
-            return Err("proposal.proposal_id does not match the content".into());
-        }
+        mutations::validate_mutations(
+            &names,
+            |index| self.trace[index].action == "send",
+            &self.mutations,
+        )?;
         Ok(steps)
+    }
+
+    fn check_binding(
+        &self,
+        model: &IndexedModel,
+        item: &ProposalStep,
+        step: &StepRecord,
+    ) -> Result<(), String> {
+        if item.action != step.action.name() {
+            return Err(format!(
+                "instance {} action does not match the model step",
+                item.name
+            ));
+        }
+        if item.condition != step.condition {
+            return Err(format!(
+                "instance {} condition does not match the model step",
+                item.name
+            ));
+        }
+        if item.message.as_deref() != step.message_name() {
+            return Err(format!(
+                "instance {} message does not match the model step",
+                item.name
+            ));
+        }
+        let channel = self
+            .channels
+            .get(&item.channel)
+            .ok_or_else(|| format!("unknown channel instance {}", item.channel))?;
+        if channel.channel != step.channel_name {
+            return Err(format!(
+                "instance {} channel does not match the model step",
+                item.name
+            ));
+        }
+        let party_model = |instance: &str| -> Result<String, String> {
+            if !channel.endpoints.iter().any(|name| name == instance) {
+                return Err(format!(
+                    "party instance {instance} is not an endpoint of {}",
+                    item.channel
+                ));
+            }
+            self.parties
+                .get(instance)
+                .cloned()
+                .ok_or_else(|| format!("unknown party instance {instance}"))
+        };
+        if step.action.name() == "send" {
+            let sender = party_model(item.sender.as_deref().unwrap_or(""))?;
+            let receiver = party_model(item.receiver.as_deref().unwrap_or(""))?;
+            if Some(sender.as_str()) != step.sender_name()
+                || Some(receiver.as_str()) != step.receiver_name()
+            {
+                return Err(format!(
+                    "instance {} endpoints do not match the model step",
+                    item.name
+                ));
+            }
+            if item.party.is_some() {
+                return Err(format!("send instance {} cannot name a party", item.name));
+            }
+        } else {
+            let actor = party_model(item.party.as_deref().unwrap_or(""))?;
+            if Some(actor.as_str()) != step.party_name() {
+                return Err(format!(
+                    "instance {} party does not match the model step",
+                    item.name
+                ));
+            }
+            if item.sender.is_some() || item.receiver.is_some() {
+                return Err(format!(
+                    "network instance {} cannot name a sender or receiver",
+                    item.name
+                ));
+            }
+        }
+        let _ = model;
+        Ok(())
+    }
+
+    /// Expand duplicate mutations. `counts` maps each count_param to a runtime value.
+    pub fn expand(&self, counts: &BTreeMap<String, Value>) -> Result<Vec<ProposalStep>, String> {
+        let names = mutations::instance_names(&self.trace)?;
+        expand_named(&self.trace, &names, &self.mutations, &|name| {
+            counts.get(name).cloned().unwrap_or(json!(0))
+        })
     }
 
     pub fn write_copy(&self, path: &Path) -> Result<(), String> {
@@ -201,88 +392,61 @@ impl Proposal {
     }
 }
 
-/// Content ID over the proposal without its own `proposal_id` field.
-pub fn proposal_id(proposal: &Proposal) -> Result<String, String> {
-    let mut value = serde_json::to_value(proposal).map_err(|error| error.to_string())?;
-    if let Some(map) = value.as_object_mut() {
-        map.remove("proposal_id");
-    }
-    let mut out = Vec::new();
-    push_str(&mut out, "mcn.proposal.v1");
-    canonical(&value, &mut out);
-    Ok(hex(&out)[..ID_LEN].to_string())
-}
-
 pub fn sha256_file(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path).map_err(|error| format!("reading {}: {error}", path.display()))?;
-    Ok(hex(&bytes))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
-fn push_str(out: &mut Vec<u8>, text: &str) {
-    let raw = text.as_bytes();
-    out.extend((raw.len() as u64).to_be_bytes());
-    out.extend(raw);
-}
-
-/// Mirror of the Python canonical encoder used for protocol and proposal IDs.
-fn canonical(value: &Value, out: &mut Vec<u8>) {
-    match value {
-        Value::Null => out.push(b'n'),
-        Value::Bool(true) => out.push(b't'),
-        Value::Bool(false) => out.push(b'f'),
-        Value::Number(number) => push_str(out, &number.to_string()),
-        Value::String(text) => push_str(out, text),
-        Value::Array(items) => {
-            out.push(b'[');
-            out.extend((items.len() as u64).to_be_bytes());
-            for item in items {
-                canonical(item, out);
-            }
-        }
-        Value::Object(map) => {
-            let mut keys: Vec<&String> = map.keys().collect();
-            keys.sort();
-            out.push(b'{');
-            out.extend((keys.len() as u64).to_be_bytes());
-            for key in keys {
-                push_str(out, key);
-                canonical(&map[key], out);
-            }
-        }
-    }
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::load_model;
+    use crate::protocol::{load_model, Binding, PartyRole};
     use serde_json::json;
-    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn fixture_model() -> (IndexedModel, Binding, PathBuf) {
+    fn fixture() -> (IndexedModel, Binding) {
         let dir = std::env::temp_dir().join(format!(
-            "mcn-proposal-test-{}-{}",
+            "mcn-proposal-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .subsec_nanos()
         ));
         fs::create_dir_all(&dir).unwrap();
         let body = json!({
-            "meta": {"schema_version": "7.0.0", "protocol": "p", "complete": true, "documents": []},
-            "parties": [{"name": "client", "description": ""}, {"name": "server", "description": ""}],
-            "messages": [{"name": "hello", "associated_fields": []}],
-            "channels": [{"name": "c", "description": "", "transport": "tcp", "connection": "one",
-                          "endpoint_party_names": ["client", "server"], "initiator_party_name": null,
-                          "acceptor_party_name": null, "endpoint_sources": []}],
-            "steps": [{"id": "step-1", "name": "hello", "message_name": "hello",
-                       "channel_name": "c", "sender_name": "client", "receiver_name": "server",
-                       "condition": ""}],
+            "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": true, "documents": []},
+            "parties": [
+                {"name": "client", "description": "c"},
+                {"name": "server", "description": "s"},
+                {"name": "peer", "description": "p"}
+            ],
+            "messages": [
+                {"name": "hello", "associated_fields": []},
+                {"name": "bye", "associated_fields": []}
+            ],
+            "channels": [
+                {"name": "control", "description": "c", "transport": "TCP",
+                 "connection": "connection_oriented",
+                 "endpoint_party_names": ["client", "server"],
+                 "initiator_party_name": "client", "acceptor_party_name": "server",
+                 "endpoint_sources": []},
+                {"name": "data", "description": "d", "transport": "TCP",
+                 "connection": "connection_oriented",
+                 "endpoint_party_names": ["peer", "server"],
+                 "initiator_party_name": "peer", "acceptor_party_name": "server",
+                 "endpoint_sources": []}
+            ],
+            "steps": [
+                {"name": "hello", "action": "send", "message_name": "hello",
+                 "channel_name": "control", "sender_name": "client",
+                 "receiver_name": "server", "condition": "start"},
+                {"name": "listen_data", "action": "listen", "party_name": "peer",
+                 "channel_name": "data", "condition": "after hello"},
+                {"name": "bye", "action": "send", "message_name": "bye",
+                 "channel_name": "control", "sender_name": "client",
+                 "receiver_name": "server", "condition": "done"}
+            ],
             "step_dependencies": [],
             "unresolved": []
         });
@@ -291,169 +455,154 @@ mod tests {
         let model = load_model(&path).unwrap();
         let binding = Binding::new(
             [
-                ("client".to_string(), crate::protocol::PartyRole::Generator),
-                ("server".to_string(), crate::protocol::PartyRole::Sut),
+                ("client".into(), PartyRole::Generator),
+                ("server".into(), PartyRole::Sut),
+                ("peer".into(), PartyRole::Generator),
             ]
             .into_iter()
             .collect(),
         );
-        (model, binding, dir)
+        (model, binding)
     }
 
-    #[test]
-    fn proposal_id_matches_canonical_content_and_changes_with_constraints() {
-        let (model, binding, _dir) = fixture_model();
-        let step = &model.steps[0];
-        let mut proposal = Proposal {
-            version: 1,
-            proposal_id: String::new(),
-            origin: "autonomous".into(),
+    fn identity() -> ProposalIdentity {
+        ProposalIdentity {
             session: "s".into(),
             request_id: "r".into(),
             build: "b".into(),
             snapshot: "000001".into(),
-            protocol_id: model.protocol_id.clone(),
-            graph_revision: 0,
-            trace_id: TraceId::from_steps(std::slice::from_ref(step)).0,
-            goal: ProposalGoal {
-                handler_ids: vec![],
-                reason: "test".into(),
-            },
-            trace: vec![ProposalStep {
-                step_id: step.id().0,
-                handler_ids: vec![],
-                reason: "prefix".into(),
-                constraints: vec![],
-            }],
-            context: Value::Null,
-        };
-        proposal.proposal_id = proposal_id(&proposal).unwrap();
-        let identity = ProposalIdentity {
-            session: "s".into(),
-            request_id: "r".into(),
-            build: "b".into(),
-            snapshot: "000001".into(),
-            protocol_id: model.protocol_id.clone(),
-        };
+        }
+    }
+
+    fn base(model: &IndexedModel) -> Proposal {
+        let mut proposal = instantiate(model, &model.steps).unwrap();
+        proposal.origin = "coverage".into();
+        proposal.session = "s".into();
+        proposal.request_id = "r".into();
+        proposal.build = "b".into();
+        proposal.snapshot = "000001".into();
+        proposal.goal.reason = "reach auth".into();
+        proposal.goal.handler_ids = vec!["handle_hello".into()];
+        for item in &mut proposal.trace {
+            item.reason = format!("exercise {}", item.name);
+        }
         proposal
-            .validate(&model, &binding, &identity)
-            .expect("proposal validates");
-        proposal.trace[0].constraints.push("needs auth".into());
-        assert_ne!(proposal.proposal_id, proposal_id(&proposal).unwrap());
-    }
-    fn python_fixture() -> (IndexedModel, Binding, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "mcn-id-fixture-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .subsec_nanos()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        let body = serde_json::json!({
-            "meta": {"schema_version": "7.0.0", "protocol": "demo", "complete": true, "documents": []},
-            "parties": [{"name": "client", "description": "c"}, {"name": "server", "description": "s"}],
-            "messages": [{"name": "hello", "associated_fields": []}],
-            "channels": [{"name": "control", "description": "c", "transport": "TCP",
-                          "connection": "connection_oriented",
-                          "endpoint_party_names": ["client", "server"],
-                          "initiator_party_name": "client", "acceptor_party_name": "server",
-                          "endpoint_sources": []}],
-            "steps": [{"id": "step-001", "name": "hello", "message_name": "hello",
-                       "channel_name": "control", "sender_name": "client",
-                       "receiver_name": "server", "condition": "start"}],
-            "step_dependencies": [],
-            "unresolved": []
-        });
-        let path = dir.join("protocol.json");
-        fs::write(&path, body.to_string()).unwrap();
-        let model = load_model(&path).unwrap();
-        let binding = Binding::new(
-            [
-                ("client".to_string(), crate::protocol::PartyRole::Generator),
-                ("server".to_string(), crate::protocol::PartyRole::Sut),
-            ]
-            .into_iter()
-            .collect(),
-        );
-        (model, binding, dir)
     }
 
     #[test]
-    fn ids_match_the_python_service_encoding() {
-        let (model, _binding, _dir) = python_fixture();
-        assert_eq!(model.protocol_id, "3f0a168a");
-        assert_eq!(model.steps[0].id().0, "55f21230");
-        assert_eq!(
-            TraceId::from_steps(std::slice::from_ref(&model.steps[0])).0,
-            "d21f4f84"
-        );
+    fn repeated_instances_and_distinct_party_channels_validate() {
+        let (model, binding) = fixture();
+        let mut proposal = base(&model);
+        let first = proposal.trace[0].clone();
+        let mut second = first.clone();
+        second.name = "hello_again".into();
+        proposal.trace.insert(1, second);
+        proposal
+            .validate(&model, &binding, &identity())
+            .expect("repeated step instances");
+        let mut clients = proposal.clone();
+        clients.parties.insert("client_b".into(), "client".into());
+        clients
+            .channels
+            .get_mut("control")
+            .unwrap()
+            .endpoints
+            .push("client_b".into());
+        clients.trace[0].sender = Some("client_b".into());
+        clients
+            .validate(&model, &binding, &identity())
+            .expect("two client instances");
+    }
+
+    #[test]
+    fn illegal_endpoint_action_and_network_handler_ids_fail() {
+        let (model, binding) = fixture();
+        let mut proposal = base(&model);
+        proposal.trace[0].sender = Some("server_side".into());
+        proposal
+            .parties
+            .insert("server_side".into(), "server".into());
+        proposal
+            .channels
+            .get_mut("control")
+            .unwrap()
+            .endpoints
+            .push("server_side".into());
+        let error = proposal
+            .validate(&model, &binding, &identity())
+            .unwrap_err();
+        assert!(error.contains("endpoints"), "{error}");
+        let mut action = base(&model);
+        action.trace[1].action = "send".into();
+        let error = action.validate(&model, &binding, &identity()).unwrap_err();
+        assert!(error.contains("action"), "{error}");
+        let raw = json!({
+            "version": 2, "origin": "coverage", "session": "s", "request_id": "r",
+            "build": "b", "snapshot": "000001", "graph_revision": 0,
+            "goal": {"handler_ids": ["h"], "reason": "g"},
+            "parties": {"peer": "peer"},
+            "channels": {"data": {"channel": "data", "endpoints": ["peer"]}},
+            "trace": [{
+                "name": "listen_once", "step": "listen_data", "action": "listen",
+                "condition": "after hello", "message": null, "channel": "data",
+                "party": "peer", "reason": "listen", "constraints": [],
+                "handler_ids": ["h"]
+            }],
+            "mutations": []
+        });
+        let error = serde_json::from_value::<Proposal>(raw).unwrap_err();
+        assert!(error.to_string().contains("handler_ids"), "{error}");
+        let mut old = base(&model);
+        old.version = 1;
+        assert!(old.validate(&model, &binding, &identity()).is_err());
     }
 
     #[test]
     fn autonomous_proposal_allows_empty_build_and_snapshot() {
-        let (model, binding, _dir) = python_fixture();
-        let step = &model.steps[0];
-        let mut proposal = Proposal {
-            version: 1,
-            proposal_id: String::new(),
-            origin: "autonomous".into(),
-            session: "s".into(),
-            request_id: "r".into(),
+        let (model, binding) = fixture();
+        let mut proposal = base(&model);
+        proposal.origin = "autonomous".into();
+        proposal.goal.handler_ids.clear();
+        proposal.build.clear();
+        proposal.snapshot.clear();
+        let expected = ProposalIdentity {
             build: String::new(),
             snapshot: String::new(),
-            protocol_id: model.protocol_id.clone(),
-            graph_revision: 0,
-            trace_id: TraceId::from_steps(std::slice::from_ref(step)).0,
-            goal: ProposalGoal {
-                handler_ids: vec![],
-                reason: "bootstrap".into(),
-            },
-            trace: vec![ProposalStep {
-                step_id: step.id().0,
-                handler_ids: vec![],
-                reason: "target".into(),
-                constraints: vec![],
-            }],
-            context: Value::Null,
+            ..identity()
         };
-        proposal.proposal_id = proposal_id(&proposal).unwrap();
-        let identity = ProposalIdentity {
-            session: "s".into(),
-            request_id: "r".into(),
-            build: String::new(),
-            snapshot: String::new(),
-            protocol_id: model.protocol_id.clone(),
-        };
-        proposal.validate(&model, &binding, &identity).unwrap();
-        let mut wrong = proposal.clone();
-        wrong.request_id = "other".into();
-        assert!(wrong.validate(&model, &binding, &identity).is_err());
+        proposal.validate(&model, &binding, &expected).unwrap();
+        proposal.request_id = "other".into();
+        assert!(proposal.validate(&model, &binding, &expected).is_err());
     }
 
     #[test]
     fn mailbox_keeps_only_the_latest_proposal() {
         let mailbox = ProposalMailbox::default();
-        let make = |id: &str| {
-            let mut proposal: Proposal = serde_json::from_value(serde_json::json!({
-                "version": 1, "proposal_id": id, "origin": "autonomous", "session": "s",
-                "request_id": "r", "build": "", "snapshot": "", "protocol_id": "p",
-                "graph_revision": 0, "trace_id": "t", "goal": {"handler_ids": [], "reason": "g"},
-                "trace": [], "context": null
-            }))
-            .unwrap();
-            proposal.proposal_id = id.to_string();
-            AcceptedProposal {
-                proposal,
-                path: PathBuf::from(id),
-                sha256: String::new(),
-            }
+        let make = |id: &str| AcceptedProposal {
+            proposal: Proposal {
+                version: 2,
+                origin: "autonomous".into(),
+                session: "s".into(),
+                request_id: id.into(),
+                build: String::new(),
+                snapshot: String::new(),
+                graph_revision: 0,
+                goal: ProposalGoal {
+                    handler_ids: vec![],
+                    reason: "g".into(),
+                },
+                parties: BTreeMap::new(),
+                channels: BTreeMap::new(),
+                trace: vec![],
+                mutations: vec![],
+            },
+            path: PathBuf::from(id),
+            sha256: String::new(),
         };
         mailbox.replace(make("a"));
         mailbox.replace(make("b"));
-        assert_eq!(mailbox.peek().unwrap().id(), "b");
-        assert_eq!(mailbox.take().unwrap().id(), "b");
+        assert_eq!(mailbox.peek().unwrap().request_id(), "b");
+        assert_eq!(mailbox.take().unwrap().request_id(), "b");
         assert!(mailbox.take().is_none());
     }
 }

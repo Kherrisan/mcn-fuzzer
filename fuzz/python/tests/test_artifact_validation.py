@@ -25,7 +25,7 @@ class ArtifactValidationTests(unittest.TestCase):
         self.write_json("params.schema.json", {"type": "object"})
         self.write_json("params.json", {"values": [True, -1, "text", [2]]})
         self.write_json("result.draft.json", {
-            "request_id": "request-1", "protocol_id": "1234abcd", "trace_id": "5678efab",
+            "request_id": "request-1",
             "status": "ok", "added_steps": [],
         })
 
@@ -37,7 +37,7 @@ class ArtifactValidationTests(unittest.TestCase):
 
     def validate(self, **kwargs):
         return VALIDATOR["validate"](
-            self.root, "request-1", "1234abcd", "5678efab",
+            self.root, "request-1",
             self.root / "result.draft.json", **kwargs,
         )
 
@@ -45,7 +45,7 @@ class ArtifactValidationTests(unittest.TestCase):
         before = {p.name: p.read_bytes() for p in self.root.iterdir()}
         run = subprocess.run([
             sys.executable, str(SCRIPT), "--output-dir", str(self.root),
-            "--request-id", "request-1", "--protocol-id", "1234abcd", "--trace-id", "5678efab",
+            "--request-id", "request-1",
             "--result", str(self.root / "result.draft.json"),
             "--check-imports", "--pythonpath", str(PYTHON_ROOT),
         ], capture_output=True, text=True, timeout=10)
@@ -102,7 +102,7 @@ class ArtifactValidationTests(unittest.TestCase):
     def test_completion_ids_status_and_added_steps(self):
         base = json.loads((self.root / "result.draft.json").read_text())
         for key, value, error in [
-            ("trace_id", "different", "does not match"),
+            ("request_id", "different", "does not match"),
             ("status", "error", "synthesis failed"),
             ("added_steps", [1], "array of strings"),
         ]:

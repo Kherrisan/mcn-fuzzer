@@ -64,8 +64,7 @@ def _dispatch(state, message):
         return {"id": request_id, "ok": True, "result": result}
     if op == "commit_analysis":
         with state.lock:
-            result = state.commit_analysis(message["request_id"], message["proposal_id"],
-                                           message["proposal_sha256"])
+            result = state.commit_analysis(message["request_id"], message["proposal_sha256"])
         return {"id": request_id, "ok": True, "result": result}
     if op == "abort_analysis":
         with state.lock:
@@ -229,11 +228,13 @@ def _proposal_command(args):
         goal=draft.get("goal") or {},
         trace=draft.get("trace") or [],
         handlers=handlers,
+        parties=draft.get("parties") or {},
+        channels=draft.get("channels") or {},
+        mutations=draft.get("mutations") or [],
     )
     proposal_mod.validate_proposal(proposal, graph, handlers)
     proposal_mod.freeze(args.output, proposal)
-    print(json.dumps({"proposal_id": proposal["proposal_id"],
-                      "trace_id": proposal["trace_id"],
+    print(json.dumps({"request_id": proposal["request_id"],
                       "output": str(args.output)}))
 
 
@@ -245,8 +246,7 @@ def _validate_command(args):
         handlers = load_handlers(args.handlers)
     proposal = proposal_mod.read_proposal(args.proposal)
     proposal_mod.validate_proposal(proposal, graph, handlers)
-    print(json.dumps({"valid": True, "proposal_id": proposal["proposal_id"],
-                      "trace_id": proposal["trace_id"]}))
+    print(json.dumps({"valid": True, "request_id": proposal["request_id"]}))
 
 
 def main(argv=None):

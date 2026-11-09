@@ -74,8 +74,8 @@ def interactions(inventory, doc=None):
     del doc, inventory
     steps = [
         {
-            "id": "send-" + name,
             "name": "send " + name,
+            "action": "send",
             "message_name": name,
             "channel_name": "control",
             "sender_name": sender,

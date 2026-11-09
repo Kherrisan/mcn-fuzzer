@@ -83,7 +83,7 @@ below are relative to this SKILL.md, independent of the agent's working director
 
 Use [validate_generator.py](scripts/validate_generator.py) with the campaign
 Python. The generation prompt supplies its absolute path and a fully rendered
-command with OUTPUT_DIR, request/protocol/trace IDs and PYTHONPATH. Execute that
+command with OUTPUT_DIR, the request id and PYTHONPATH. Execute that
 command directly; do not recreate its syntax, schema or parameter checks.
 
 1. Finish generator.py, params.schema.json and params.json.

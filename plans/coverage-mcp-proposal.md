@@ -132,7 +132,6 @@
   "trace": [
     {
       "step_id": "8位step ID",
-      "handler_ids": ["该step对应的handler ID"],
       "reason": "目标探索或前缀/回复作用",
       "constraints": ["字段条件、状态条件或场景要求"]
     }

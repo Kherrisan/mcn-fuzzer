@@ -38,7 +38,7 @@ sudo ./target/release/mcn-fuzz run --campaign targets/lightftp/campaign.toml
 sudo ./target/release/mcn-fuzz replay --campaign targets/lightftp/campaign.toml --input targets/lightftp/corpus/<file>
 ```
 
-When LLVM source coverage is enabled in `[coverage]`, full JSON export is off by default. Add `--source-coverage-json` to save the detailed JSON in snapshots. Without the flag, the stage uses `llvm-cov export --summary-only` for coverage deltas and saves profdata snapshots and metadata. `[source_coverage]` is a configuration error; move that table to `[coverage]`. `analysis_enabled` is separate and requires collection. The private HC executable is `[agents].hc_executable` (default `hc`), not `protocol_generation.hc_executable`. Analysis output lives under `coverage.output/<build>/analysis/`. `targets/lightftp/build-coverage.sh --graphs` emits the forkserver coverage binary, bitcode, callgraph, CFG dots, and the four-field manifest in one build.
+When LLVM source coverage is enabled in `[coverage]`, full JSON export is off by default. Add `--source-coverage-json` to save the detailed JSON in snapshots. Without the flag, the stage uses `llvm-cov export --summary-only` for coverage deltas and saves profdata snapshots and metadata. `[source_coverage]` is a configuration error; move that table to `[coverage]`. `analysis_enabled` is separate and requires collection. The private HC executable is `[agents].hc_executable` (default `hc`), not `generator_synthesis.hc_executable`. Analysis output lives under `coverage.output/<build>/analysis/`. `targets/lightftp/build-coverage.sh --graphs` emits the forkserver coverage binary, bitcode, callgraph, CFG dots, and the four-field manifest in one build.
 
 Set `[campaign].timeout_secs` to stop the fuzz loop after a wall-clock duration. When present, it takes precedence over `[campaign].iterations`; the CLI `--iterations` option remains an explicit override. The deadline is checked between complete LibAFL iterations, so an iteration already in progress can finish before shutdown.
 
@@ -46,7 +46,17 @@ Set `[campaign].timeout_secs` to stop the fuzz loop after a wall-clock duration.
 
 `replay` reads the corpus input file. LibAFL also writes `.metadata` sidecars; those are not generator inputs.
 
-Optional `[protocol_generation]` synthesizes new `generate(ctx, params)` scripts from a schema 7.0.0 protocol model. It is off when the section is omitted. The `run` command is the only entry that starts a campaign-private HC core; replay, accept, and benchmark do not. The core starts when synthesis or coverage analysis is enabled, and both agents share it. Profiles live under `[agents.profiles.<name>]` with `provider` set to `codex`, `claude`, or `pi`. A failed synthesis task is recorded and existing corpus entries keep fuzzing.
+Optional `[generator_synthesis]` synthesizes new `generate(ctx, params)` scripts from a schema 8.0.0 protocol model. It is off when the section is omitted. The `run` command is the only entry that starts a campaign-private HC core; replay, accept, and benchmark do not. The core starts when synthesis or coverage analysis is enabled, and both agents share it. Profiles live under `[agents.profiles.<name>]` with `provider` set to `codex`, `claude`, or `pi`. A failed synthesis task is recorded and existing corpus entries keep fuzzing.
+
+`[generator_synthesis]` replaces the removed `[protocol_generation]` table; the
+old name is a configuration error with a migration hint, including when both
+tables appear. Optional `extra_files` lists read-only campaign files whose paths
+are resolved relative to the campaign TOML. Both synthesis prompts list their
+absolute paths and allow deployment facts such as accounts, permissions,
+certificates, and roots to come from them; protocol behavior still follows the
+proposal and RFCs. Missing, unreadable, or non-regular files fail context
+construction with a `generator_synthesis.extra_files[index]` error. The files are
+not copied into prompts and generators must not read them at testcase runtime.
 
 Fuzz-stage scheduling uses consecutive ordinary executions without newly occupied
 PCGUARD bitmap slots. Configure the positive threshold under `[campaign]`:
@@ -57,8 +67,10 @@ bitmap_stagnation_limit = 256
 ```
 
 New slots reset the streak; hitcount changes on known slots and the runtime marker
-at index 0 do not count as new coverage. Seeds and synthesized inputs update the
-bitmap baseline without increasing the streak, and invalid cases are ignored.
+at index 0 do not count as new coverage. Seeds update the bitmap baseline without
+increasing the streak, and invalid cases are ignored. A published synthesis
+generator is never evaluated as-is, so its initial parameters cannot enter the
+corpus.
 Once the threshold is reached, the trigger stays set until the current mutational
 stage finishes. Source coverage then runs at the end of that round; synthesis is
 requested at the start of the next round. While an agent task is in flight,
@@ -73,15 +85,20 @@ Agent initialization also runs in the background: campaigns with seeds load them
 and mutate while the agent prepares. Each synthesis-stage visit checks readiness;
 while initialization is pending it skips dispatch and retains the trigger for a
 later round. Initialization failures pause synthesis while ordinary fuzzing continues.
-Seedless campaigns wait for initialization and the first generated input because
-ordinary mutation requires a schedulable corpus.
+Seedless campaigns wait for initialization and the first synthesis input.
+Before the ordinary fuzzer loop starts, the same mutation stage is invoked
+directly while its FIFO is non-empty. It runs the baseline once without feedback,
+then applies the ordinary mutation/evaluation loop until a mutated child enters
+the corpus; the baseline itself is never added. The mutation stage is the only
+consumer of the FIFO, and the normal `synthesis → mutation → coverage replay →
+coverage analysis` order is unchanged once the corpus is schedulable.
 
-Round-based `interval` settings have been removed from `[protocol_generation]`
+Round-based `interval` settings have been removed from `[generator_synthesis]`
 and `[coverage]`; configuring them is an error. Initial and final
 source-coverage snapshots, and first-generator bootstrap when seeds are
 absent, still run as before. With seeds present, round 1 no longer starts an agent
 task automatically. Source coverage still requires `[coverage].enabled=true`
-and a coverage-built binary; synthesis requires `[protocol_generation].enabled=true`.
+and a coverage-built binary; synthesis requires `[generator_synthesis].enabled=true`.
 The shared agent runtime lives in `src/agents/worker.rs`. `AgentClient<I, T>` owns the command/outcome channels and background HC terminal. `AgentInit` supplies initialization checks and the ready artifact; `AgentTask` supplies request preparation and artifact acceptance. Both agents report `AgentOutcome` values, share session transitions/logging in `agents/session.rs`, and use `agents/artifacts.rs` for JSON reads, identity checks, and sealed tool inputs. Stages apply accepted results to LibAFL state at stage boundaries; the generic worker never accesses fuzz state.
 
 Coverage analysis uses the same `[coverage]` table and does not require synthesis. Both agents queue initialization together before seeds are loaded or source coverage is replayed. Each has a background HC worker, command/outcome channels, a persistent terminal, and at most one request in flight. Coverage source verification and handler extraction run in the background; the stage skips dispatch until initialization is ready. New snapshots replace the queued snapshot while a request is running. Completed snapshots are not dispatched again.
@@ -95,7 +112,7 @@ never reads campaign files on its own. Each coverage agent session gets
 `coverage_analysis.server stdio` bridge, so the user's Codex configuration is not
 modified. Set `[coverage].mcp_socket` to connect to a supervisor-provided service
 instead; `mcp_ready_timeout_secs` defaults to 30. PID 1 creates
-`coverage.output` and `protocol_generation.output` with campaign ownership before
+`coverage.output` and `generator_synthesis.output` with campaign ownership before
 either service starts, so the MCP working directory and HC state stay writable
 after privileges drop. The analysis profile must use `provider = "codex"`; a
 wrapper executable that ignores its argv cannot register the bridge, so the stage
@@ -139,6 +156,26 @@ proposal in a one-slot mailbox. `regions.json`, `priority-delta.json`,
 `protocol-refined.json`, the Rust exploration graph, and trace selection are no
 longer produced or maintained by Rust.
 
+Accepted generators are put into a FIFO in LibAFL state metadata instead of
+being evaluated. The ordinary mutation stage checks that FIFO before asking the
+scheduler: a non-empty queue supplies the input for this round, while an empty
+queue uses the normal scheduler/corpus testcase. For a queued synthesis input,
+the same mutation stage first runs its original initial parameters once as a
+baseline outside feedback, then applies the existing `GeneratorMutator` and
+ordinary mutation iterations/evaluation/feedback. The baseline is never added to
+the corpus. Only mutated inputs that pass normal feedback enter the corpus,
+where subsequent mutation rounds continue to evolve them. There is no separate
+candidate stage, no bypass mutation stage, and no temporary corpus insertion.
+
+The FIFO is persisted to `generator_synthesis.output/candidates.json` and
+restored on restart. It contains only pending inputs: taking one hands it to the
+mutation stage and immediately removes it from the file, so a restart cannot run
+its baseline twice. An old candidate-stage file is migrated when loaded: pending
+queue entries and an unbaselined active entry are preserved, while an already
+baselined active entry is dropped because its partial mutation state cannot be
+reconstructed. Novel children receive the proposal's `TraceOrigin` metadata
+before they are written back to the on-disk corpus.
+
 The synthesis stage consumes that proposal unchanged: it copies it to a new
 request directory and points the prompt at it instead of a receipt. Coverage
 mode never generates without a proposal. Autonomous mode (analysis disabled, or
@@ -177,9 +214,9 @@ behavior comes from the proposal and RFCs; public generator API/SDK references
 and static artifact validation remain available. Runtime replies, failures and
 coverage are evaluated by the fuzzer after publication.
 
-`WORKSPACE` is the agent's fixed working directory (`protocol_generation.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its proposal, `generator.py`, parameter schema, initial params, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root.
+`WORKSPACE` is the agent's fixed working directory (`generator_synthesis.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its proposal, `generator.py`, parameter schema, initial params, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root.
 
-When synthesis is enabled, `[parties]` and `protocol_generation.model` are required. A campaign that includes `[parties]` resolves those selectors against the model before cases start, even when synthesis is disabled. A missing model is an error. `sut` and `generator` are each a non-empty list of protocol party names or `"*"`. `"*"` means every model party not named by the other side. Parties in neither set stay unavailable. The removed `protocol_generation.bindings` table is a configuration error. The LightFTP campaign assigns the server parties to the SUT and the remaining parties to the generator.
+When synthesis is enabled, `[parties]` and `generator_synthesis.model` are required. A campaign that includes `[parties]` resolves those selectors against the model before cases start, even when synthesis is disabled. A missing model is an error. `sut` and `generator` are each a non-empty list of protocol party names or `"*"`. `"*"` means every model party not named by the other side. Parties in neither set stay unavailable. The removed `generator_synthesis.bindings` table is a configuration error. The LightFTP campaign assigns the server parties to the SUT and the remaining parties to the generator.
 
 
 
@@ -201,7 +238,7 @@ If the target reports a map larger than the campaign allocation, set `map_size` 
 
 `targets/openssl/build.sh` downloads OpenSSL 3.5.9, checks SHA256 `603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a`, and compiles `openssl`, `libssl`, and `libcrypto` with `afl-clang-fast`, `AFL_LLVM_INSTRUMENT=PCGUARD`, `AFL_LLVM_THREADSAFE_INST=1`, and `AFL_MAP_SIZE=1048576`. Configure uses `no-shared no-module no-asm no-tests`. The same script writes an unencrypted RSA 2048 certificate into `targets/openssl/build/fixture/`. That directory, the tree, and the private key are gitignored.
 
-A campaign that omits `args` still launches LightFTP with `["@CONFIG@"]` and writes `fftp.conf`. The OpenSSL campaign sets `args` to `s_server -accept 127.0.0.1:@PORT@ -cert @CERT@ -key @KEY@ -tls1_2 -www -naccept 1 -no_cache -no_ticket` and sets `extra_env` to `OPENSSL_CONF=@CONFIG@`. `@CONFIG@` is the `openssl.cnf` written under `workdir` on every case, and `s_server` loads that file. The campaign allocates a 1 MiB map. The handshake still rejects a target that needs a larger map. The generator sends one ClientHello on its own TCP connection. Do not add a readiness connection: `-naccept 1` would treat that probe as the case.
+A campaign can set `target.cleanup_script` to a shell script that prepares or resets `workdir` before startup and each case. The script runs with `workdir` as its current directory and receives `MCN_FUZZ_WORKDIR`, `MCN_FUZZ_HOST`, and `MCN_FUZZ_PORT`. LightFTP's script copies its certificate files and renders `fftp.conf`; OpenSSL's script copies its certificate and key. OpenSSL args use `@PORT@` for the chosen listener port. The campaign allocates a 1 MiB map. The handshake still rejects a target that needs a larger map. The generator sends one ClientHello on its own TCP connection. Do not add a readiness connection: `-naccept 1` would treat that probe as the case.
 
 ```sh
 bash targets/openssl/build.sh

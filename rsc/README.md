@@ -1,159 +1,112 @@
-# RSC — RFC 协议交互模型提取器
+# RSC RFC protocol extraction workflow
 
-输入调用者选择的同一协议版本的 RFC 集合，输出协议交互模型 protocol.json，供后续 generator 使用。根目录项目与 third-party 副本独立。详细流程、输入输出和验收边界见 [pipeline.md](docs/pipeline.md)。
+RSC reads a caller-selected RFC set and publishes a protocol interaction model. A persistent MCP service owns task state and gates; a Python supervisor uses Herdr Core to keep separate parser and reviewer Codex or Pi sessions alive and forward assignments between them.
 
-~~~bash
-cd rsc
-uv venv .venv
-uv pip install --python .venv/bin/python -e '.[dev]'
-source .venv/bin/activate
+## Install and run
 
-rsc ingest /path/to/selected-rfcs --recursive --out work/input
-rsc compile work/input --protocol 'FTP/RFC959' --out work/model --config config.json \
-  --objects-workers 8 --interactions-workers 4 --block-lists 8 --json
-rsc validate protocol work/model/protocol.json
-rsc stats work/model --validate --json
-~~~
+Requires Python 3.12+, `hc`, the selected agent CLI with native authentication, and local RFC TXT/HTML/XML files. Codex must support `--no-daemon`; Pi's requirements are listed below.
 
-调用者负责选择协议版本，编译器不会按 RFC 编号覆盖冲突描述。单份 RFC 是批次的特例。当前不生成 grammar、状态机或消息编解码器。
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/rsc doctor
+.venv/bin/rsc config check --config config.example.toml
+.venv/bin/rsc run --task-dir work/ftp --protocol 'FTP/RFC959+RFC3659' \
+  --rfc tests/fixtures/profuzzbench-rfc/FTP/rfc959.html \
+  --rfc tests/fixtures/profuzzbench-rfc/FTP/rfc3659.html \
+  --max-review-rounds 5 \
+  --config config.example.toml
+```
 
-## Agent 编译流程
+`tiktoken` downloads its `cl100k_base` data once. For an offline installation, populate its cache beforehand. Default batch target/max sizes are 8,000/12,000 tokens including batch metadata. Inputs are grouped by chapter; oversized blocks are split into exact Unicode text ranges. Every nonempty source range must occur once.
 
-所有 Agent 阶段直接返回 JSON，由 PydanticAI 和 RSC 程序校验并反馈错误。输出 schema 在指令中提供一份；工具列表仅保留 7 个检索工具，不提供候选预检或最终结果工具。
+Parser and reviewer default to the named `codex-luna-max` profile (`gpt-6-luna`, `max`). User configuration is TOML, parsed with `tomllib`. JSON configuration and old inline role settings are rejected. Protocol/MCP data and internal task metadata remain JSON.
 
-parse（ingest）→ objects → objects_link → objects_complete → interactions → interactions_link → interactions_complete → finalize。
+Profiles live under `[agents.profiles.NAME]`, with `provider`, `executable`, `model`, `effort`, `args`, and `envs`. Optional `agents.parser_profile` and `agents.reviewer_profile` override `agents.default_profile`. For each role: role CLI → common `--profile` → role config → default profile.
 
-准备阶段校验完整 batch、建立结构索引及固定 block list。每个列表有持续会话，从 objects 延续到 interactions；每个 block 的新增输入只有焦点正文和定位信息，工具调用、返回和结构化输出继续追加到历史。Agent 按需查询关键词、正文、父章节、邻居及已有对象，没有自动窗口或 inventory 注入。objects、interactions 同时返回关键词，不再单独调用关键词模型。
+```sh
+.venv/bin/rsc doctor --config config.example.toml --profile pi-deepseek-flash
+.venv/bin/rsc run --task-dir work/mixed --protocol Example --rfc example.txt \
+  --config config.example.toml --profile codex-luna-max \
+  --reviewer-profile pi-deepseek-flash
+```
 
-全局 link、complete 共用一个协调会话，调用串行；列表抽取仍并行。阶段间通过最新模型快照交接，不混合列表私有聊天历史。上下文接近容量时先清理旧原文和闭合工具回合，再用最新模型替换旧响应，必要时保留名称目录并通过工具读取完整定义。压缩不调用 LLM 总结。
+`envs = [["SSL_CERT_FILE", "/path/to/ca.pem"]]` adds literal overrides to the agent and MCP bridge. Duplicate names and overrides of RSC/HC task identity variables are rejected. Clients retain native provider configuration and authentication. For DeepSeek, inherit `DEEPSEEK_API_KEY` in the launching environment. `config check` prints profile/model/effort and environment names only; HC receives a private launch path, not environment values in argv.
 
-上下文足够时可以直接返回，不强制先搜索；修改已有定义仍要求完整定义已实际出现在有效历史中。目录不算完整定义。对象查询省略 top_k 或 lookup_object.limit 时采用 min(8, max_search_results)，来源检索还受单次 max_tool_blocks 限制；页大小必须是严格正整数。响应可省略空的 condition、field_relations、keywords、unresolved；最终协议 Schema 仍为 7.0.0。
+Pi requires Node 22.19+ and Pi 1.5.0+ with native MCP and OSC 7501. The acceptance baseline is `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.0`. Use `--prefix "$HOME/.local"` if the system prefix is not writable. The packaged extension registers a task/role namespace, restricts tools to RSC, verifies model/thinking selection, and restores complete results that native Pi otherwise truncates at 20 KiB. Restoration failure aborts the turn and leaves a fatal diagnostic that stops scheduling.
 
-link 先复核对象范围，将确认越界的条目写入内部 excluded 记录；其余成员按概念归组并合并。party 合并产生的无歧义名称映射只用于角色引用字段，信道按实际端点、底层传输和连接方向比较。channel 的旧候选值不作为不可修改的事实，link 可依据 RFC 纠正端点、建连方向和传输方式，并清理重复或无依据的端点来源；合并结果不重新套用旧 party 映射。有依据的实际连接差异继续保留，无法确认时保留原成员和 Issue。既有全局 party 名称映射的上下文问题另行改造。关系 link 先处理 step，再处理依赖。
+Tasks freeze role selections and definitions in `agent-profiles.json` (0600). A plain resume retains its saved selections and validates definitions. A changed profile requires a new task, including on `--retry-role`. Tasks without a profile snapshot cannot restart agents; their existing artifacts remain readable by `stats`, `validate` and `audit`.
 
-两处补全各默认最多 5 轮。编排状态用 tracking id 保持工作列表稳定，Issue 本身只有 description 和 object_names。每项读取最新候选并即时提交。零进展不会提前终止；新问题留到下一轮。已有对象修订按当前问题范围和完整定义读取记录确定替换目标；多个同名候选无法定位时返回问题，不追加同名副本。完整读取并定位的范围内 channel 可替换 endpoint_sources，删除重复或错误来源；普通抽取仍只允许追加补充。独立有效修改可保留，截断输出和未通过类型校验的片段不能作为有效结果。
+The old `rsc compile` pipeline and provider API settings have been removed. Migrate to the `workflow` and `agents` config in the example. `ingest`, `index`, `validate`, `stats` and schema inspection remain available.
 
-使用 --no-complete 或 compile.repair.enabled=false 可关闭两处 LLM 补全，保留抽取、link、基础 inventory 和最终校验。禁用时不构造 repair 模型，不生成 round 目录，报告 stop_reason=disabled。
+## Workflow and review limits
 
-## 模型配置与额度
+The server enforces `preprocess → parse → review → repair → review … → published` and binds each assignment to a role. Only the parser may edit the model. Only the reviewer may accept finding resolutions. Sources, batches and max review rounds are fixed for the task.
 
-[config.example.json](config.example.json) 提供完整配置模板。支持 Anthropic API 和 OpenAI-compatible API（包括支持工具调用的 GPT、DeepSeek 或本地服务）。编译使用 PydanticAI 的完整工具消息协议；纯文本旧客户端不能直接作为 Agent。
+`--max-review-rounds N` sets the maximum number of reviews, counting the first review. It overrides `workflow.max_review_rounds` in the config; the default is **5**, allowing up to four repairs and re-reviews. The limit is fixed when a task is created: a plain resume keeps its saved limit, and an explicitly different CLI value requires a new task directory. Resending a message or retrying a tool does not consume another round. The first review reads the entire source set and complete model. Subsequent reviews inspect the complete current model, revision diff, affected source batches and every submitted resolution.
 
-- --workers 默认 8，是对象/关系并发的回退值；全局 link、complete 串行。
-- --objects-workers、--interactions-workers 分别覆盖阶段配置，互不形成隐藏的总并发上限。
-- --block-lists 默认 8，控制固定来源划分，不随 workers 改变。
-- --context-limit-tokens 显式设置总上下文容量；否则使用模型元数据，容量未知时预检报错。
-- --context-compact-at、--context-compact-to 默认 0.8、0.5，控制触发与目标比例。
-- --objects-repair-max-rounds、--interactions-repair-max-rounds 覆盖各自轮数，必须为正整数。
-- compile.agent 控制每个 trial 的请求数、工具数、输出重试、时间和工具单次返回上限；重试保留历史并重新计数。
+Every record needs valid source evidence; all parsing batches and assigned review batches need reading receipts and reports. Schema, source hashes, unique step IDs, name references, connection roles and field carriers are hard gates. Reading receipts prove delivery, not semantic correctness.
 
-完整请求字节保护默认 16 MiB，与模型 token 容量分开；显式较低值继续生效。预算包含历史、指令、工具和输出 Schema，并预留输出及安全余量。link 的 64 KiB 只限制本组新增内容。内置 OpenAI/Anthropic SDK 发送前还核对最终正文；不可容纳的当前输入明确失败，不静默截断。
+If all findings are accepted and no genuine unresolved questions remain, publication sets `meta.complete=true`. Otherwise a structurally valid partial model has `meta.complete=false` and explicit `unresolved` entries. At the round limit, the last review must have actually completed and every hard gate must pass; the report marks `review_limit_reached`. Incomplete review, missing sources, invalid references or schema errors cannot produce a published model.
 
-模型覆盖键为 llm.stages.objects、interactions、repair、link_partition、link_merge，也可用 objects_repair、interactions_repair 等阶段限定键。compile.context 配置容量与压缩比例；阶段 request_limits.context_window_tokens 优先于全局容量。llm.cache_dir 相对于配置文件解析，逐请求缓存放在 agent-v6 子目录，缓存键包含真实有效历史；工具调用命中缓存后仍执行当前检索。
+## Sessions, recovery and inspection
 
-旧 compile.window、WindowOptions、三个窗口 CLI 参数和对应 Python 参数已删除。agent.max_context_blocks 改为单次工具返回数量 max_tool_blocks。Luna 示例显式使用 1,050,000 tokens；代理部署可覆盖。
+Each task has its own HC session with parser/reviewer terminal IDs recorded in `supervisor.json`. Normal handoffs use `hc send` to the original process, not `codex exec resume`. Agents finish their turn after each phase transition; the supervisor dispatches the next assignment only when the target is available. MCP assignment claims acknowledge delivery. An uncertain send is never blindly repeated.
 
-~~~bash
-rsc config check --config config.json
-rsc llm check --config config.json
-~~~
+Run the same `rsc run --task-dir ...` to reconnect to an existing task and terminals. A blocked, exited or prematurely idle agent stops scheduling with a diagnostic; task data is preserved for inspection. Supervisor restart does not reset the phase or review round. The task's HC environment is isolated under its state/config directories and `/tmp/rsc-hc-<task-id>`. Use those same `HC_SESSION`, `HC_SOCKET`, `XDG_RUNTIME_DIR`, `XDG_STATE_HOME` and `XDG_CONFIG_HOME` values to attach with `hc`. Do not stop another task's or the user's core.
 
-检查不发送模型请求；llm check 是客户端配置检查，不代表真实模型工具能力已经通过实测。
+After inspecting a failed agent, `rsc run --task-dir work/ftp --retry-role parser` explicitly replaces the active parser (or use `reviewer` when that role is active). It keeps the same assignment and round and retains the other agent. Repeated normal starts never silently replace an agent or resend an uncertain message. Task-local supervisor/service locks reject competing instances. A service restart removes a stale socket only when ownership matches and connecting is refused; an observation timeout is not evidence of process death. Resuming an already published task finishes any pending cleanup without starting new agents.
 
-## 模型与身份
+The MCP bridge normally exposes tools for the current phase and notifies clients of catalog changes. The supervisor selects `--catalog role` for Codex, which currently caches tool catalogs: this registers all schemas for the authenticated role up front. `workflow_status.allowed_tools` and per-call server checks still enforce the phase; registering a schema never authorizes its execution.
 
-顶层为 `meta`、`parties`、`messages`、`channels`、`steps`、`step_dependencies`、`unresolved`。party、message、associated field 和 channel 没有定义 ID，其他对象用协议 name 引用它们。角色不固定为 client/server。完整契约见 [protocol.schema.json](schemas/protocol.schema.json)。
+## Standalone service and MCP client
 
-- `parties`：名称和一句 description。
-- `messages`：名称和 associated fields。消息和字段都没有 description，也没有 identification 或信道列表。字段只保留 name。
-- `channels`：名称、一句 description、传输方式、端点角色和连接建立方向。`endpoint_sources` 只含 `party_name`、`parameter` 和短字符串 `from`。无连接信道的 initiator 与 acceptor 为 `null`。
-- `steps`：Python 分配 `id`，LLM 给出并持久保存 `name`。交互用 message、channel、sender 和 receiver 的 name 引用。没有 effects。
-- `step_dependencies`：没有 ID、强度或 alternative group。`prior_step` 和 `dependent_step` 是 step name。`condition` 是短条件，可以为空。`field_relations` 只含 `prior_field` 和 `dependent_field`，可以写成 `CSeq` 或 `SETUP.CSeq`；没有字段时列表为空。
-- `unresolved`：每条 Issue 只有 `description` 和 `object_names`。没有具体对象时 `object_names` 为 `[]`。
+`rsc run` creates the task. For programmatic initialization without agents:
 
-message 只表示实际交换的具体协议消息或协议明确规定的传输单元；不将抽象类别、命令组或字段组件单独作为消息。语法块中的产生式、表格中的分类名称，不自动构成消息。具体响应码只有在对应响应实际携带后续交互可能需要的 associated field 时，才单独作为消息类型；响应码本身及普通说明文字不构成细分依据。associated_fields 只保留跨消息关联、建连、分支及交互状态所需的信息，并且只挂在实际携带该字段的消息上；触发该消息的另一条消息不会因此获得该字段。
+```python
+from rsc.workflow import Workflow
 
-LLM 按 RFC 术语命名，并在上下文已有同一概念时复用该名称。Python 只校验结构和类型，不检查这些 name 是否存在、是否唯一、是否属于预期 message。名称未命中或多个候选不会拒绝输出，也不会因此触发补全。同名不表示同一概念，link 不会全局替换相同字符串。
+workflow = Workflow.create('work/example', ['rfc.txt'], 'Example protocol', max_review_rounds=5)
+workflow.db.close()
+```
 
-当前 protocol Schema 为 **7.0.0**。旧 1.x–6.x 模型需要从 RFC 重新编译，不自动迁移。
+Then run the service and attach a bridge with a role's credential file:
 
-`validate protocol` 校验 Schema、step ID 唯一性、无连接信道的结构约束，以及源文档快照校验和。它不把名称引用当成外键。语义是否准确仍需使用人工标注评估。
+```sh
+rsc serve --task-dir work/example
+rsc mcp --socket "$PWD/work/example/workflow.sock" \
+  --token-file "$PWD/work/example/parser.token"
+```
 
-## 输出与失败处理
+Role tokens are task-local files with mode 0600. Treat task directories as trusted local data: role enforcement applies to MCP calls, not arbitrary filesystem access by another process running as the same OS user. Agents are instructed to use MCP for source reads and all edits.
 
-| 产物 | 内容 |
-| --- | --- |
-| protocol.json | 最终通过校验的完整或部分模型 |
-| compile-report.json、unresolved.json | 阶段执行/请求计数、生效配置、对象数、退出状态及问题 |
-| sources/、block-lists.json | 来源文档、结构索引和固定列表划分 |
-| lists/、keyword-index.json、block-extractions.jsonl | 列表私有快照、关键词索引和不可回改的逐块产物 |
-| session-messages.jsonl、context-compactions.jsonl | 会话新增消息、阶段交接、压缩前后 token 及原因 |
-| retrieval-contexts.jsonl、model-requests.jsonl、model-responses.jsonl、tool-calls.jsonl | 真实交付材料、模型消息及工具轨迹 |
-| timings.jsonl、timing-summary.json | 阶段、焦点和 block 起止及分项耗时；日志写入时间与字节统计，正常取消时也保留 |
-| provider-requests.jsonl | 内置 provider 最终请求正文，不含认证头 |
-| user-messages.jsonl | 最终请求中的完整 user message，保留原文及结构，可通过 run_id/request_index 关联请求 |
-| objects-link/、interactions-link/ | 摘要、划分、排除/合并决策、角色名称及 step ID 映射、模型和问题 |
-| objects-repair/、interactions-repair/ | 补全模型、报告和逐轮工作列表、请求、决策及缺失历史 |
-| objects-repair/inventory.json | 已验证基础清单 |
+The 17 tools, phase gates and assignment flow are documented in [pipeline.md](docs/pipeline.md).
 
-移动模型时携带 sources/。Issue 只保留 description 和 object_names；运行阶段、轮次和调用错误写在编译日志里，不写进 Issue。
+## Artifacts and checks
 
-性能排查先看 `timings.jsonl`：`stage.*` 是阶段墙钟时间，`focus`、
-`block` 包括准备、历史管理、Agent、提交和持久化；关键词随抽取返回。模型响应另外区分
-`preparation_ms`、`provider_latency_ms` 与 `cache_overhead_ms`；Agent 记录包含
-`validation_ms`。`timing-summary.json` 汇总这些操作及各日志文件的写入开销。
-并发任务与父子操作的时间存在重叠，不能直接相加作为墙钟时间。
+The authoritative state is `workflow.sqlite`: current task/model, change history, findings, review decisions, assignments, and timed tool events. Source snapshots are frozen under `snapshots/`; the service validates them before transitions. Final outputs include:
 
-## Logfire 在线追踪
+- `protocol.json`: the existing version 7 protocol model; no internal record IDs or audit metadata added.
+- `sources.json`, `batches.json`, `coverage.json`: provenance and parsing/review records.
+- `review.json`, `changes.json`, `report.json`: findings and resolution history, model revisions, completed rounds and publication outcome.
+- `events.jsonl`, `phases.json`: tool calls (including rejected calls), call durations, phase durations and per-tool counts. Older task timings reconstructed from audit events are labelled `first_observed_tool`; new tasks use assignment creation time. These are MCP call counts, not model API request/token/cost measurements.
+- `supervisor.json`, `supervisor-events.jsonl`, service logs and task-specific HC state: process and dispatch diagnostics.
 
-RSC 已包含 Logfire 依赖。新启动的 Agent 默认开启正文采集
-（`InstrumentationSettings(include_content=True)`），记录输入消息、模型回复、
-工具参数与返回，以及调用耗时、用量、重试和异常。Agent 追踪附带
-`rsc.run_id`、`rsc.stage`、`rsc.phase`，可与本地 JSONL 关联。
+```sh
+rsc validate protocol work/ftp/protocol.json
+rsc stats work/ftp --validate --json
+rsc audit --task-dir work/ftp
+pytest
+```
 
-在当前环境完成 Logfire 项目登录，或设置 `LOGFIRE_TOKEN` 后，照常运行 compile。
-没有项目凭据时不交互式登录，也不向云端发送追踪。`LOGFIRE_SEND_TO_LOGFIRE=false`
-可显式关闭上传，`LOGFIRE_SERVICE_NAME` 可覆盖默认服务名 `rsc`。
-嵌入 Python 应用时保留调用者已配置的 OpenTelemetry provider。
+`audit` independently reconstructs frozen revisions and verifies publication, source receipts, complete model/diff delivery, review coverage, reviewer decisions and HC handoffs. It reports delivery and workflow evidence; semantic completeness still depends on extraction and independent review. Server tool-call totals include supervisor status checks and do not measure LLM requests or cost. Tool result pages target 8,000 tokens, contain at most 50 items and reject single results above 24,000 tokens; model records are capped at 8,000 tokens so large revisions can be reviewed across pages.
 
-本地完整请求日志继续保留。此接入不采集 HTTP 认证头；正文仍经过 Logfire 默认脱敏。
-已经运行的进程不会自动加载本次修改，需要在新的 compile 中生效。
+Live HC/Codex acceptance results and their limitations are recorded in [workflow-acceptance.md](docs/workflow-acceptance.md). Ordinary pytest runs do not start paid model sessions. The opt-in `scripts/verify_hc_recovery.py` exercises real agent replacement with a small RFC and a separate task directory.
 
---force 只替换编译器管理的产物，不清空请求缓存或无关顶层文件。非空输出目录默认禁止覆盖；输入与输出不能重叠。退出码为 0（完整）、1（部分或失败）、2（参数、批次、配置或输出路径错误）。部分结果标记 meta.complete=false；没有有效对象时不生成空模型。
+## Adapter acceptance
 
-Python 同步或异步入口：
+`agents/<role>/launch.json` and `mcp-launch.json` are private execution settings (0600). They contain explicit profile overrides, never copies of ambient API credentials. Pi logs delivery byte counts/hashes and model checks in `pi-events.jsonl`.
 
-~~~python
-from rsc import compile_protocol, compile_protocol_async
+Ordinary tests never start paid agents. The opt-in `PYTHONPATH=. .venv/bin/python scripts/verify_agent_providers.py --out runs/new-smoke --config config.example.toml` probes DeepSeek tool continuity, then runs Pi/Pi, Codex/Codex and Codex/Pi on a small RFC. It audits artifacts, checks credential persistence, and cleans only its private HC sessions. It reads the key from `DEEPSEEK_API_KEY` or a non-echoing prompt, never a key argument, and does not start FTP extraction.
 
-report = compile_protocol(
-    "work/input", "FTP/RFC959", "work/model",
-    config="config.json",
-    objects_workers=8,
-    interactions_workers=4,
-    repair_options={"enabled": False},
-    context_options={"max_tokens": 1050000, "compact_at": 0.8, "compact_to": 0.5},
-)
-~~~
-
-可注入 model_factory(stage, phase)，返回 PydanticAI Model；异步调用使用 await compile_protocol_async(...)。兼容 client_factory(stage) 仅接受 Model 或完整 as_pydantic_model() 适配器。输入和能力预检在模型请求之前完成。
-
-## 测试和离线检查
-
-~~~bash
-pytest -q
-ruff check rsc tests scripts
-python scripts/replay_repair.py work/model --out work/repair-preview
-~~~
-
-离线预览读取本版的 link 快照、逐块产物、关键词索引与来源，生成逐 Issue 工作列表及初始材料，不创建模型、不恢复执行，也不把初始 payload 大小冒充最终请求预算。
-
-保留 TXT/HTML/XML、28 份 RFC、结构索引、FTP/RTSP 标注与图约束回归。删除 task 分组、窗口、独立关键词调用和其他废弃功能的专用测试；有效的预算、延期、失败、范围与交付检查迁移到会话接口。测试边界见 [pipeline.md](docs/pipeline.md#8-验收与测试清理)。
-
-[FTP](tests/fixtures/protocol/ftp.json) 与 [RTSP](tests/fixtures/protocol/rtsp.json) 标注是验收子集。真实模型结果可用以下命令辅助人工核对：
-
-~~~bash
-python scripts/evaluate_protocol.py work/model/protocol.json --gold tests/fixtures/protocol/ftp.json
-~~~
-
-工具严格比较结构与文字，同义表达可能漏匹配；Mock 测试通过不能证明语义准确率。自动化测试不调用付费模型。旧 units.jsonl、protocol 1.0.0 和旧 task 产物不迁移，需重新解析、编译。保留 index、doctor、schemas、配置检查和 validate/stats。
+Provider installation and live matrix results: [agent-profiles-acceptance.md](docs/agent-profiles-acceptance.md).

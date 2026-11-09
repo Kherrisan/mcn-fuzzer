@@ -367,6 +367,26 @@
           "title": "The Transport Layer Security (TLS) Protocol"
         },
         {
+          "rfc": "RFC 6066",
+          "number": 6066,
+          "file": "TLS/rfc6066.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc6066.html",
+          "bytes": 67360,
+          "sha256": "b402c07d6804284d65b8dd7cc2c91c429ed486be06531665b0cf2c0980ff50d4",
+          "title": "Transport Layer Security (TLS) Extensions: Extension Definitions"
+        },
+        {
+          "rfc": "RFC 7301",
+          "number": 7301,
+          "file": "TLS/rfc7301.html",
+          "format": "html",
+          "url": "https://www.rfc-editor.org/rfc/rfc7301.html",
+          "bytes": 21958,
+          "sha256": "83eb55d22fa80cf5a7463c00934099c6590fd97a403247e419917021faa4617f",
+          "title": "The Application-Layer Protocol Negotiation (ALPN) Extension"
+        },
+        {
           "rfc": "RFC 8446",
           "number": 8446,
           "file": "TLS/rfc8446.html",

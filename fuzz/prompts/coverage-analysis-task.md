@@ -13,12 +13,32 @@ BINARY={{ binary }}
 MODEL={{ model }}
 CATALOG={{ catalog }}
 HANDLERS={{ handlers }}
-PROTOCOL={{ protocol_id }}
 SOURCE_DIR={{ source_dir }}
+SUT_STDOUT_LOG={{ sut_stdout_log }}
+SUT_STDERR_LOG={{ sut_stderr_log }}
 
 The fuzzer already replayed this frozen snapshot and exported coverage JSON. Do
 not re-run coverage, call a measurement command, or open the full coverage JSON
 or CFG files directly. Use the MCP tools; they parse and page the data.
+
+## SUT replay output
+
+SUT_STDOUT_LOG and SUT_STDERR_LOG point at the frozen snapshot's cumulative
+stdout and stderr logs from the coverage replay runs up to this snapshot. They
+are required for this snapshot and are always present for snapshots published
+by this fuzzer.
+Each case is delimited by single-line markers:
+
+`=== MCN_REPLAY {"event":"case_start",...} ===` and the matching `case_end`
+with `case_id` and `outcome`; `batch_start`/`batch_end` delimit replay attempts.
+Output from failed attempts remains in the cumulative file, so a case marker
+without a corresponding snapshot entry can still explain a failed replay.
+
+Use the file tools to search for errors, case IDs, or protocol keywords and read
+bounded ranges around them. Do not dump the whole cumulative log into the
+conversation. Absence of output does not prove that a handler or path did not
+execute; combine the log with coverage, source, handlers, and protocol
+dependencies.
 
 ## Load the request
 
@@ -52,14 +72,15 @@ justifies it.
    for the conditions that block progress.
 5. `get_reaching_handlers` and `get_step_dependencies` — find which messages can
    reach a function and which prerequisites the model already knows.
-6. `get_protocol_steps` — obtain canonical 8-character step IDs. Only these IDs
-   are accepted in the proposal; do not invent IDs or use step names.
+6. `get_protocol_steps` — obtain exact step names. Only these names are accepted
+   in the proposal; do not invent names or use any digest.
 
 Use protocol dependencies, sender/receiver roles, and source conditions to build
 one coherent trace: the goal handler's own inbound step(s) plus the smallest set
-of prerequisite and reply steps that make the interaction meaningful. A step may
-carry several handlers; a prefix, environment, or reply step may carry none but
-must have a reason. Do not add a dependency that the evidence does not support.
+of prerequisite and reply steps that make the interaction meaningful. The service
+derives message-to-handler associations from the loaded handler mapping; do not
+include handler IDs on trace steps. A prefix, environment, or reply step must
+still have a reason. Do not add a dependency that the evidence does not support.
 
 Optional graph edits in this transaction (they are committed only if Rust accepts
 the proposal):
@@ -70,32 +91,51 @@ the proposal):
 
 ## Propose
 
-Call `submit_proposal` with:
+Call `submit_proposal` with parties, channels, an ordered trace of step
+instances, and mutations. Instance names are semantic and stay stable if you
+reorder the trace. `step` is the model step name. Channel endpoints are party
+instance names. Repeat a model step by adding another instance with its own
+name. Do not put handler ids on a trace item.
 
 {"request_id": "REQUEST",
  "origin": "coverage",
- "goal": {"handler_ids": ["handler id from show_handler_code_coverage"],
+ "goal": {"handler_ids": ["handler name from show_handler_code_coverage"],
           "reason": "which handler/internal path to reach and the coverage evidence"},
- "trace": [{"step_id": "8-char id from get_protocol_steps",
-            "handler_ids": ["handler ids associated with this step's message"],
+ "parties": {"client_1": "client", "server_1": "server"},
+ "channels": {"control_1": {"channel": "control", "endpoints": ["client_1", "server_1"]}},
+ "trace": [{"name": "login_first", "step": "exact step name", "channel": "control_1",
+            "sender": "client_1", "receiver": "server_1",
             "reason": "target exploration or prefix/reply role",
-            "constraints": ["field/state conditions"]}]}
+            "constraints": ["field/state conditions"]}],
+ "mutations": [
+   {"op": "field", "steps": ["login_first"], "field": "username",
+    "suggestion": "explore empty and length boundaries", "evidence": "src/auth.c:120"},
+   {"op": "duplicate", "steps": "[login_first:login_first]", "count_param": "login_repeats"}]}
 
-The service validates step IDs, handler associations, trace identity, and freezes
-proposal.json. `submit_proposal` returns the proposal_id and trace_id; use those
-exact values below. If no defensible proposal exists, do not submit one.
+`steps` is either an array of instance names or `"[start:end]"`, including both
+ends. Whitespace around the colon is allowed. A field mutation applies to the
+selected send instances and may name a field the model does not list; give the
+field name, a suggestion, and a source location. A duplicate array repeats each
+selected instance in place. A duplicate range repeats that whole block after
+the original range. `count_param` is the extra-copy count. Do not overlap
+duplicate selections or declare the same field twice on one instance. Field and
+duplicate may name the same instance. Instance names must not contain `:[]`.
+
+The service fills action, condition, and message, checks endpoints and campaign
+party binding, and freezes proposal.json for this request. If no defensible
+proposal exists, do not submit one.
 
 ## Result
 
 Write OUTPUT_DIR/result.json atomically. Identity fields must match the request
-exactly; `proposal_id` and `trace_id` are required for status "ok".
+exactly. Do not include a protocol, proposal, or trace digest.
 
 Success:
-{"request_id":"REQUEST","session":"SESSION","build":"BUILD","snapshot":"SNAPSHOT","protocol_id":"PROTOCOL","proposal_id":"...","trace_id":"...","status":"ok"}
+{"request_id":"REQUEST","session":"SESSION","build":"BUILD","snapshot":"SNAPSHOT","status":"ok"}
 
 No proposal or failure:
-{"request_id":"REQUEST","session":"SESSION","build":"BUILD","snapshot":"SNAPSHOT","protocol_id":"PROTOCOL","status":"no_proposal","error":"source-backed reason"}
-{"request_id":"REQUEST","session":"SESSION","build":"BUILD","snapshot":"SNAPSHOT","protocol_id":"PROTOCOL","status":"error","error":"specific reason"}
+{"request_id":"REQUEST","session":"SESSION","build":"BUILD","snapshot":"SNAPSHOT","status":"no_proposal","error":"source-backed reason"}
+{"request_id":"REQUEST","session":"SESSION","build":"BUILD","snapshot":"SNAPSHOT","status":"error","error":"specific reason"}
 
 Publish result.json only after submit_proposal succeeds (status ok) or after
 deciding there is no proposal. That publication ends the task. Do not edit
