@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from itertools import groupby
 from pathlib import Path
 
 import tiktoken
@@ -29,63 +30,95 @@ def token_count(batch: dict) -> int:
 def build_batches(documents: dict, target: int = 8000, maximum: int = 12000) -> list[dict]:
     if not 128 <= target <= maximum:
         raise ValueError("batch tokens must satisfy 128 <= target <= maximum")
-    batches: list[dict] = []
-    current: dict | None = None
-
-    def flush():
-        nonlocal current
-        if current and current["segments"]:
-            current["batch_id"] = f"batch-{len(batches) + 1:05d}"
-            batches.append(current)
-        current = None
+    batches = []
 
     for doc_id, document in documents.items():
-        for block in sorted(document["blocks"], key=lambda b: b["order"]):
-            text = block["text"]
-            if not text.strip():
-                continue
-            section = block["section_path"][:1]
+
+        def make_batch(segments, doc_id=doc_id):
+            path = list(segments[0]["section_path"])
+            for segment in segments[1:]:
+                while path and segment["section_path"][: len(path)] != path:
+                    path.pop()
+            return {
+                "batch_id": "batch-00000",
+                "doc_id": doc_id,
+                "section_path": path,
+                "segments": segments,
+            }
+
+        def fits(segments):
+            return token_count(make_batch(segments)) <= maximum
+
+        def pack(units):
+            """Combine adjacent whole units without splitting their chapter boundaries."""
+            current = []
+            for unit in units:
+                if current and not fits(current + unit):
+                    yield current
+                    current = []
+                current += unit
+                if token_count(make_batch(current)) >= target:
+                    yield current
+                    current = []
+            if current:
+                yield current
+
+        def split_block(segment):
+            text = segment["text"]
             offset = 0
             while offset < len(text):
-                if current is None:
-                    current = {
-                        "batch_id": "batch-00000",
-                        "doc_id": doc_id,
-                        "section_path": section,
-                        "segments": [],
-                    }
-                if current["doc_id"] != doc_id or current["section_path"] != section:
-                    flush()
-                    continue
-                segment = {
-                    "block_id": block["block_id"],
-                    "start": offset,
-                    "end": len(text),
-                    "text": text[offset:],
-                    "section_path": block["section_path"],
-                }
-                candidate = {**current, "segments": current["segments"] + [segment]}
-                if token_count(candidate) > maximum:
-                    if current["segments"]:
-                        flush()
-                        continue
-                    # Split at Unicode character boundaries, never decoded token boundaries.
-                    lo, hi = offset, len(text)
-                    while lo < hi:
-                        mid = (lo + hi + 1) // 2
-                        part = {**segment, "end": mid, "text": text[offset:mid]}
-                        if token_count({**current, "segments": [part]}) <= maximum:
-                            lo = mid
-                        else:
-                            hi = mid - 1
-                    if lo == offset:
-                        raise ValueError("batch metadata alone exceeds token maximum")
-                    segment = {**segment, "end": lo, "text": text[offset:lo]}
-                current["segments"].append(segment)
-                offset = segment["end"]
-                if token_count(current) >= target:
-                    flush()
-    flush()
+                lo, hi = offset, len(text)
+                while lo < hi:
+                    mid = (lo + hi + 1) // 2
+                    part = {**segment, "start": offset, "end": mid, "text": text[offset:mid]}
+                    if fits([part]):
+                        lo = mid
+                    else:
+                        hi = mid - 1
+                if lo == offset:
+                    raise ValueError("batch metadata alone exceeds token maximum")
+                yield [{**segment, "start": offset, "end": lo, "text": text[offset:lo]}]
+                offset = lo
+
+        def split_section(segments, depth):
+            if fits(segments):
+                yield segments
+                return
+            if any(len(s["section_path"]) > depth for s in segments):
+                units = (
+                    unit
+                    for _, group in groupby(
+                        segments, key=lambda s: tuple(s["section_path"][: depth + 1])
+                    )
+                    for unit in split_section(list(group), depth + 1)
+                )
+            else:
+                units = (
+                    unit
+                    for segment in segments
+                    for unit in ([[segment]] if fits([segment]) else split_block(segment))
+                )
+            yield from pack(units)
+
+        blocks = sorted(document["blocks"], key=lambda b: b["order"])
+        segments = [
+            {
+                "block_id": block["block_id"],
+                "start": 0,
+                "end": len(block["text"]),
+                "text": block["text"],
+                "section_path": block["section_path"],
+            }
+            for block in blocks
+            if block["text"].strip()
+        ]
+        for _, chapter in groupby(segments, key=lambda s: tuple(s["section_path"][:1])):
+            for unit in split_section(list(chapter), 1):
+                batch = make_batch(unit)
+                batch["batch_id"] = f"batch-{len(batches) + 1:05d}"
+                batches.append(batch)
+    if not batches:
+        raise ValueError("no source text")
     validate_batches(documents, batches, maximum)
     return batches
 
