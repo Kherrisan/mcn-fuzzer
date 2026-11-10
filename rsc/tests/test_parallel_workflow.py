@@ -7,6 +7,8 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from rsc.workflow import Workflow, WorkflowError
+from rsc.workflow.audit import audit_run
+from rsc.workflow.review import review_errors
 from rsc.workflow.tools import CONTRACTS, schema, validate_arguments
 
 
@@ -148,6 +150,9 @@ def test_parallel_parse_merge_and_independent_review_publish(run):
         "parser-1",
         "parser-2",
     }
+    before = (run.root / "workflow.sqlite").stat().st_mtime_ns
+    assert audit_run(run.root)["verified"]
+    assert (run.root / "workflow.sqlite").stat().st_mtime_ns == before
 
 
 def test_thirteen_tools_coordinator_privileges_and_no_legacy_entrypoints(run):
@@ -201,6 +206,119 @@ def test_reports_cannot_replace_model_delivery_or_independent_comparison(run):
         call(
             run, "reviewer-1", "apply_changes", expected_revision=1, operation_id="bad", changes=[]
         )
+
+
+def test_sealed_pages_keep_the_same_drafts_as_other_workers_finish(run):
+    claim(run, "parser-1")
+    first = call(run, "parser-1", "query_model", view="sealed")
+    assert first["items"] == []
+    parse(run, "parser-2")
+    resumed = Workflow(run.root)
+    pinned = call(
+        resumed,
+        "parser-1",
+        "query_model",
+        view="sealed",
+        revision=0,
+        view_revision=first["view_revision"],
+    )
+    fresh = call(resumed, "parser-1", "query_model", view="sealed")
+    resumed.db.close()
+    assert pinned["items"] == []
+    assert len(fresh["items"]) == 1
+    assert fresh["items"][0]["scope"] == "parse-0/parser-2"
+    assert fresh["view_revision"] > first["view_revision"]
+    with pytest.raises(WorkflowError, match="view_revision"):
+        call(run, "parser-1", "query_model", view="sealed", cursor=1, revision=0)
+
+
+def test_merge_aliases_and_deleted_report_associations_are_atomic_and_auditable(run):
+    parse(run, "parser-1")
+    parse(run, "parser-2")
+    originals = [tuple(row) for row in run.db.execute("SELECT * FROM reports")]
+    advance(run)
+    claim(run, "parser-1")
+    sources = read(run, "parser-1")
+    citation = next(iter(sources.values()))["batch"]["segments"][0]["citation"]
+    changes = [
+        {
+            "op": "rename",
+            "source": {"scope": "parse-0/parser-2", **CLIENT},
+            "name": "endpoint",
+            "evidence": [citation],
+        }
+    ]
+    result = call(
+        run,
+        "parser-1",
+        "apply_changes",
+        expected_revision=0,
+        operation_id="rename",
+        changes=changes,
+    )
+    assert (
+        call(
+            run,
+            "parser-1",
+            "apply_changes",
+            expected_revision=0,
+            operation_id="rename",
+            changes=changes,
+        )
+        == result
+    )
+    reports = call(run, "parser-1", "query_model", view="reports")["items"]
+    assert len(reports) == 2
+    assert all(
+        report["associations"][0]["final"]["target"]["name"] == "endpoint" for report in reports
+    )
+    # The original alias still selects the renamed candidate in a later transaction.
+    call(
+        run,
+        "parser-1",
+        "apply_changes",
+        expected_revision=1,
+        operation_id="rename-again",
+        changes=[{**changes[0], "name": "peer"}],
+    )
+    scope = call(run, "parser-1", "query_model")["items"][0]["scope"]
+    call(
+        run,
+        "parser-1",
+        "apply_changes",
+        expected_revision=2,
+        operation_id="replace",
+        changes=[
+            {
+                "op": "delete",
+                "scope": scope,
+                "kind": "parties",
+                "target": {"name": "peer"},
+                "reason": "Role is not independently required by the final model",
+            },
+            {
+                "op": "add",
+                "scope": "merge-0/parser-1",
+                "kind": "messages",
+                "value": {"name": "HELLO", "associated_fields": []},
+                "evidence": [citation],
+            },
+        ],
+    )
+    reports = call(run, "parser-1", "query_model", view="reports")["items"]
+    assert all(report["associations"][0]["final"] is None for report in reports)
+    assert all(report["associations"][0]["removed_by"]["revision"] == 3 for report in reports)
+    assert [tuple(row) for row in run.db.execute("SELECT * FROM reports")] == originals
+    call(run, "parser-1", "advance_phase")
+    advance(run)
+    for a in run.store.assignments():
+        if a["phase"] == "review":
+            report_review(run, a["worker"])
+            with pytest.raises(WorkflowError, match="only available during merge"):
+                call(run, a["worker"], "query_model", view="reports")
+            call(run, a["worker"], "advance_phase")
+    advance(run)
+    assert audit_run(run.root)["verified"]
 
 
 def test_missing_message_can_be_fixed_but_only_reviewer_accepts(run):
@@ -272,6 +390,28 @@ def test_missing_message_can_be_fixed_but_only_reviewer_accepts(run):
     call(run, "parser-1", "advance_phase")
     advance(run)
     assert run.data["phase"] == "review" and run.data["round"] == 2
+    carried = run.store.assignment("review-2/reviewer-2")
+    assert carried["status"] == "submitted"
+    assert not run.db.execute(
+        "SELECT 1 FROM receipts WHERE assignment=?", (carried["name"],)
+    ).fetchone()
+    assert not review_errors(run.store, carried, run.snapshot())
+    # Restarting does not manufacture a new read or change the carried provenance.
+    reopened = Workflow(run.root)
+    assert not review_errors(reopened.store, carried, reopened.snapshot())
+    reopened.db.close()
+    old = run.db.execute(
+        "SELECT * FROM receipts WHERE assignment='review-1/reviewer-2' AND batch=?",
+        (carried["batches"][0],),
+    ).fetchone()
+    run.db.execute(
+        "DELETE FROM receipts WHERE assignment=? AND attempt=? AND batch=?", tuple(old[:3])
+    )
+    assert any(
+        "source was not fully delivered" in error
+        for error in review_errors(run.store, carried, run.snapshot())
+    )
+    run.db.execute("INSERT INTO receipts VALUES (?, ?, ?, ?)", tuple(old))
     for a in run.store.assignments():
         if a["phase"] == "review" and a["round"] == 2 and a["status"] != "submitted":
             report_review(run, a["worker"])
@@ -296,3 +436,32 @@ def test_missing_message_can_be_fixed_but_only_reviewer_accepts(run):
     advance(run)
     assert run.publication_model()["meta"]["complete"]
     assert run.findings()[name]["history"][-1]["reviewer"] == "reviewer-1"
+    assert audit_run(run.root)["reviews"][-1]["carried"] == 1
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "DELETE FROM history WHERE revision=0",
+        "DELETE FROM operations",
+        "DELETE FROM receipts WHERE assignment LIKE 'parse-%'",
+        "DELETE FROM receipts WHERE assignment LIKE 'review-%'",
+        "DELETE FROM deliveries WHERE family='model'",
+        "DELETE FROM conclusions",
+        "UPDATE assignments SET body=json_set(body,'$.checks',json('[]')) WHERE phase='review'",
+        "UPDATE snapshots SET body=json_set(body,'$.name_map',json('[]'))",
+        'UPDATE reports SET body=json_set(body,\'$.objects\',json(\'[{"kind":"parties",'
+        '"target":{"name":"invented"}}]\')) WHERE phase=\'parse\'',
+    ],
+)
+def test_parallel_audit_rejects_missing_or_changed_evidence(run, sql):
+    merged(run)
+    for a in run.store.assignments():
+        if a["phase"] == "review":
+            report_review(run, a["worker"])
+            call(run, a["worker"], "advance_phase")
+    advance(run)
+    assert audit_run(run.root)["verified"]
+    run.db.execute(sql)
+    with pytest.raises(ValueError):
+        audit_run(run.root)

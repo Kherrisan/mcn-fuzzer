@@ -157,6 +157,9 @@ def fit_page(rows, cursor, max_tokens, revision, build):
     def finish(items):
         return finish_at(items, budget)
 
+    if cursor == len(rows) and finish([])["tokens"] > budget:
+        needed = minimum_budget(lambda candidate: finish_at([], candidate))
+        raise PageError(f"page metadata requires {needed} tokens; budget is {budget}")
     chosen: list = []
     for row in rows[cursor:]:
         payload = finish([*chosen, row])
@@ -171,7 +174,7 @@ def fit_page(rows, cursor, max_tokens, revision, build):
     return finish(chosen)
 
 
-def records_page(rows, cursor, max_tokens, revision):
+def records_page(rows, cursor, max_tokens, revision, *, metadata=None):
     def build(items, nxt, rev, budget):
         return {
             "format": "records",
@@ -179,6 +182,7 @@ def records_page(rows, cursor, max_tokens, revision):
             "next_cursor": nxt,
             "revision": rev,
             "max_tokens": budget,
+            **(metadata or {}),
         }
 
     return fit_page(rows, cursor, max_tokens, revision, build)

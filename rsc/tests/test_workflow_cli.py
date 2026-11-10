@@ -13,7 +13,7 @@ def test_review_limit_precedence_and_resume(tmp_path, monkeypatch, configured, o
     launches = []
 
     class Runner:
-        def __init__(self, root, socket, config, hc, retry_role=None):
+        def __init__(self, root, socket, config, hc, retry_worker=None):
             launches.append(config)
 
         def run(self):

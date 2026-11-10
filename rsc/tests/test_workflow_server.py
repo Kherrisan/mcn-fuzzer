@@ -8,22 +8,32 @@ import threading
 from pathlib import Path
 
 import pytest
+import test_parallel_workflow as h
 
 from rsc.workflow import Workflow, WorkflowError
 from rsc.workflow.server import TaskServer, request
 
 
+def prepared(tmp_path):
+    source = tmp_path / "rfc9999.txt"
+    source.write_text("RFC 9999\n\n1. Role\n\nThe client sends HELLO.\n")
+    w = Workflow.create(tmp_path / "task", [source], "Example", parse_workers=1)
+    h.call(w, "coordinator", "prepare_sources")
+    h.advance(w)
+    return w
+
+
 def test_socket_auth_and_phase_tools(tmp_path):
-    w = Workflow.create(tmp_path / "task", [], "Example")
+    w = prepared(tmp_path)
     socket = tmp_path / "service.sock"
-    parser = (w.root / "parser.token").read_text()
-    reviewer = (w.root / "reviewer.token").read_text()
+    parser = (w.root / "parser-1.token").read_text()
+    reviewer = parser
     with TaskServer(socket, w) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
             tools = request(socket, {"token": reviewer, "op": "list"})
-            assert [t["name"] for t in tools] == ["workflow_status"]
+            assert [t["name"] for t in tools] == ["claim_assignment"]
             with pytest.raises(WorkflowError, match="credential"):
                 request(socket, {"token": "bad", "op": "list"})
             with pytest.raises(WorkflowError, match="forbidden"):
@@ -34,7 +44,7 @@ def test_socket_auth_and_phase_tools(tmp_path):
                     {
                         "token": parser,
                         "op": "call",
-                        "name": "advance_phase",
+                        "name": "claim_assignment",
                         "arguments": {"phase": "published"},
                     },
                 )
@@ -44,7 +54,7 @@ def test_socket_auth_and_phase_tools(tmp_path):
 
 
 def test_stdio_bridge(tmp_path):
-    w = Workflow.create(tmp_path / "task", [], "Example")
+    w = prepared(tmp_path)
     socket = tmp_path / "mcp.sock"
     with TaskServer(socket, w) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -68,7 +78,7 @@ def test_stdio_bridge(tmp_path):
         )
         try:
             result = subprocess.run(
-                [sys.executable, "-c", script, str(socket), str(w.root / "parser.token")],
+                [sys.executable, "-c", script, str(socket), str(w.root / "parser-1.token")],
                 input="".join(json.dumps(m) + "\n" for m in messages),
                 text=True,
                 capture_output=True,
@@ -79,7 +89,7 @@ def test_stdio_bridge(tmp_path):
             assert result.returncode == 0, result.stderr
             replies = {m["id"]: m for m in map(json.loads, result.stdout.splitlines()) if "id" in m}
             assert replies[1]["result"]["capabilities"]["tools"]["listChanged"]
-            assert "prepare_sources" in [t["name"] for t in replies[2]["result"]["tools"]]
+            assert [t["name"] for t in replies[2]["result"]["tools"]] == ["claim_assignment"]
             assert replies[3]["result"]["isError"]
             error = json.loads(replies[3]["result"]["content"][0]["text"])
             assert "forbidden" in error["error"]
@@ -90,9 +100,9 @@ def test_stdio_bridge(tmp_path):
 
 
 def test_cached_catalog_does_not_grant_future_phase_permissions(tmp_path):
-    w = Workflow.create(tmp_path / "task", [], "Example")
+    w = prepared(tmp_path)
     socket = tmp_path / "cached.sock"
-    token = (w.root / "parser.token").read_text()
+    token = (w.root / "parser-1.token").read_text()
     with TaskServer(socket, w) as server:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -122,9 +132,10 @@ def test_cached_catalog_does_not_grant_future_phase_permissions(tmp_path):
 def test_service_recovers_owned_stale_socket_and_rejects_duplicate_server(tmp_path):
     import time
 
-    w = Workflow.create(tmp_path / "task", [], "Recovery fixture")
+    w = prepared(tmp_path)
     socket = tmp_path / "recovery.sock"
-    token = (w.root / "parser.token").read_text()
+    token = (w.root / "coordinator.token").read_text()
+    worker_token = (w.root / "parser-1.token").read_text()
     argv = [
         sys.executable,
         "-m",
@@ -159,14 +170,14 @@ def test_service_recovers_owned_stale_socket_and_rejects_duplicate_server(tmp_pa
     first, status = start()
     current = first
     try:
-        dispatch = status["assignment"]["dispatch_id"]
+        assignment = status["assignments"][0]["name"]
         request(
             socket,
             {
-                "token": token,
+                "token": worker_token,
                 "op": "call",
                 "name": "claim_assignment",
-                "arguments": {"dispatch_id": dispatch},
+                "arguments": {"name": assignment, "attempt": 1},
             },
         )
         # A second service cannot acquire the task even with a different socket.
@@ -183,8 +194,8 @@ def test_service_recovers_owned_stale_socket_and_rejects_duplicate_server(tmp_pa
         first.wait(timeout=5)
         assert socket.exists()
         current, recovered = start()
-        assert recovered["assignment"]["dispatch_id"] == dispatch
-        assert recovered["assignment"]["claimed"] is True
+        assert recovered["assignments"][0]["name"] == assignment
+        assert recovered["assignments"][0]["status"] == "claimed"
         assert recovered["round"] == 0
     finally:
         if current.poll() is None:
@@ -213,7 +224,9 @@ def test_console_bootstraps_service_without_pythonpath_from_checkout_parent(tmp_
     hc.chmod(0o700)
     source = tmp_path / "rfc9999.txt"
     source.write_text("RFC 9999\n\n1. Test\n\nThe client sends HELLO.\n")
-    root = tmp_path / "task"
+    import tempfile
+
+    root = Path(tempfile.mkdtemp(prefix="boot-", dir=tmp_path))
     environment = os.environ.copy()
     environment.pop("PYTHONPATH", None)
     result = subprocess.run(

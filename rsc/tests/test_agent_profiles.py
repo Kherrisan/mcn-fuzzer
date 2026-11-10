@@ -171,10 +171,20 @@ def test_profile_args_cannot_override_frozen_identity(provider, args):
         ADAPTERS[provider].validate(profile)
 
 
-def test_capability_check_uses_profile_path_override(tmp_path):
+def test_capability_check_uses_profile_path_override(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
     executable = tmp_path / "fixture-agent"
-    executable.write_text(f'#!{sys.executable}\nprint("--no-daemon --model --config")\n')
+    shutil.copyfile("/bin/true", executable)
     executable.chmod(0o700)
+    calls = []
+
+    def check(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "--no-daemon --model --config", "")
+
+    monkeypatch.setattr(subprocess, "run", check)
     ADAPTERS["codex"].check(
         {
             "provider": "codex",
@@ -185,3 +195,12 @@ def test_capability_check_uses_profile_path_override(tmp_path):
             "envs": [["PATH", str(tmp_path)]],
         }
     )
+    assert calls == [[str(executable), "--help"]]
+
+
+def test_codex_script_wrapper_is_rejected_without_execution(tmp_path):
+    path = tmp_path / "wrapper"
+    path.write_text("#!/bin/sh\nexit 99\n")
+    path.chmod(0o700)
+    with pytest.raises(ConfigError, match="not a wrapper"):
+        ADAPTERS["codex"].executable({"executable": str(path), "envs": []})

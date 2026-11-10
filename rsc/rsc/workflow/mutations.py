@@ -100,8 +100,12 @@ def plan_changes(records, changes, *, evidence_check):
                     evidence = deepcopy(before["evidence"]) + [
                         item for item in evidence if item not in before["evidence"]
                     ]
-                after = {**(deepcopy(before) if before else {}),
-                         "kind": kind, "value": value, "evidence": evidence}
+                after = {
+                    **(deepcopy(before) if before else {}),
+                    "kind": kind,
+                    "value": value,
+                    "evidence": evidence,
+                }
                 if token_count(after) > 8000:
                     raise ValueError("record exceeds 8000 tokens; keep it concise and cite sources")
                 new_key = record_key(after)

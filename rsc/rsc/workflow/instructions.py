@@ -55,6 +55,7 @@ Follow remaining.
 Supplementary reads are allowed but never transfer ownership. Cache complete pages and receipts
 within this attempt. Cite segment.citation or its exact batch_id/block_id pair.
 Read query_model records at a fixed revision and follow every next_cursor with that revision.
+For sealed drafts, also retain view_revision so workers finishing cannot shift later pages.
 Cache returned names. Never request or invent record IDs, digest IDs or compact column encodings.
 Print one complete decoded source/model page per tool cell, with a 30000-token output budget.
 Truncated output requires re-reading the missing full page; caching alone is not full delivery.
@@ -78,6 +79,7 @@ unresolved. Submit reports in assigned source order, then advance_phase to seal 
 """,
     "merge": """Inspect query_model(view="conflicts") and the scoped candidate records. Read the
 relevant sources; integrate this model without regenerating it or rereading all unrelated prose.
+Use view="reports" to trace original extraction results to current names or explicit deletions.
 Resolve same-name differing definitions, missing/ambiguous references and registered obligations.
 Use merge/rename with explicit source scope; the server updates structured references, evidence
 and origin mappings atomically. Ordinary edits also require scope. Verify free-text check entries

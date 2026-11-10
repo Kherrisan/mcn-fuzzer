@@ -12,7 +12,8 @@ from rsc.protocol.contract import COLLECTIONS
 from rsc.protocol.validate import validate_protocol
 
 from . import merge
-from .evidence import expand_evidence, source_citations
+from .evidence import expand_evidence, source_citations, validate_evidence
+from .metrics import parallel_metrics
 from .mutations import plan_changes, select, target
 from .paging import records_page, resolve_budget, seal_response
 from .partition import partition_batches
@@ -20,6 +21,7 @@ from .review import (
     assign_checks,
     carry_forward,
     closure,
+    compared_objects,
     fix_groups,
     object_ref,
     review_errors,
@@ -121,6 +123,26 @@ class Workflow:
             "sources_prepared": bool(self.batches),
         }
 
+    def record_catalog(self, identity, names, catalog):
+        data = self.data
+        event = {
+            "time": time.time(),
+            "worker": identity.worker,
+            "role": identity.role,
+            "assignment": identity.assignment,
+            "attempt": identity.attempt,
+            "phase": data["phase"],
+            "round": data["round"],
+            "tool": "tools/list",
+            "origin": "agent",
+            "status": "ok",
+            "elapsed_ms": 0,
+            "catalog": catalog,
+            "catalog_size": len(names),
+        }
+        with self.store.transaction():
+            self.db.execute("INSERT INTO events(body) VALUES (?)", (dumps(event),))
+
     def call(self, identity, name, arguments=None, *, origin="agent"):
         arguments = {} if arguments is None else arguments
         started = time.monotonic()
@@ -132,6 +154,7 @@ class Workflow:
                     # authorize further reads or writes on a sealed assignment.
                     if name == "advance_phase" and identity.role != "coordinator":
                         result = self.store.submit(identity)
+                        event = {"status": "ok", "idempotent_retry": True}
                         return {"assignment": result, "stop_turn": True, "allowed_tools": []}
                     raise WorkflowError(f"tool {name} is forbidden for {identity.worker}")
                 if identity.role == "coordinator":
@@ -141,6 +164,17 @@ class Workflow:
                     session = Worker(self, identity)
                     result = getattr(session, name)(**arguments)
                 event = {"status": "ok"}
+                if identity.role != "coordinator":
+                    if "tokens" in result:
+                        event["delivery"] = {
+                            key: result[key]
+                            for key in ("tokens", "max_tokens", "delivered_ids", "revision")
+                            if key in result
+                        }
+                    if name in {"query_model", "search_source", "read_batches", "get_changes"}:
+                        event["request"] = arguments
+                    event["batch_reports"] = len(arguments.get("reports", []))
+                    event["mutations"] = len(arguments.get("changes", []))
             except (ValueError, KeyError, TypeError) as error:
                 event = {"status": "rejected", "error": str(error)}
                 raise WorkflowError(str(error)) from error
@@ -160,6 +194,8 @@ class Workflow:
                     )
                     with self.store.transaction():
                         self.db.execute("INSERT INTO events(body) VALUES (?)", (dumps(event),))
+            if before["phase"] != "published" and self.data["phase"] == "published":
+                self.export()
             return result
 
     def internal(self, identity, name, arguments):
@@ -238,6 +274,113 @@ class Workflow:
             )
         return result
 
+    def merge_inputs(self, active, revision):
+        """Build the deterministic merge seed; audit uses the same source selection."""
+        drafts = [(a["name"], self.store.draft(a["draft"])[1]) for a in active]
+        checks = []
+        if active[0]["phase"] == "fix":
+            base = self.snapshot(revision)
+            patches = [(scope, delta(base, records)) for scope, records in drafts]
+            changed = set().union(*(set(patch) for _, patch in patches))
+            drafts = [("base", {k: r for k, r in base.items() if k not in changed})]
+            drafts.extend(
+                (scope, {k: after for k, (_, after) in patch.items() if after})
+                for scope, patch in patches
+            )
+            for key in sorted(changed):
+                writes = [(scope, patch[key]) for scope, patch in patches if key in patch]
+                if len(writes) > 1 and len({dumps(after) for _, (_, after) in writes}) > 1:
+                    checks.append(
+                        {
+                            "name": f"patch-conflict-{len(checks) + 1}",
+                            "type": "patch_conflict",
+                            "description": "Overlapping Fix patches need a decision",
+                            "writes": writes,
+                            "status": "open",
+                        }
+                    )
+        for a in active:
+            for (body,) in self.db.execute(
+                "SELECT body FROM reports WHERE assignment=? ORDER BY rowid", (a["name"],)
+            ):
+                for obligation in json.loads(body).get("obligations", []):
+                    checks.append(
+                        {
+                            "name": f"obligation-{len(checks) + 1}",
+                            "type": "obligation",
+                            **obligation,
+                            "status": "open",
+                        }
+                    )
+        return merge.combine(drafts), checks
+
+    def review_gate(self, active, revision):
+        """Recompute ownership, then verify independent reports and their dependencies."""
+        records = self.snapshot(revision)
+        expected = self.source_assignments("review", self.data["review_workers"], revision)
+        assign_checks(records, expected, self.batches)
+        if len(active) != len(expected) or any(
+            any(actual[key] != wanted[key] for key in ("name", "worker", "batches", "checks"))
+            for actual, wanted in zip(active, expected, strict=True)
+        ):
+            return ["review ownership does not cover the expected source/model partition"]
+        return [error for a in active for error in review_errors(self.store, a, records)]
+
+    def name_map(self, records, merge_assignment):
+        """Keep live aliases and explicit deletion provenance across all preceding drafts."""
+        mapping = [
+            {"source": origin, "final": object_ref(r)}
+            for r in records.values()
+            for origin in r["origins"]
+        ]
+        live = {dumps(item["source"]) for item in mapping}
+        removed = {}
+        for a in self.store.assignments():
+            if a["draft"]:
+                for revision, encoded in self.db.execute(
+                    "SELECT revision, body FROM history WHERE draft=? ORDER BY revision",
+                    (a["draft"],),
+                ):
+                    for change in json.loads(encoded).get("changes", []):
+                        before = change["before"]
+                        if before and change["after"] is None:
+                            origins = before.get("origins", []) + [
+                                {"scope": a["name"], **object_ref(before)}
+                            ]
+                            for origin in origins:
+                                removed[dumps(origin)] = {
+                                    "source": origin,
+                                    "final": None,
+                                    "removed_by": {"assignment": a["name"], "revision": revision},
+                                }
+            if a["name"] == merge_assignment:
+                break
+        mapping.extend(value for key, value in removed.items() if key not in live)
+        return sorted(mapping, key=dumps)
+
+    def report_associations(self, mapping):
+        links = {}
+        for item in mapping:
+            links.setdefault(dumps(item["source"]), []).append(item)
+        reports = []
+        for row in self.db.execute("SELECT * FROM reports WHERE phase='parse' ORDER BY rowid"):
+            report = json.loads(row["body"])
+            objects = []
+            for ref in report["objects"]:
+                source = {"scope": row["assignment"], **ref}
+                if dumps(source) not in links:
+                    raise WorkflowError(f"extraction report lost its model association: {source}")
+                objects.extend(links[dumps(source)])
+            reports.append(
+                {
+                    "assignment": row["assignment"],
+                    "batch_id": row["batch"],
+                    "report": report,
+                    "associations": objects,
+                }
+            )
+        return reports
+
     def advance(self, coordinator):
         self.check_sources()
         data = self.data
@@ -255,43 +398,7 @@ class Workflow:
             assignments = self.source_assignments("parse", data["parse_workers"], 0)
             self.store.activate(coordinator, assignments, phase="parse", round_=0, base_revision=0)
         elif phase in {"parse", "fix"}:
-            drafts = [(a["name"], self.store.draft(a["draft"])[1]) for a in active]
-            checks = []
-            if phase == "fix":
-                base = self.snapshot()
-                patches = [(scope, delta(base, records)) for scope, records in drafts]
-                changed = set().union(*(set(patch) for _, patch in patches))
-                drafts = [("base", {k: r for k, r in base.items() if k not in changed})]
-                drafts.extend(
-                    (scope, {k: after for k, (_, after) in patch.items() if after})
-                    for scope, patch in patches
-                )
-                for key in changed:
-                    writes = [(scope, patch[key]) for scope, patch in patches if key in patch]
-                    if len(writes) > 1 and len({dumps(after) for _, (_, after) in writes}) > 1:
-                        checks.append(
-                            {
-                                "name": f"patch-conflict-{len(checks) + 1}",
-                                "type": "patch_conflict",
-                                "description": "Overlapping Fix patches need a decision",
-                                "writes": writes,
-                                "status": "open",
-                            }
-                        )
-            for a in active:
-                for (body,) in self.db.execute(
-                    "SELECT body FROM reports WHERE assignment=? ORDER BY rowid", (a["name"],)
-                ):
-                    for obligation in json.loads(body).get("obligations", []):
-                        checks.append(
-                            {
-                                "name": f"obligation-{len(checks) + 1}",
-                                "type": "obligation",
-                                **obligation,
-                                "status": "open",
-                            }
-                        )
-            candidates = merge.combine(drafts)
+            candidates, checks = self.merge_inputs(active, revision)
             name = f"merge-{round_}/parser-1"
             self.store.activate(
                 coordinator,
@@ -319,10 +426,10 @@ class Workflow:
             next_revision = revision + 1
             snapshot = {
                 "records": records,
-                "name_map": [{"source": origin, "final": object_ref(r)}
-                             for r in candidates.values() for origin in r["origins"]],
+                "name_map": self.name_map(candidates, active[0]["name"]),
                 "merge_assignment": active[0]["name"],
             }
+            self.report_associations(snapshot["name_map"])
             encoded_snapshot = dumps(snapshot)
             with self.store.transaction():
                 existing = self.db.execute(
@@ -359,9 +466,7 @@ class Workflow:
                 base_revision=next_revision,
             )
         elif phase == "review":
-            errors = [
-                error for a in active for error in review_errors(self.store, a, self.snapshot())
-            ]
+            errors = self.review_gate(active, revision)
             if errors:
                 raise WorkflowError("review coverage gate: " + "; ".join(errors))
             findings = self.findings()
@@ -400,7 +505,6 @@ class Workflow:
                         finished_at=time.time(),
                     )
                     self.db.execute("UPDATE workflow SET body=?", (dumps(data),))
-                self.export()
         else:
             raise WorkflowError("terminal workflow")
         return self.status()
@@ -443,19 +547,53 @@ class Workflow:
         if self.data["phase"] != "published":
             raise WorkflowError("publication requires completed independent review")
         self.check_sources()
+        active = [
+            a
+            for a in self.store.assignments()
+            if a["phase"] == "review" and a["base_revision"] == self.data["revision"]
+        ]
+        errors = self.review_gate(active, self.data["revision"])
+        if errors or any(a["status"] != "submitted" for a in active):
+            raise WorkflowError("incomplete publication review: " + "; ".join(errors))
         model = self.publication_model()
         errors = validate_protocol(model, self.documents)
         if errors:
             raise WorkflowError("; ".join(errors))
+        events = [
+            (seq, json.loads(body))
+            for seq, body in self.db.execute("SELECT seq, body FROM events ORDER BY seq")
+        ]
+        metrics = parallel_metrics(self.store, [body for _, body in events])
         reports = {
             "batches.json": self.batches,
             "review.json": self.findings(),
             "assignments.json": self.store.assignments(),
+            "source-reports.json": self.report_associations(
+                json.loads(
+                    self.db.execute(
+                        "SELECT body FROM snapshots WHERE revision=?", (self.data["revision"],)
+                    ).fetchone()[0]
+                )["name_map"]
+            ),
             "report.json": {
                 "rounds": self.data["round"],
                 "complete": model["meta"]["complete"],
                 "review_limit_reached": self.data["review_limit_reached"],
+                "export_event_seq": events[-1][0] if events else 0,
+                "elapsed_seconds": metrics["elapsed_seconds"],
             },
+            "phases.json": metrics,
+            "sources.json": {name: doc["meta"] for name, doc in self.documents.items()},
+            "coverage.json": [
+                json.loads(row[0])
+                for row in self.db.execute("SELECT body FROM conclusions ORDER BY revision, name")
+            ],
+            "changes.json": [
+                {"draft": draft, "revision": revision, **json.loads(body)}
+                for draft, revision, body in self.db.execute(
+                    "SELECT draft, revision, body FROM history ORDER BY rowid"
+                )
+            ],
             "protocol.json": model,
         }
         for name, body in reports.items():
@@ -463,6 +601,10 @@ class Workflow:
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(body, ensure_ascii=False, indent=2))
             tmp.replace(path)
+        path = self.root / "events.jsonl"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text("".join(dumps({"seq": seq, **body}) + "\n" for seq, body in events))
+        temporary.replace(path)
 
 
 class Worker:
@@ -521,9 +663,9 @@ class Worker:
         if revision is not None and revision != self.revision:
             raise WorkflowError(f"revision changed; current revision={self.revision}")
 
-    def page(self, rows, cursor=0, max_tokens=None, revision=None):
+    def page(self, rows, cursor=0, max_tokens=None, revision=None, *, metadata=None):
         self.version(revision, cursor)
-        return records_page(rows, cursor, max_tokens, self.revision)
+        return records_page(rows, cursor, max_tokens, self.revision, metadata=metadata)
 
     def list_batches(self, cursor=0, max_tokens=None, revision=None, assigned_only=False):
         done = self.s.completed(self.a["name"])
@@ -592,25 +734,13 @@ class Worker:
         return self.page(rows, cursor, max_tokens, revision)
 
     def evidence(self, entries):
-        if not entries:
-            raise WorkflowError("source evidence is required")
-        errors = []
-        for e in entries:
-            if e.get("batch_id") not in self.batches or e.get("block_id") not in {
-                s["block_id"] for s in self.batches[e["batch_id"]]["segments"]
-            }:
-                errors.append(f"invalid source pair {e!r}")
-            else:
-                try:
-                    self.s.receipt(
-                        self.who,
-                        e["batch_id"],
-                        f"{self.a['name']}/{self.a['attempt']}/{e['batch_id']}",
-                    )
-                except ValueError as error:
-                    errors.append(str(error))
-        if errors:
-            raise WorkflowError("; ".join(errors))
+        validate_evidence(
+            entries,
+            self.batches,
+            delivered=lambda batch: self.s.receipt(
+                self.who, batch, f"{self.a['name']}/{self.a['attempt']}/{batch}"
+            ),
+        )
 
     def expand(self, entries):
         result = expand_evidence(entries, self.citations)
@@ -642,6 +772,40 @@ class Worker:
             )
         }
 
+    def sealed_records(self, view_revision, cursor, scope):
+        """Pin the set of sealed drafts; another worker finishing cannot shift a page."""
+        views = {
+            json.loads(n): json.loads(body)
+            for n, body in self.w.db.execute(
+                "SELECT name, body FROM deliveries WHERE assignment=? AND attempt=? AND revision=? "
+                "AND family='sealed-view'",
+                (self.a["name"], self.a["attempt"], self.revision),
+            )
+        }
+        if view_revision is None:
+            if cursor:
+                raise WorkflowError("continued sealed pages require their view_revision")
+            names = [
+                a["name"] for a in self.s.assignments() if a["draft"] and a["status"] == "submitted"
+            ]
+            view_revision = next((v for v, saved in views.items() if saved == names), None)
+            if view_revision is None:
+                view_revision = max(views, default=0) + 1
+                self.remember("sealed-view", [(view_revision, names)])
+                views[view_revision] = names
+        if view_revision not in views:
+            raise WorkflowError("unknown sealed view_revision for this assignment and revision")
+        records = {}
+        for name in views[view_revision]:
+            a = self.s.assignment(name)
+            if scope is None or scope in {a["name"], a["worker"]}:
+                draft, values = self.s.draft(a["draft"])
+                if not draft["sealed"]:
+                    raise WorkflowError("sealed view input is no longer immutable")
+                for key, record in values.items():
+                    records[dumps([name, key])] = {**record, "scope": name}
+        return records, view_revision
+
     def query_model(
         self,
         view="current",
@@ -650,28 +814,34 @@ class Worker:
         batch_ids=None,
         scope=None,
         check_name=None,
+        view_revision=None,
         cursor=0,
         max_tokens=None,
         revision=None,
     ):
         self.version(revision, cursor)
+        if view_revision is not None and view != "sealed":
+            raise WorkflowError("view_revision is only used for sealed drafts")
         if view == "conflicts":
             if self.a["phase"] != "merge":
                 raise WorkflowError("conflicts view requires a merge assignment")
             return self.page(
                 merge.conflicts(self.records, self.a["checks"]), cursor, max_tokens, revision
             )
+        if view == "reports":
+            if self.a["phase"] != "merge":
+                raise WorkflowError(
+                    "extraction report associations are only available during merge"
+                )
+            return self.page(
+                self.w.report_associations(self.w.name_map(self.records, self.a["name"])),
+                cursor,
+                max_tokens,
+                revision,
+            )
         records = self.records
         if view == "sealed":
-            records = {}
-            for a in self.s.assignments():
-                if (
-                    a["draft"]
-                    and a["status"] == "submitted"
-                    and (scope is None or scope == a["worker"])
-                ):
-                    for key, r in self.s.draft(a["draft"])[1].items():
-                        records[dumps([a["name"], key])] = {**r, "scope": a["worker"]}
+            records, view_revision = self.sealed_records(view_revision, cursor, scope)
         selected = source_context(records, batch_ids) if batch_ids is not None else set(records)
         check = None
         if check_name is not None:
@@ -680,7 +850,12 @@ class Worker:
                 raise WorkflowError("check_name requires an assigned frozen-model review check")
             selected &= set(check["records"])
         rows = [
-            {**r, "_key": key}
+            {
+                **merge.display(
+                    r, records if self.a["phase"] == "merge" and view == "current" else None
+                ),
+                "_key": key,
+            }
             for key, r in records.items()
             if key in selected
             and (not kind or r["kind"] == kind)
@@ -692,7 +867,13 @@ class Worker:
         elif check:
             for row in rows:
                 row["owned"] = row["_key"] in check["owned"]
-        result = self.page(rows, cursor, max_tokens, revision)
+        result = self.page(
+            rows,
+            cursor,
+            max_tokens,
+            revision,
+            metadata={"view_revision": view_revision} if view == "sealed" else None,
+        )
         keys = [r.pop("_key") for r in result["items"]]
         if view == "current":
             self.remember("model", [(k, {}) for k in keys])
@@ -773,7 +954,9 @@ class Worker:
         source_reports, conclusions = [], []
         for item in reports:
             report = copy.deepcopy(item["report"])
-            objects = self.resolve_objects(report["objects"])
+            objects = compared_objects(report, self.records)
+            if self.a["phase"] == "parse":
+                report["objects"] = [object_ref(self.records[key]) for key in sorted(objects)]
             name = item.get("batch_id") or item["check_name"]
             if "batch_id" in item:
                 if name not in self.a["batches"]:
@@ -847,14 +1030,21 @@ class Worker:
     def get_changes(self, from_revision, cursor=0, max_tokens=None, revision=None):
         self.version(revision, cursor)
         if self.a["draft"]:
-            rows = [
-                {"revision": v, **json.loads(body)}
-                for v, body in self.w.db.execute(
-                    "SELECT revision, body FROM history "
-                    "WHERE draft=? AND revision>? ORDER BY revision",
-                    (self.a["draft"], from_revision),
+            rows = []
+            for v, body in self.w.db.execute(
+                "SELECT revision, body FROM history WHERE draft=? AND revision>? ORDER BY revision",
+                (self.a["draft"], from_revision),
+            ):
+                entry = json.loads(body)
+                rows.extend(
+                    {
+                        "revision": v,
+                        "assignment": entry["assignment"],
+                        "before": merge.display(c["before"]) if c["before"] else None,
+                        "after": merge.display(c["after"]) if c["after"] else None,
+                    }
+                    for c in entry["changes"]
                 )
-            ]
         else:
             before = self.w.snapshot(from_revision)
             rows = [
@@ -899,7 +1089,14 @@ class Worker:
                         ) from None
                     body["queries"].extend(q for q in covering if q not in body["queries"])
             name = f"{self.a['name']}/{body.pop('name')}"
-            body.update(reviewer=self.who.worker, revision=revision, status="open", history=[])
+            body.update(
+                reviewer=self.who.worker,
+                assignment=self.a["name"],
+                attempt=self.a["attempt"],
+                revision=revision,
+                status="open",
+                history=[],
+            )
             if not any(e["batch_id"] in self.a["batches"] for e in body["evidence"]) and body.get(
                 "check_name"
             ) not in {c["name"] for c in self.a["checks"]}:
@@ -938,6 +1135,7 @@ class Worker:
                 resolution=value,
                 fix_assignment=self.a["name"],
                 fix_revision=revision,
+                fix_attempt=self.a["attempt"],
             )
         with self.s.transaction():
             self.s.owned(self.who)
@@ -956,16 +1154,27 @@ class Worker:
             if name not in self.a["findings"]:
                 raise WorkflowError("resolution is not assigned to this reviewer")
             f = findings[name]
-            if f["status"] != "submitted":
-                raise WorkflowError("resolution already reviewed")
             value = {
                 **review,
                 "evidence": self.expand(review["evidence"]),
                 "revision": revision,
                 "reviewer": self.who.worker,
                 "assignment": self.a["name"],
+                "attempt": self.a["attempt"],
+                "fix_assignment": f["fix_assignment"],
+                "fix_revision": f["fix_revision"],
+                "fix_attempt": f["fix_attempt"],
+                "resolution": copy.deepcopy(f["resolution"]),
             }
-            required = source_context(self.records, [e["batch_id"] for e in f["evidence"]])
+            if f["status"] != "submitted":
+                if f["history"] and f["history"][-1] == value:
+                    continue
+                raise WorkflowError("resolution already reviewed with different content")
+            self.evidence(f["evidence"] + f["resolution"]["evidence"])
+            required = source_context(
+                self.records, [e["batch_id"] for e in f["evidence"] + f["resolution"]["evidence"]]
+            )
+            required |= closure(self.records, self.resolve_objects(f["resolution"]["objects"]))
             if not required <= self.delivered("model"):
                 raise WorkflowError("read the changed model context before accepting a resolution")
             f["history"].append(value)

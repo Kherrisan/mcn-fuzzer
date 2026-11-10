@@ -48,7 +48,7 @@ def assign_checks(records, assignments, batches):
     positions = {b["batch_id"]: i for i, b in enumerate(batches)}
     owners = {b: a for a in assignments for b in a["batches"]}
     groups = {a["worker"]: [] for a in assignments}
-    for key, record in records.items():
+    for key, record in sorted(records.items()):
         evidence_batches = {e["batch_id"] for e in record["evidence"]}
         available = evidence_batches & set(owners)
         if available:
@@ -58,6 +58,7 @@ def assign_checks(records, assignments, batches):
         groups[worker].append(key)
     for a in assignments:
         keys = groups[a["worker"]]
+        a["checks"] = []
         if keys:
             a["checks"] = [
                 {
@@ -83,8 +84,9 @@ def invalidated(before, after, conclusions):
     A change to unconstrained prose can affect remote conditions without a typed
     graph edge. Expand to all conclusions instead of claiming semantic isolation.
     """
-    changed = {k for k in set(before) | set(after)
-               if semantic(before.get(k)) != semantic(after.get(k))}
+    changed = {
+        k for k in set(before) | set(after) if semantic(before.get(k)) != semantic(after.get(k))
+    }
     graph = adjacency(before)
     for key, targets in adjacency(after).items():
         graph.setdefault(key, set()).update(targets)
@@ -134,11 +136,12 @@ def fix_groups(findings, workers):
     groups = []
     for name, finding in findings.items():
         scope = {dumps([r["kind"], r["target"]]) for r in finding["objects"]}
-        overlaps = [g for g in groups if not scope or not g["scope"] or g["scope"] & scope]
-        item = {"findings": [name], "scope": scope}
+        overlaps = [g for g in groups if not scope or g["unbounded"] or g["scope"] & scope]
+        item = {"findings": [name], "scope": scope, "unbounded": not scope}
         for group in overlaps:
             item["findings"].extend(group["findings"])
             item["scope"].update(group["scope"])
+            item["unbounded"] |= group["unbounded"]
             groups.remove(group)
         groups.append(item)
     bins = [[] for _ in range(min(workers, len(groups)))]
@@ -152,6 +155,46 @@ def required_context(assignment, item, records):
         return source_context(records, [item]), [item]
     check = next(c for c in assignment["checks"] if c["name"] == item)
     return set(check["records"]), check["batches"]
+
+
+def compared_objects(report, records):
+    references = report["objects"] + [
+        r for requirement in report.get("requirements", []) for r in requirement["objects"]
+    ]
+    return {select(records, r["kind"], r["target"]) for r in references}
+
+
+def query_delivered(store, assignment, attempt, revision, query, records, delivered):
+    """An absence assertion requires the complete matching query, including empty results."""
+    pages = [
+        json.loads(row[0])
+        for row in store.db.execute(
+            "SELECT body FROM deliveries WHERE assignment=? AND attempt=? "
+            "AND revision=? AND family='query-page'",
+            (assignment, attempt, revision),
+        )
+    ]
+    for kind in (query["kind"], None):
+        scope = {"kind": kind, "filters": query["filters"]}
+        selected = {
+            k
+            for k, r in records.items()
+            if (kind is None or r["kind"] == kind)
+            and all(r["value"].get(f) == v for f, v in scope["filters"].items())
+        }
+        if not selected <= delivered:
+            continue
+        next_pages = {p["cursor"]: p["next"] for p in pages if p["scope"] == scope}
+        cursor, seen = 0, set()
+        while cursor in next_pages and cursor not in seen:
+            seen.add(cursor)
+            next_cursor = next_pages[cursor]
+            if next_cursor is None:
+                return cursor == 0 or cursor < len(selected)
+            if not cursor < next_cursor < len(selected):
+                break
+            cursor = next_cursor
+    return False
 
 
 def carry_forward(before, after, previous, assignments, previous_revision):
@@ -174,7 +217,7 @@ def carry_forward(before, after, previous, assignments, previous_revision):
                 continue
             check = next((c for c in assignment["checks"] if c["name"] == item), None)
             if check:
-                compared = {select(after, r["kind"], r["target"]) for r in old["report"]["objects"]}
+                compared = compared_objects(old["report"], after)
                 if not set(check["owned"]) <= compared:
                     continue
             body = {
@@ -223,7 +266,7 @@ def review_errors(store, assignment, records):
         ):
             raise ValueError("review conclusion belongs to a different assignment/version")
         needed, sources = required_context(a, item, model)
-        compared = {select(model, r["kind"], r["target"]) for r in body["report"]["objects"]}
+        compared = compared_objects(body["report"], model)
         needed |= closure(model, compared)
         if not needed <= set(body["records"]) or not set(sources) <= set(body["source_batches"]):
             raise ValueError("review dependency ledger omits required context")
@@ -232,6 +275,15 @@ def review_errors(store, assignment, records):
             raise ValueError("cross-range report omits owned model records")
         if not body["report"].get("requirements"):
             raise ValueError("review conclusion has no actual comparisons")
+        for requirement in body["report"]["requirements"]:
+            if requirement["result"] == "finding" and not requirement["findings"]:
+                raise ValueError("reported discrepancy has no finding")
+            for finding in requirement["findings"]:
+                row = store.db.execute(
+                    "SELECT body FROM findings WHERE name=?", (finding,)
+                ).fetchone()
+                if row is None or json.loads(row[0])["reviewer"] != a["worker"]:
+                    raise ValueError("review requirement references another reviewer's finding")
         if body.get("carried_from"):
             old_name, old_revision = body["carried_from"]["name"], body["carried_from"]["revision"]
             if body["attempt"] != 0 or not 0 < old_revision < revision:
@@ -287,6 +339,10 @@ def review_errors(store, assignment, records):
                 ).fetchone()
                 if row is None or json.loads(row[0]) != query:
                     raise ValueError("missing negative-query delivery proof")
+                if not query_delivered(
+                    store, a["name"], attempt, revision, query, model, delivered
+                ):
+                    raise ValueError("negative-query pages or model context are incomplete")
         if body.get("batch"):
             report = store.db.execute(
                 "SELECT phase, revision, body FROM reports "

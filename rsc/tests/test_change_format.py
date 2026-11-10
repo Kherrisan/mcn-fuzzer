@@ -84,15 +84,23 @@ def test_code_mode_discovery_exposes_nested_shapes_without_schema_refs():
     assert 'connection:"connection_oriented" | "connectionless"' in description
     assert 'action:"listen"' in description
     assert 'action:"send"' in description
-    assert "Cells keep native JSON types" in description
-    changes = [{
-        "op": "add", "kind": "messages",
-        "value": {"name": "data", "associated_fields": [{"name": "payload"}]},
-        "evidence": [{"batch_id": "b", "block_id": "1"}],
-    }]
-    validate_arguments("apply_changes", {
-        "expected_revision": 0, "operation_id": "nested", "changes": encode_changes(changes),
-    })
+    assert "changes=[named operations]" in description
+    changes = [
+        {
+            "op": "add",
+            "kind": "messages",
+            "value": {"name": "data", "associated_fields": [{"name": "payload"}]},
+            "evidence": [{"batch_id": "b", "block_id": "1"}],
+        }
+    ]
+    validate_arguments(
+        "apply_changes",
+        {
+            "expected_revision": 0,
+            "operation_id": "nested",
+            "changes": changes,
+        },
+    )
 
 
 def test_mutation_errors_identify_nested_field_and_selected_step_variant():
@@ -100,22 +108,33 @@ def test_mutation_errors_identify_nested_field_and_selected_step_variant():
     from rsc.workflow.tools import validate_arguments
 
     args = {
-        "expected_revision": 0, "operation_id": "invalid",
-        "changes": [{
-            "op": "add", "kind": "messages",
-            "value": {
-                "name": "data",
-                "associated_fields": [{"name": "payload", "description": "x"}],
-            },
-            "evidence": [{"batch_id": "b", "block_id": "1"}],
-        }],
+        "expected_revision": 0,
+        "operation_id": "invalid",
+        "changes": [
+            {
+                "op": "add",
+                "kind": "messages",
+                "value": {
+                    "name": "data",
+                    "associated_fields": [{"name": "payload", "description": "x"}],
+                },
+                "evidence": [{"batch_id": "b", "block_id": "1"}],
+            }
+        ],
     }
     with pytest.raises(WorkflowError, match=r"value.associated_fields\[0\].*description"):
         validate_arguments("apply_changes", args)
-    args["changes"][0].update(kind="steps", value={
-        "name": "listen", "action": "listen", "channel_name": "control", "condition": "",
-        "party_name": "server", "message_name": None,
-    })
+    args["changes"][0].update(
+        kind="steps",
+        value={
+            "name": "listen",
+            "action": "listen",
+            "channel_name": "control",
+            "condition": "",
+            "party_name": "server",
+            "message_name": None,
+        },
+    )
     with pytest.raises(WorkflowError) as error:
         validate_arguments("apply_changes", args)
     assert "message_name" in str(error.value)

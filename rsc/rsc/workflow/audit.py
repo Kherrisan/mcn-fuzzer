@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import copy
 import json
+import sqlite3
 from collections import Counter
+from pathlib import Path
 
 import tiktoken
 
@@ -55,6 +57,16 @@ def delivery(rows, markers, ids):
 
 
 def audit_run(root):
+    path = (Path(root).resolve() / "workflow.sqlite").as_uri()
+    db = sqlite3.connect(path + "?mode=ro", uri=True)
+    try:
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+    finally:
+        db.close()
+    if version:
+        from .audit_parallel import audit_run as audit_parallel
+
+        return audit_parallel(root)
     workflow = Workflow(root)
     try:
         return _audit(workflow)

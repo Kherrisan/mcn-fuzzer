@@ -72,13 +72,14 @@ class Handler(socketserver.StreamRequestHandler):
                         else workflow.allowed(role)
                     )
                     result = [schema(name) for name in sorted(names)]
+                    workflow.record_catalog(role, names, payload.get("catalog", "phase"))
                 elif payload["op"] == "call":
                     name, arguments = payload["name"], payload.get("arguments", {})
-                    origin = (
-                        "supervisor"
-                        if role.role == "coordinator" and payload.get("origin") == "supervisor"
-                        else "agent"
-                    )
+                    origin = "agent"
+                    if role.role == "coordinator":
+                        origin = payload.get("origin")
+                        if origin not in {"supervisor", "health"}:
+                            origin = "coordinator"
                     result = workflow.call(role, name, arguments, origin=origin)
                 else:
                     raise WorkflowError("unknown operation")

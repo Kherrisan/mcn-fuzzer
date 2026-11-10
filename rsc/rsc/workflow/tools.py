@@ -1,5 +1,6 @@
 """The thirteen agent contracts. Coordinator operations have no MCP schema."""
 
+import json
 from copy import deepcopy
 
 from jsonschema import Draft202012Validator
@@ -132,15 +133,18 @@ CONTRACTS = {
     "query_model": (
         "Read named records and evidence at a fixed revision. Default view is your "
         "draft, or the frozen review model. sealed excludes active drafts; conflicts "
-        "lists merge decisions still needed. index omits definitions and does not "
-        "count as full model delivery. Batch filtering includes the reference closure.",
+        "lists merge decisions still needed. reports exposes immutable extraction reports "
+        "with current name associations, only during merge. index omits definitions and does not "
+        "count as full model delivery. Batch filtering includes the reference closure. "
+        "Continue sealed pages with both revision and view_revision from the first page.",
         {
-            "view": {"enum": ["current", "sealed", "index", "conflicts"]},
+            "view": {"enum": ["current", "sealed", "index", "conflicts", "reports"]},
             "kind": STRING,
             "filters": OBJECT,
             "batch_ids": STRINGS,
             "scope": STRING,
             "check_name": STRING,
+            "view_revision": {"type": "integer", "minimum": 1},
             **PAGING,
         },
         [],
@@ -224,6 +228,10 @@ def schema(name):
     contract = obj(deepcopy(properties), required)
     if name == "apply_changes":
         definitions = protocol_schema()["$defs"]
+        description += "\nValue shapes (field names and native JSON types):\n" + "\n".join(
+            f"{kind}: {shape(definitions[definition], definitions)}"
+            for kind, definition in {**DEFINITIONS, "unresolved": "issue"}.items()
+        )
         contract["$defs"] = definitions
         variants = []
         for kind, definition in {**DEFINITIONS, "unresolved": "issue"}.items():
@@ -273,6 +281,30 @@ def schema(name):
     return {"name": name, "description": description, "inputSchema": contract}
 
 
+def shape(node, definitions):
+    """Short code-mode help, derived from the same schema as validation."""
+    if "$ref" in node:
+        return shape(definitions[node["$ref"].rsplit("/", 1)[1]], definitions)
+    if "const" in node:
+        return json.dumps(node["const"])
+    if "enum" in node:
+        return " | ".join(json.dumps(value) for value in node["enum"])
+    if "oneOf" in node or "anyOf" in node:
+        return " | ".join(shape(item, definitions) for item in node.get("oneOf", node.get("anyOf")))
+    if node.get("type") == "array":
+        return f"Array<{shape(node['items'], definitions)}>"
+    if node.get("type") == "object":
+        return (
+            "{"
+            + ",".join(
+                f"{key}{'' if key in node.get('required', []) else '?'}:{shape(value, definitions)}"
+                for key, value in node.get("properties", {}).items()
+            )
+            + "}"
+        )
+    return node.get("type", "object")
+
+
 def validate_arguments(name, arguments):
     if name not in CONTRACTS:
         raise WorkflowError("unknown agent tool")
@@ -308,9 +340,13 @@ def validate_arguments(name, arguments):
             if branch is None:
                 messages.append(f"changes[{i}]: unknown operation or kind")
                 continue
-            check = {**branch, "$defs": contract["$defs"]}
+            check = deepcopy({**branch, "$defs": contract["$defs"]})
+            if row.get("op") in {"add", "update"} and row.get("kind") == "steps":
+                from .model import record_schema
+
+                check["properties"]["value"] = record_schema("steps", row.get("value"))
             messages.extend(
-                f"changes[{i}].{'/'.join(map(str, e.absolute_path))}: {e.message}"
+                f"changes[{i}]{e.json_path.removeprefix('$')}: {e.message}"
                 for e in Draft202012Validator(check).iter_errors(row)
             )
     else:

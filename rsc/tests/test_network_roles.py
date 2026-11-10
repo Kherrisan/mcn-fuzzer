@@ -90,53 +90,61 @@ def test_reversed_source_roles_use_a_separate_lifecycle_without_duplicate_networ
     assert reference_errors(rows) == []
 
 
-def test_wrong_roles_are_draft_feedback_and_block_phase_until_corrected(tmp_path):
-    from test_workflow import call, claim
+def test_wrong_roles_are_draft_feedback_and_block_merge_until_corrected(tmp_path):
+    import test_parallel_workflow as h
 
     from rsc.workflow import Workflow, WorkflowError
 
     source = tmp_path / "rfc9999.txt"
     source.write_text("RFC 9999\n\n1. Example\n\nThe client connects to the server.\n")
-    w = Workflow.create(tmp_path / "task", [source], "Example")
-    claim(w)
-    call(w, "prepare_sources")
-    call(w, "advance_phase")
-    claim(w)
-    read = call(w, "read_batch", batch_id=w.data["batches"][0]["batch_id"])
-    evidence = [read["batch"]["segments"][0]["citation"]]
-    result = call(
+    w = Workflow.create(tmp_path / "task", [source], "Example", parse_workers=1)
+    h.call(w, "coordinator", "prepare_sources")
+    h.advance(w)
+    h.claim(w, "parser-1")
+    sources = h.read(w, "parser-1")
+    source = next(iter(sources.values()))
+    evidence = [source["batch"]["segments"][0]["citation"]]
+    result = h.call(
         w,
+        "parser-1",
         "apply_changes",
         expected_revision=0,
         operation_id="draft",
         changes=[
-            {
-                "op": "add",
-                "kind": r["kind"],
-                "value": r["value"],
-                "evidence": evidence,
-            }
+            {"op": "add", "kind": r["kind"], "value": r["value"], "evidence": evidence}
             for r in records("connect", "server").values()
         ],
     )
     assert any("initiator_party_name" in e for e in result["draft_reference_errors"])
-    call(
+    h.call(
         w,
+        "parser-1",
         "complete_batch",
-        batch_id=read["batch"]["batch_id"],
-        receipt_id=read["receipt_id"],
-        report={"summary": "Extracted the connection"},
+        revision=1,
+        reports=[
+            {
+                "batch_id": source["batch"]["batch_id"],
+                "receipt": source["receipt"],
+                "report": {"summary": "Extracted connection", "objects": []},
+            }
+        ],
     )
+    h.call(w, "parser-1", "advance_phase")
+    h.advance(w)
+    h.claim(w, "parser-1")
     with pytest.raises(WorkflowError, match="initiator_party_name"):
-        call(w, "advance_phase")
-    fixed = call(
+        h.call(w, "parser-1", "advance_phase")
+    h.read(w, "parser-1")
+    fixed = h.call(
         w,
+        "parser-1",
         "apply_changes",
-        expected_revision=1,
+        expected_revision=0,
         operation_id="fix",
         changes=[
             {
                 "op": "patch",
+                "scope": "parse-0/parser-1",
                 "kind": "steps",
                 "target": {"name": "operation"},
                 "value": {"party_name": "client"},
@@ -145,4 +153,7 @@ def test_wrong_roles_are_draft_feedback_and_block_phase_until_corrected(tmp_path
         ],
     )
     assert fixed["draft_reference_errors"] == []
-    assert call(w, "check_gate")["ready"]
+    h.call(w, "parser-1", "advance_phase")
+    h.advance(w)
+    assert w.data["phase"] == "review"
+    w.db.close()

@@ -1,46 +1,55 @@
-"""Deterministic preprocessing preserves source gates and crash-safe dispatch ownership."""
+"""Coordinator preprocessing is deterministic, resumable and inaccessible to workers."""
 
 import json
-from copy import deepcopy
 
 import pytest
+from test_parallel_supervisor import supervisor
 
 from rsc.workflow import Workflow, WorkflowError
-from rsc.workflow.supervisor import Supervisor
 
 
 def setup(tmp_path):
     source = tmp_path / "rfc9999.txt"
     source.write_text("RFC 9999\n\n1. Role\n\nThe client connects and sends HELLO.\n")
     w = Workflow.create(tmp_path / "task", [source], "Example")
-    s = Supervisor.__new__(Supervisor)
-    s.root = w.root
-    s.path = w.root / "supervisor.json"
-    s.state = {"terminals": {}}
-    calls = []
+    s = supervisor(w)
+    calls, rpc = [], s.workflow_call
 
-    def rpc(name, arguments=None):
+    def tracked(name, arguments=None):
         calls.append(name)
-        return w.call("parser", name, arguments, origin="supervisor")
+        return rpc(name, arguments)
 
-    s.workflow_call = rpc
+    s.workflow_call = tracked
     return w, s, calls
 
 
-def test_preprocess_performs_same_deterministic_tools_without_reading_or_extracting(tmp_path):
+def test_preprocess_needs_no_agent_claim_or_source_read(tmp_path):
     w, s, calls = setup(tmp_path)
-    assert s.preprocess()
-    assert calls == ["workflow_status", "claim_assignment", "prepare_sources", "advance_phase"]
-    assert w.data["phase"] == "parse" and w.data["documents"] and w.data["batches"]
-    assert not w.data["records"] and not w.data["receipts"] and not w.data["processed"]
-    assert not w.data["assignment"]["claimed"]
-    assert not w.workflow_status()["gate"]["ready"]
-    events = [json.loads(x[0]) for x in w.db.execute("select body from events")]
+    assert s.step()
+    assert calls == ["workflow_status", "prepare_sources", "advance_phase"]
+    assert w.data["phase"] == "parse" and w.documents and w.batches
+    assert not w.db.execute("SELECT 1 FROM records").fetchone()
+    assert not w.db.execute("SELECT 1 FROM receipts").fetchone()
+    assert all(a["status"] == "pending" for a in w.store.assignments())
+    assert not s.hc_call.calls
+    events = [json.loads(r[0]) for r in w.db.execute("SELECT body FROM events")]
     assert all(e["origin"] == "supervisor" for e in events)
+    w.db.close()
 
 
-@pytest.mark.parametrize("lost", ["claim_assignment", "prepare_sources", "advance_phase"])
-def test_lost_reply_resumes_without_repreparing_or_advancing_twice(tmp_path, lost):
+@pytest.mark.parametrize("lost", ["prepare_sources", "advance_phase"])
+def test_lost_reply_resumes_immutable_preparation_and_advances_only_once(
+    tmp_path, lost, monkeypatch
+):
+    from rsc.workflow import state
+
+    prepare, count = state.prepare, []
+
+    def counted(*args):
+        count.append(1)
+        return prepare(*args)
+
+    monkeypatch.setattr(state, "prepare", counted)
     w, s, calls = setup(tmp_path)
     rpc = s.workflow_call
 
@@ -52,72 +61,62 @@ def test_lost_reply_resumes_without_repreparing_or_advancing_twice(tmp_path, los
 
     s.workflow_call = lose
     with pytest.raises(OSError, match="reply lost"):
-        s.preprocess()
-    s.state = json.loads(s.path.read_text())
+        s.step()
     s.workflow_call = rpc
-    s.preprocess()
-    assert w.data["phase"] == "parse"
-    assert calls.count("claim_assignment") == 1
-    assert calls.count("prepare_sources") == 1
+    assert s.step()
+    assert w.data["phase"] == "parse" and len(count) == 1
     assert calls.count("advance_phase") == 1
-    assert len(w.data["phase_history"]) == 1
+    assert len(w.store.assignments()) == 1
+    w.db.close()
 
 
-@pytest.mark.parametrize("claimed", [False, True])
-def test_existing_or_uncertain_agent_dispatch_is_not_taken_over(tmp_path, claimed):
-    w, s, calls = setup(tmp_path)
-    if claimed:
-        w.call("parser", "claim_assignment", {"dispatch_id": w.data["assignment"]["dispatch_id"]})
-    else:
-        s.state["dispatch_id"] = w.data["assignment"]["dispatch_id"]
-        s.state["delivery"] = "sending"
-    before = deepcopy(w.data)
-    assert not s.preprocess()
-    assert calls == ["workflow_status"] and w.data == before
-
-
-def test_prepared_source_tampering_still_blocks_advance(tmp_path):
-    w, s, calls = setup(tmp_path)
-    dispatch = w.data["assignment"]["dispatch_id"]
-    s.state["preprocess_dispatch_id"] = dispatch
-    s.workflow_call("claim_assignment", {"dispatch_id": dispatch})
+def test_tampered_source_snapshot_blocks_preprocessing_resume(tmp_path):
+    w, s, _ = setup(tmp_path)
     s.workflow_call("prepare_sources")
     snapshot = next((w.root / "snapshots").glob("*.json"))
     snapshot.write_text("{}")
-    with pytest.raises(WorkflowError, match="snapshot file changed"):
-        s.preprocess()
+    with pytest.raises(WorkflowError, match="source snapshot changed"):
+        s.step()
     assert w.data["phase"] == "preprocess"
-    assert calls.count("prepare_sources") == 1
+    w.db.close()
 
 
-def test_preprocess_uses_authenticated_socket_and_preserves_role_permissions(tmp_path):
+def test_workers_cannot_impersonate_the_coordinator_over_socket(tmp_path):
     import threading
 
     from rsc.workflow.server import TaskServer, request
 
     w, s, _ = setup(tmp_path)
-    del s.workflow_call
-    s.socket = tmp_path / "s.sock"
-    s.token = (w.root / "parser.token").read_text().strip()
-    reviewer_token = (w.root / "reviewer.token").read_text().strip()
-    with TaskServer(s.socket, w) as service:
+    s.step()
+    path = tmp_path / "test.sock"
+    token = (w.root / "parser-1.token").read_text()
+    with TaskServer(path, w) as service:
         thread = threading.Thread(target=service.serve_forever, daemon=True)
         thread.start()
         try:
             with pytest.raises(WorkflowError, match="forbidden"):
                 request(
-                    s.socket,
+                    path,
                     {
                         "op": "call",
-                        "token": reviewer_token,
+                        "token": token,
                         "name": "prepare_sources",
                         "origin": "supervisor",
                     },
                 )
-            assert s.preprocess()
-            assert w.data["phase"] == "parse" and not w.data["receipts"]
-            events = [json.loads(row[0]) for row in w.db.execute("select body from events")]
-            assert all(e["origin"] == "supervisor" for e in events if e["status"] == "ok")
+            request(
+                path,
+                {
+                    "op": "call",
+                    "token": (w.root / "coordinator.token").read_text(),
+                    "name": "workflow_status",
+                    "origin": "health",
+                },
+            )
+            events = [json.loads(r[0]) for r in w.db.execute("SELECT body FROM events")]
+            assert events[-1]["origin"] == "health"
+            assert events[-2]["origin"] == "agent"
         finally:
             service.shutdown()
             thread.join()
+    w.db.close()

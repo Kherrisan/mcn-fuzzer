@@ -1,9 +1,10 @@
 """Scoped candidates and deterministic reference-aware merging for Parse and Fix."""
 
+import json
 from copy import deepcopy
 
 from .model import reference_errors, validate_record
-from .mutations import plan_changes, record_key, select, target
+from .mutations import plan_changes, record_key, target
 from .store import dumps
 
 
@@ -42,6 +43,17 @@ def ref(candidate):
     return {"scope": candidate["scope"], "kind": candidate["kind"], "target": target(candidate)}
 
 
+def display(record, candidates=None):
+    """Agent pages use named references; storage keys and merge bookkeeping stay internal."""
+    result = {key: record[key] for key in ("kind", "value", "evidence", "scope") if key in record}
+    if candidates is not None and "links" in record:
+        result["references"] = [
+            {"path": json.loads(path), "targets": [ref(candidates[k]) for k in keys]}
+            for path, keys in record["links"].items()
+        ]
+    return result
+
+
 def bind(candidates):
     """Local definitions win. Unresolved foreign matches never choose by arrival."""
     for candidate in candidates.values():
@@ -66,10 +78,8 @@ def bind(candidates):
                 for key, value in candidates.items()
                 if value["kind"] == kind and value["value"].get("name") == name
             ]
-            scopes = {o["scope"] for o in candidate["origins"]}
-            local = [
-                key for key in matches if scopes & {o["scope"] for o in candidates[key]["origins"]}
-            ]
+            scopes = set(candidate["local_scopes"])
+            local = [key for key in matches if scopes & set(candidates[key]["local_scopes"])]
             links[pointer] = local or matches
         candidate["links"] = links
     return candidates
@@ -83,6 +93,7 @@ def combine(drafts):
             candidates[key] = {
                 **deepcopy(record),
                 "scope": scope,
+                "local_scopes": [scope],
                 "origins": deepcopy(record.get("origins", [])),
             }
             origin = {"scope": scope, "kind": record["kind"], "target": target(record)}
@@ -112,7 +123,7 @@ def automatic(candidates):
                 seen[signature] = key
                 continue
             first = seen[signature]
-            for field in ("origins", "evidence"):
+            for field in ("origins", "evidence", "local_scopes"):
                 candidates[first][field].extend(
                     x for x in record[field] if x not in candidates[first][field]
                 )
@@ -156,7 +167,7 @@ def conflicts(candidates, checks=()):
                         {
                             "ref": ref(r),
                             "value": r["value"],
-                            "links": r["links"],
+                            "references": display(r, candidates).get("references", []),
                             "evidence": r["evidence"],
                         }
                         for r in records
@@ -175,13 +186,24 @@ def scoped_select(candidates, selector):
     if not selector.get("scope"):
         raise ValueError("merge targets must specify their source scope")
     scope = selector["scope"]
-    subset = {
-        k: r
-        for k, r in candidates.items()
-        if r["scope"] == scope
-        or any(o["scope"] == scope and o["target"] == selector["target"] for o in r["origins"])
-    }
-    return select(subset, selector["kind"], selector["target"])
+    matches = []
+    for key, r in candidates.items():
+        if r["kind"] != selector["kind"]:
+            continue
+        aliases = [o["target"] for o in r["origins"] if o["scope"] == scope]
+        if scope in r["local_scopes"]:
+            aliases.append(r["value"])
+        if any(
+            all(
+                field in value and dumps(value[field]) == dumps(expected)
+                for field, expected in selector["target"].items()
+            )
+            for value in aliases
+        ):
+            matches.append(key)
+    if len(matches) != 1:
+        raise ValueError(f"scoped target {selector!r} has {len(matches)} matches")
+    return matches[0]
 
 
 def rewrite(candidates, selected, final, old_names, checks):
@@ -272,7 +294,7 @@ def apply(candidates, changes, checks, *, evidence_check):
                 old_names = list(dict.fromkeys(result[k]["value"].get("name") for k in keys))
                 old_names = [n for n in old_names if n is not None]
                 for key in keys[1:]:
-                    for field in ("origins", "evidence"):
+                    for field in ("origins", "evidence", "local_scopes"):
                         result[first][field].extend(
                             x for x in result[key][field] if x not in result[first][field]
                         )
@@ -321,6 +343,7 @@ def apply(candidates, changes, checks, *, evidence_check):
                         result[key] = {
                             **new,
                             "scope": scope,
+                            "local_scopes": [scope],
                             "origins": [
                                 {"scope": scope, "kind": new["kind"], "target": target(new)}
                             ],

@@ -59,6 +59,17 @@ class Supervisor:
             "HC_SOCKET": str(runtime / "herdr-core" / f"rsc-{slug}.sock"),
         }
         self.env.pop("HC_TERMINAL_ID", None)
+        self.state["hc_env"] = {
+            key: self.env[key]
+            for key in (
+                "HC_SESSION",
+                "XDG_RUNTIME_DIR",
+                "XDG_STATE_HOME",
+                "XDG_CONFIG_HOME",
+                "HC_SOCKET",
+            )
+        }
+        self.save()
         self.wait_index = 0
 
     def workflow_call(self, name, arguments=None):
@@ -325,6 +336,8 @@ class Supervisor:
         return True
 
     def cleanup(self):
+        if self.state.get("cleanup_complete"):
+            return
         for worker in list(self.state["terminals"]):
             self.retire(worker)
         self.hc_call("server", "stop")

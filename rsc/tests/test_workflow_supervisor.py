@@ -1,194 +1,102 @@
-"""Protect assignment delivery across busy agents, crashes and workflow handoffs."""
+"""Dispatch recovery and phase handoffs use worker identity and durable claims."""
+
+import json
 
 import pytest
+import test_parallel_workflow as h
+from test_parallel_supervisor import supervisor
 
 from rsc.workflow import WorkflowError
-from rsc.workflow.supervisor import Supervisor
+from rsc.workflow.supervisor import HcObservationTimeout
+
+run = h.run
 
 
-def supervisor(tmp_path, *, claimed=False, agent="idle"):
-    s = Supervisor.__new__(Supervisor)
-    s.root = tmp_path
-    s.path = tmp_path / "supervisor.json"
-    s.state = {"terminals": {"parser": "t7", "reviewer": "t8"}}
-    s.status = lambda: {
-        "phase": "repair",
-        "assignment": {
-            "dispatch_id": "repair-2",
-            "role": "parser",
-            "claimed": claimed,
-            "phase": "repair",
-            "round": 1,
-            "revision": 2,
-        },
-    }
-    calls = []
+def test_busy_claimed_work_survives_supervisor_restart_without_resend(run):
+    s = supervisor(run)
+    s.step()
+    h.claim(run, "parser-1")
+    restored = supervisor(run)
+    restored.state = json.loads(s.path.read_text())
+    restored.hc_call = s.hc_call
+    before = len(s.hc_call.calls)
+    assert restored.step()
+    assert not any(c[0] in {"send", "run", "kill"} for c in s.hc_call.calls[before:])
+    assert run.data["phase"] == "parse"
 
-    def hc(*args, **kwargs):
-        calls.append(args)
-        if args[0] == "get":
-            return {"state": "live", "status": {"state": agent}}
-        return {}
 
+def test_a_finished_turn_cannot_replace_the_assignment_submission(run):
+    s = supervisor(run)
+    s.step()
+    h.claim(run, "parser-1")
+    t = s.hc_call.terminals[s.state["terminals"]["parser-1"]["address"]]
+    t.update(turn=1, status={"state": "done"})
+    before = len(s.hc_call.calls)
+    with pytest.raises(WorkflowError, match="without submitting"):
+        s.step()
+    assert not any(c[0] in {"run", "send"} for c in s.hc_call.calls[before:])
+
+
+def test_lost_send_response_is_not_blindly_repeated(run):
+    s = supervisor(run)
+    hc = s.hc_call
+
+    def lost(*args, **kwargs):
+        result = hc(*args, **kwargs)
+        if args[0] == "send" and not args[2].startswith("/rename"):
+            raise HcObservationTimeout("send reply lost")
+        return result
+
+    s.hc_call = lost
+    with pytest.raises(HcObservationTimeout):
+        s.step()
+    assert run.store.assignment("parse-0/parser-1")["status"] == "sent"
     s.hc_call = hc
-    return s, calls
+    s.step()
+    sends = [c for c in hc.calls if c[0] == "send" and not c[2].startswith("/rename")]
+    assert len([c for c in sends if c[1] == s.state["terminals"]["parser-1"]["address"]]) == 1
 
 
-def test_busy_agent_is_waited_without_sending(tmp_path):
-    s, calls = supervisor(tmp_path, agent="working")
-    assert s.step()
-    assert [c[0] for c in calls] == ["get", "wait"]
-
-
-def test_idle_claimed_assignment_does_not_advance(tmp_path):
-    s, calls = supervisor(tmp_path, claimed=True)
-    with pytest.raises(WorkflowError, match="without completing"):
-        s.step()
-    assert all(c[0] != "send" for c in calls)
-
-
-def test_send_is_recorded_and_never_blindly_repeated(tmp_path):
-    s, calls = supervisor(tmp_path)
-    assert s.step()
-    sent = [c for c in calls if c[0] == "send"]
-    assert len(sent) == 1 and sent[0][1] == "t7"
-    assert "repair-2" in sent[0][2]
-    assert s.state["delivery"] == "sent"
-    with pytest.raises(WorkflowError, match="uncertain"):
-        s.step()
-    assert len([c for c in calls if c[0] == "send"]) == 1
-
-
-def test_blocked_agent_does_not_receive_forced_input(tmp_path):
-    s, calls = supervisor(tmp_path, agent="blocked")
+@pytest.mark.parametrize("state", ["blocked", "error", "fatal"])
+def test_blocked_or_fatal_workers_never_receive_forced_input(run, state):
+    s = supervisor(run)
+    s.step()
+    address = s.state["terminals"]["parser-1"]["address"]
+    if state == "fatal":
+        (run.root / "agents/parser-1/fatal.json").write_text('{"error":"incomplete tool delivery"}')
+    else:
+        s.hc_call.terminals[address]["status"] = {"state": state}
+    before = len(s.hc_call.calls)
     with pytest.raises(WorkflowError, match="attention"):
         s.step()
-    assert all(c[0] != "send" for c in calls)
+    assert not any(c[0] in {"send", "run", "kill"} for c in s.hc_call.calls[before:])
 
 
-def test_review_repair_reuses_original_terminal_addresses(tmp_path):
-    s, calls = supervisor(tmp_path)
-    assignment = {
-        "dispatch_id": "review-1",
-        "role": "reviewer",
-        "claimed": False,
-        "phase": "review",
-        "round": 1,
-        "revision": 2,
-    }
-    s.status = lambda: {"phase": assignment["phase"], "assignment": assignment.copy()}
-    assert s.step()
-    assignment.update(dispatch_id="repair-1", role="parser", phase="repair")
-    assert s.step()
-    assignment.update(dispatch_id="review-2", role="reviewer", phase="review", round=2)
-    assert s.step()
-    assert [c[1] for c in calls if c[0] == "send"] == ["t8", "t7", "t8"]
-    messages = [c[2] for c in calls if c[0] == "send"]
-    assert "Round: 1." in messages[0] and "This is the first review" in messages[0]
-    assert "do not request historical diffs" in messages[0]
-    assert "Round: 2." in messages[2] and "EVERY get_changes page" in messages[2]
-    assert all(c[0] != "run" for c in calls)
-
-
-def test_explicit_retry_allows_exactly_one_redelivery(tmp_path):
-    s, calls = supervisor(tmp_path, claimed=True)
-    s.state["dispatch_id"] = "repair-2"
-    s.retry_dispatch = "repair-2"
-    assert s.step()
-    assert s.retry_dispatch is None
-    with pytest.raises(WorkflowError, match="without completing"):
+def test_live_worker_retry_is_rejected_and_cleanup_is_idempotent(run):
+    s = supervisor(run)
+    s.step()
+    s.retry_worker = "parser-1"
+    with pytest.raises(WorkflowError, match="cannot retry a live worker"):
         s.step()
-    assert len([c for c in calls if c[0] == "send"]) == 1
-
-
-def test_recovered_supervisor_waits_on_claimed_work_without_resending(tmp_path):
-    s, _ = supervisor(tmp_path)
-    s.state.update(dispatch_id="repair-2", delivery="sent")
-    s.save()
-    restored, calls = supervisor(tmp_path, claimed=True, agent="working")
-    import json
-
-    restored.state = json.loads(s.path.read_text())
-    assert restored.step()
-    assert [c[0] for c in calls] == ["get", "wait"]
-
-
-def test_cleanup_uses_owned_terminals_and_is_idempotent(tmp_path):
-    s, _ = supervisor(tmp_path)
-    s.task_id = "test1234"
-    calls = []
-
-    def hc(*args, **kwargs):
-        calls.append(args)
-        if args[0] == "get":
-            role = "parser" if args[1] == "t7" else "reviewer"
-            return {"name": f"rsc-{role}-test1234", "state": "live"}
-        return {}
-
-    s.hc_call = hc
     s.cleanup()
-    assert [c[1] for c in calls if c[0] == "kill"] == ["t7", "t8"]
-    assert s.state["cleanup_complete"]
-    count = len(calls)
+    before = len(s.hc_call.calls)
     s.cleanup()
-    assert len(calls) == count
+    assert len(s.hc_call.calls) == before
+    assert s.state["cleanup_complete"] and not s.state["terminals"]
 
 
-def test_cleanup_refuses_changed_terminal_identity(tmp_path):
-    s, _ = supervisor(tmp_path)
-    s.task_id = "test1234"
-    calls = []
-
-    def hc(*args, **kwargs):
-        calls.append(args)
-        return {"name": "unrelated-terminal", "state": "live"}
-
-    s.hc_call = hc
-    with pytest.raises(WorkflowError, match="identity"):
-        s.cleanup()
-    assert not any(c[0] == "kill" for c in calls)
-
-
-def test_observation_timeout_reobserves_without_resend(tmp_path):
-    from rsc.workflow.supervisor import HcObservationTimeout
-
-    s, calls = supervisor(tmp_path, claimed=True)
-    original = s.hc_call
-
-    def transient(*args, **kwargs):
-        s.hc_call = original
-        raise HcObservationTimeout("observer timeout")
-
-    s.hc_call = transient
+def test_phase_change_releases_processes_and_resumes_the_same_named_conversation(run):
+    s = supervisor(run)
+    s.step()
+    for worker in ("parser-1", "parser-2"):
+        h.parse(run, worker)
+    assert s.step() and run.data["phase"] == "merge"
+    assert not s.state["terminals"]
+    assert len(s.state["sessions"]) == 2
     assert s.step()
-    # A later observation, not a timeout, establishes the actual idle state.
-    with pytest.raises(WorkflowError, match="without completing"):
-        s.step()
-    assert not any(c[0] in {"run", "send", "kill"} for c in calls)
-
-
-def test_pi_waits_for_adapter_ready_before_sending(tmp_path):
-    import json
-
-    s, calls = supervisor(tmp_path)
-    s.socket = "/tmp/test.sock"
-    s.task_id = "test1234"
-    s.state["agents"] = {"parser": {"provider": "pi"}}
-    assert s.step()
-    assert not any(c[0] == "send" for c in calls)
-    assert calls[-1][:4] == ("wait", "t7", "--output", "RSC adapter ready")
-    directory = tmp_path / "agents/parser"
-    directory.mkdir(parents=True)
-    (directory / "ready.json").write_text(json.dumps({"namespace": "rsc_test1234_parser"}))
-    assert s.step()
-    assert len([c for c in calls if c[0] == "send"]) == 1
-
-
-def test_adapter_fatal_error_stops_before_further_input(tmp_path):
-    s, calls = supervisor(tmp_path)
-    directory = tmp_path / "agents/parser"
-    directory.mkdir(parents=True)
-    (directory / "fatal.json").write_text('{"error":"cannot restore complete response"}')
-    with pytest.raises(WorkflowError, match="fatal delivery"):
-        s.step()
-    assert not calls
+    launch = json.loads((run.root / "agents/parser-1/launch.json").read_text())
+    assert launch["argv"][-2:] == [
+        "resume",
+        s.context(run.store.assignment("merge-0/parser-1")).terminal_name,
+    ]
+    assert len(s.state["terminals"]) == 1

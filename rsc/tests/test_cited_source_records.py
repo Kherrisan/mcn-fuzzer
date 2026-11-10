@@ -1,82 +1,55 @@
-"""Named source bodies can omit duplicate derived references without changing proof."""
+"""Single and bulk reads deliver identical full sources and scoped receipts."""
 
+import re
 from copy import deepcopy
 
 import pytest
+import test_parallel_workflow as h
 from test_evidence import draft
-from test_workflow import call
 
 from rsc.workflow import WorkflowError
-from rsc.workflow.source_format import decode_source_batch
 from rsc.workflow.sources import token_count
-from rsc.workflow.tools import validate_arguments
 
 
-@pytest.mark.parametrize("format", ["records", "compact"])
-def test_cited_sources_keep_all_original_fields_and_exact_legacy_receipts(tmp_path, format):
+def test_single_and_bulk_sources_preserve_exact_text_and_receipts(tmp_path):
     w = draft(tmp_path)
-    ids = [b["batch_id"] for b in w.data["batches"]]
-    before = deepcopy(w.data["batches"])
-    cited = call(w, "read_batches", batch_ids=ids, format=format, include_evidence=False)
-    legacy = call(w, "read_batches", batch_ids=ids, format=format)
-    for short, full, original in zip(cited["batches"], legacy["batches"], before, strict=True):
-        assert short["receipt_id"] == full["receipt_id"]
-        body = decode_source_batch(short["batch"])
-        restored = deepcopy(body)
-        for segment in restored["segments"]:
-            assert "evidence" not in segment and segment["citation"]
-            segment["evidence"] = {"batch_id": body["batch_id"], "block_id": segment["block_id"]}
-        assert restored == decode_source_batch(full["batch"])
+    ids = [b["batch_id"] for b in w.batches]
+    before = deepcopy(w.batches)
+    bulk = h.call(w, "parser-1", "read_batches", batch_ids=ids)
+    assert bulk["tokens"] == token_count(bulk) <= bulk["max_tokens"]
+    for delivered, original in zip(bulk["batches"], before, strict=True):
+        single = h.call(w, "parser-1", "read_batches", batch_ids=[original["batch_id"]])
+        assert single["batches"][0] == delivered
+        body = deepcopy(delivered["batch"])
         for segment in body["segments"]:
-            segment.pop("citation")
+            assert segment.pop("citation")
         assert body == original
-    assert cited["tokens"] == token_count(cited) <= legacy["tokens"]
-    if format == "records":
-        assert cited["tokens"] < legacy["tokens"]
-    assert w.data["batches"] == before
-    assert not w.data["records"] and not w.data["processed"]
-    first = decode_source_batch(cited["batches"][0]["batch"])
-    citation = first["segments"][0]["citation"]
-    result = call(
-        w,
-        "apply_changes",
-        expected_revision=0,
-        operation_id="cited",
-        changes=[
-            {
-                "op": "add",
-                "kind": "parties",
-                "value": {"name": "client", "description": "sender"},
-                "evidence": [citation],
-            }
-        ],
-    )
-    record = w.data["records"][result["record_ids"][0]]
-    assert record["evidence"] == [
-        {"batch_id": first["batch_id"], "block_id": first["segments"][0]["block_id"]}
-    ]
+    assert w.batches == before
+    assert not w.store.draft("parse-0/parser-1")[1]
+    assert not w.store.completed("parse-0/parser-1")
+    w.db.close()
 
 
-def test_omitting_duplicate_evidence_does_not_issue_partial_or_undelivered_receipts(tmp_path):
+def test_undelivered_batches_never_receive_receipts(tmp_path):
     w = draft(tmp_path)
-    ids = [b["batch_id"] for b in w.data["batches"]]
+    ids = [b["batch_id"] for b in w.batches]
     with pytest.raises(WorkflowError, match="requires") as raised:
-        call(w, "read_batches", batch_ids=ids, max_tokens=1, include_evidence=False)
-    assert not w.data["receipts"]
-    needed = int(str(raised.value).split("requires ", 1)[1].split(" ", 1)[0])
-    page = call(w, "read_batches", batch_ids=ids, max_tokens=needed, include_evidence=False)
-    assert page["tokens"] <= needed and page["delivered"] == ids[:1]
+        h.call(w, "parser-1", "read_batches", batch_ids=ids, max_tokens=1)
+    assert not w.db.execute("SELECT 1 FROM receipts").fetchone()
+    needed = int(re.search(r"requires (?:at least )?(\d+)", str(raised.value))[1])
+    page = h.call(w, "parser-1", "read_batches", batch_ids=ids, max_tokens=needed)
+    assert page["tokens"] <= needed and page["delivered_ids"] == ids[:1]
     assert page["remaining"] == ids[1:]
-    assert set(w.data["receipts"]) == {w._key(ids[0])}
-    assert not call(w, "check_gate")["ready"]
+    assert [row[0] for row in w.db.execute("SELECT batch FROM receipts")] == ids[:1]
+    with pytest.raises(WorkflowError, match="incomplete"):
+        h.call(w, "parser-1", "advance_phase")
+    w.db.close()
 
 
-@pytest.mark.parametrize("invalid", ["false", 0, None])
-def test_evidence_option_is_boolean_and_invalid_values_grant_no_receipt(tmp_path, invalid):
+@pytest.mark.parametrize("extra", [{"format": "compact"}, {"include_evidence": False}])
+def test_removed_wire_options_grant_no_receipt(tmp_path, extra):
     w = draft(tmp_path)
-    args = {"batch_ids": [w.data["batches"][0]["batch_id"]], "include_evidence": invalid}
-    with pytest.raises(WorkflowError):
-        validate_arguments("read_batches", args)
-    with pytest.raises(WorkflowError, match="boolean"):
-        call(w, "read_batches", **args)
-    assert not w.data["receipts"]
+    with pytest.raises(WorkflowError, match="Additional properties"):
+        h.call(w, "parser-1", "read_batches", batch_ids=[w.batches[0]["batch_id"]], **extra)
+    assert not w.db.execute("SELECT 1 FROM receipts").fetchone()
+    w.db.close()

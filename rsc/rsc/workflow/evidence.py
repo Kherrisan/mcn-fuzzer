@@ -34,3 +34,21 @@ def expand_evidence(entries, citations, *, path="evidence"):
         else:
             raise ValueError(f"{path}[{index}] requires a citation or batch_id/block_id strings")
     return result
+
+
+def validate_evidence(entries, batches, *, delivered=None):
+    """Validate canonical source pairs; live calls and audit replay share this check."""
+    if not entries:
+        raise ValueError("source evidence is required")
+    errors = []
+    for entry in entries:
+        batch = batches.get(entry.get("batch_id"))
+        if batch is None or entry.get("block_id") not in {s["block_id"] for s in batch["segments"]}:
+            errors.append(f"invalid source pair {entry!r}")
+        elif delivered:
+            try:
+                delivered(entry["batch_id"])
+            except ValueError as error:
+                errors.append(str(error))
+    if errors:
+        raise ValueError("; ".join(errors))
