@@ -1,0 +1,156 @@
+{
+  "iteration-08": {
+    "responses": 51,
+    "groups": {
+      "claim_assignment": {
+        "responses": 3,
+        "output_tokens": 434,
+        "reasoning_tokens": 56
+      },
+      "discovery": {
+        "responses": 1,
+        "output_tokens": 50,
+        "reasoning_tokens": 11
+      },
+      "advance_phase+prepare_sources": {
+        "responses": 1,
+        "output_tokens": 172,
+        "reasoning_tokens": 19
+      },
+      "unmatched": {
+        "responses": 1,
+        "output_tokens": 24,
+        "reasoning_tokens": 0
+      },
+      "read_batches": {
+        "responses": 13,
+        "output_tokens": 2266,
+        "reasoning_tokens": 698
+      },
+      "apply_changes": {
+        "responses": 19,
+        "output_tokens": 52763,
+        "reasoning_tokens": 28859
+      },
+      "complete_batch": {
+        "responses": 11,
+        "output_tokens": 4015,
+        "reasoning_tokens": 794
+      },
+      "local_code": {
+        "responses": 2,
+        "output_tokens": 713,
+        "reasoning_tokens": 556
+      }
+    },
+    "largest_responses": [
+      {
+        "action": "apply_changes",
+        "output": 6726,
+        "reasoning": 3907
+      },
+      {
+        "action": "apply_changes",
+        "output": 6109,
+        "reasoning": 3275
+      },
+      {
+        "action": "apply_changes",
+        "output": 5831,
+        "reasoning": 2916
+      },
+      {
+        "action": "apply_changes",
+        "output": 4129,
+        "reasoning": 2523
+      },
+      {
+        "action": "apply_changes",
+        "output": 3334,
+        "reasoning": 2016
+      }
+    ]
+  },
+  "iteration-08-order": {
+    "responses": 38,
+    "groups": {
+      "discovery": {
+        "responses": 3,
+        "output_tokens": 309,
+        "reasoning_tokens": 100
+      },
+      "claim_assignment": {
+        "responses": 2,
+        "output_tokens": 227,
+        "reasoning_tokens": 27
+      },
+      "prepare_sources": {
+        "responses": 1,
+        "output_tokens": 90,
+        "reasoning_tokens": 9
+      },
+      "advance_phase": {
+        "responses": 1,
+        "output_tokens": 88,
+        "reasoning_tokens": 7
+      },
+      "unmatched": {
+        "responses": 1,
+        "output_tokens": 43,
+        "reasoning_tokens": 17
+      },
+      "read_batches": {
+        "responses": 10,
+        "output_tokens": 2695,
+        "reasoning_tokens": 1486
+      },
+      "apply_changes": {
+        "responses": 13,
+        "output_tokens": 49113,
+        "reasoning_tokens": 29437
+      },
+      "complete_batch": {
+        "responses": 5,
+        "output_tokens": 2780,
+        "reasoning_tokens": 909
+      },
+      "query_model": {
+        "responses": 1,
+        "output_tokens": 396,
+        "reasoning_tokens": 223
+      },
+      "local_code": {
+        "responses": 1,
+        "output_tokens": 469,
+        "reasoning_tokens": 349
+      }
+    },
+    "largest_responses": [
+      {
+        "action": "apply_changes",
+        "output": 15568,
+        "reasoning": 9138
+      },
+      {
+        "action": "apply_changes",
+        "output": 8592,
+        "reasoning": 6102
+      },
+      {
+        "action": "apply_changes",
+        "output": 6575,
+        "reasoning": 3483
+      },
+      {
+        "action": "apply_changes",
+        "output": 6099,
+        "reasoning": 3323
+      },
+      {
+        "action": "apply_changes",
+        "output": 3995,
+        "reasoning": 3108
+      }
+    ]
+  }
+}

@@ -16,7 +16,11 @@ class ConfigError(ValueError):
 
 ROLES = ("parser", "reviewer")
 DEFAULTS = {
-    "workflow": {"batch_target_tokens": 8000, "batch_max_tokens": 12000, "max_review_rounds": 5},
+    "workflow": {
+        "batch_target_tokens": 8000,
+        "batch_max_tokens": 12000,
+        "max_review_rounds": 5,
+    },
     "agents": {
         "default_profile": "codex-luna-max",
         "profiles": {

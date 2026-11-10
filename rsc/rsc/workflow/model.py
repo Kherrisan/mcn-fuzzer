@@ -14,6 +14,9 @@ def validate_record(kind, value):
             "$defs": schema["$defs"],
         }
     )
-    errors = [e.message for e in check.iter_errors(value)]
+    errors = [
+        f"{'/'.join(map(str, e.absolute_path)) or 'value'}: {e.message}"
+        for e in check.iter_errors(value)
+    ]
     if errors:
         raise ValueError("; ".join(errors))

@@ -1,0 +1,163 @@
+{
+  "phase": "unfinished first review",
+  "review_started_at": 1794266062.6862457,
+  "metadata_only": true,
+  "sessions": [
+    {
+      "events": {
+        "thread_settings_applied": 1,
+        "task_started": 1,
+        "turn_context": 1,
+        "message": 2,
+        "item_completed": 51,
+        "reasoning": 45,
+        "custom_tool_call": 14,
+        "token_usage_record": 14,
+        "custom_tool_call_output": 14,
+        "token_count": 15
+      },
+      "last_events": [
+        {
+          "time": "2026-11-09T23:20:29.054Z",
+          "type": "item_completed"
+        },
+        {
+          "time": "2026-11-09T23:20:29.060Z",
+          "type": "reasoning"
+        },
+        {
+          "time": "2026-11-09T23:20:38.378Z",
+          "type": "item_completed"
+        },
+        {
+          "time": "2026-11-09T23:20:38.388Z",
+          "type": "reasoning"
+        },
+        {
+          "time": "2026-11-09T23:20:47.701Z",
+          "type": "item_completed"
+        },
+        {
+          "time": "2026-11-09T23:20:47.707Z",
+          "type": "reasoning"
+        },
+        {
+          "time": "2026-11-09T23:20:49.667Z",
+          "type": "item_completed"
+        },
+        {
+          "time": "2026-11-09T23:20:49.669Z",
+          "type": "reasoning"
+        },
+        {
+          "time": "2026-11-09T23:20:50.728Z",
+          "type": "custom_tool_call"
+        },
+        {
+          "time": "2026-11-09T23:20:50.868Z",
+          "type": "token_usage_record"
+        },
+        {
+          "time": "2026-11-09T23:20:50.872Z",
+          "type": "custom_tool_call_output"
+        },
+        {
+          "time": "2026-11-09T23:20:50.873Z",
+          "type": "token_count"
+        }
+      ],
+      "tool_calls": [
+        {
+          "seconds": 0.04,
+          "tools": [],
+          "chars": 150
+        },
+        {
+          "seconds": 0.577,
+          "tools": [
+            "mcp__rsc_700492b4_reviewer__claim_assignment"
+          ],
+          "chars": 145
+        },
+        {
+          "seconds": 0.043,
+          "tools": [],
+          "chars": 146
+        },
+        {
+          "seconds": 0.774,
+          "tools": [
+            "mcp__rsc_700492b4_reviewer__list_batches"
+          ],
+          "chars": 225
+        },
+        {
+          "seconds": 0.046,
+          "tools": [],
+          "chars": 145
+        },
+        {
+          "seconds": 5.264,
+          "tools": [
+            "mcp__rsc_700492b4_reviewer__query_model"
+          ],
+          "chars": 242
+        },
+        {
+          "seconds": 3.57,
+          "tools": [
+            "mcp__rsc_700492b4_reviewer__query_model"
+          ],
+          "chars": 264
+        },
+        {
+          "seconds": 0.071,
+          "tools": [],
+          "chars": 626
+        },
+        {
+          "seconds": 0.058,
+          "tools": [],
+          "chars": 359
+        },
+        {
+          "seconds": 0.068,
+          "tools": [],
+          "chars": 277
+        },
+        {
+          "seconds": 0.089,
+          "tools": [],
+          "chars": 458
+        },
+        {
+          "seconds": 0.099,
+          "tools": [],
+          "chars": 280
+        },
+        {
+          "seconds": 0.083,
+          "tools": [],
+          "chars": 484
+        },
+        {
+          "seconds": 0.144,
+          "tools": [],
+          "chars": 149
+        }
+      ],
+      "pending_calls": {},
+      "last_usage": {
+        "time": "2026-11-09T23:20:50.873Z",
+        "usage": {
+          "input_tokens": 8236191,
+          "cached_input_tokens": 8001280,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 36887,
+          "reasoning_output_tokens": 21935,
+          "total_tokens": 8273078
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,331 @@
+{
+  "scope": "24 saved experimental runs: iterations 01–23 plus iteration-08-order; includes aborted and timed-out runs",
+  "caveats": [
+    "origin=agent denotes service audit classification, not proof of an LLM decision; all 24 workflow_status entries occur during preprocess and the CLI healthy() call lacks origin tagging.",
+    "Supervisor calls are counted separately. Counts include rejected requests and each batched RPC counts once, not once per report.",
+    "179 complete_review_batch calls are review_prepare, a removed experiment path; only 4 are formal review.",
+    "The experimental runs did not complete the whole review/repair loop. Low usage cannot justify removing resolution or diff validation.",
+    "Original baseline timings do not distinguish model-origin calls from coordinator calls."
+  ],
+  "run_count": 24,
+  "runs": [
+    {
+      "path": "rsc/runs/runtime-stability/iteration-01/run-1",
+      "phase": "parse",
+      "event_count": 49
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-02/run-1",
+      "phase": "parse",
+      "event_count": 28
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-03/run-1",
+      "phase": "review",
+      "event_count": 116
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-04/run-1",
+      "phase": "repair",
+      "event_count": 111
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-05/run-1",
+      "phase": "parse",
+      "event_count": 37
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-06/run-1",
+      "phase": "parse",
+      "event_count": 87
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-07/run-1",
+      "phase": "repair",
+      "event_count": 117
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-08/run-1",
+      "phase": "parse",
+      "event_count": 94
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-08-order/run-1",
+      "phase": "parse",
+      "event_count": 80
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-09/run-1",
+      "phase": "parse",
+      "event_count": 126
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-10/run-1",
+      "phase": "parse",
+      "event_count": 77
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-11/run-1",
+      "phase": "parse",
+      "event_count": 88
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-12/run-1",
+      "phase": "repair",
+      "event_count": 115
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-13/run-1",
+      "phase": "review",
+      "event_count": 115
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-14/run-1",
+      "phase": "review",
+      "event_count": 108
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-15/run-1",
+      "phase": "parse",
+      "event_count": 87
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-16/run-1",
+      "phase": "review",
+      "event_count": 148
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-17/run-1",
+      "phase": "review",
+      "event_count": 143
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-18/run-1",
+      "phase": "review",
+      "event_count": 151
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-19/run-1",
+      "phase": "parse",
+      "event_count": 137
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-20/run-1",
+      "phase": "parse",
+      "event_count": 165
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-21/run-1",
+      "phase": "parse",
+      "event_count": 128
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-22/run-1",
+      "phase": "parse",
+      "event_count": 124
+    },
+    {
+      "path": "rsc/runs/runtime-stability/iteration-23/run-1",
+      "phase": "parse",
+      "event_count": 108
+    }
+  ],
+  "tools": {
+    "workflow_status": {
+      "agent_labelled_calls": 24,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 1025,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 24,
+      "agent_labelled_phases": {
+        "preprocess": 24
+      }
+    },
+    "claim_assignment": {
+      "agent_labelled_calls": 63,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 5,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 24,
+      "agent_labelled_phases": {
+        "preprocess": 19,
+        "parse": 24,
+        "review": 9,
+        "repair": 3,
+        "review_prepare": 8
+      }
+    },
+    "check_gate": {
+      "agent_labelled_calls": 8,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 7,
+      "agent_labelled_phases": {
+        "parse": 8
+      }
+    },
+    "advance_phase": {
+      "agent_labelled_calls": 41,
+      "rejected_agent_labelled_calls": 2,
+      "supervisor_calls": 5,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 24,
+      "agent_labelled_phases": {
+        "preprocess": 19,
+        "parse": 11,
+        "review": 3,
+        "review_prepare": 8
+      }
+    },
+    "prepare_sources": {
+      "agent_labelled_calls": 19,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 5,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 19,
+      "agent_labelled_phases": {
+        "preprocess": 19
+      }
+    },
+    "list_batches": {
+      "agent_labelled_calls": 21,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 8,
+      "agent_labelled_phases": {
+        "review": 3,
+        "parse": 18
+      }
+    },
+    "read_batch": {
+      "agent_labelled_calls": 0,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 0,
+      "agent_labelled_phases": {}
+    },
+    "read_batches": {
+      "agent_labelled_calls": 535,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 24,
+      "agent_labelled_phases": {
+        "parse": 279,
+        "review": 84,
+        "repair": 5,
+        "review_prepare": 167
+      }
+    },
+    "search_source": {
+      "agent_labelled_calls": 0,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 0,
+      "agent_labelled_phases": {}
+    },
+    "query_model": {
+      "agent_labelled_calls": 73,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 16,
+      "agent_labelled_phases": {
+        "parse": 39,
+        "review": 24,
+        "repair": 10
+      }
+    },
+    "apply_changes": {
+      "agent_labelled_calls": 359,
+      "rejected_agent_labelled_calls": 61,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 24,
+      "agent_labelled_phases": {
+        "parse": 356,
+        "repair": 3
+      }
+    },
+    "complete_batch": {
+      "agent_labelled_calls": 154,
+      "rejected_agent_labelled_calls": 8,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 22,
+      "agent_labelled_phases": {
+        "parse": 154
+      }
+    },
+    "list_findings": {
+      "agent_labelled_calls": 6,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 4,
+      "agent_labelled_phases": {
+        "repair": 3,
+        "review": 3
+      }
+    },
+    "get_changes": {
+      "agent_labelled_calls": 3,
+      "rejected_agent_labelled_calls": 1,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 1,
+      "agent_labelled_phases": {
+        "review": 3
+      }
+    },
+    "submit_findings": {
+      "agent_labelled_calls": 8,
+      "rejected_agent_labelled_calls": 2,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 5,
+      "agent_labelled_phases": {
+        "review": 8
+      }
+    },
+    "complete_review_batch": {
+      "agent_labelled_calls": 183,
+      "rejected_agent_labelled_calls": 14,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 11,
+      "agent_labelled_phases": {
+        "review": 4,
+        "review_prepare": 179
+      }
+    },
+    "submit_resolutions": {
+      "agent_labelled_calls": 2,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 1,
+      "agent_labelled_phases": {
+        "repair": 2
+      }
+    },
+    "review_resolutions": {
+      "agent_labelled_calls": 0,
+      "rejected_agent_labelled_calls": 0,
+      "supervisor_calls": 0,
+      "unclassified_calls": 0,
+      "agent_labelled_run_count": 0,
+      "agent_labelled_phases": {}
+    }
+  },
+  "baseline_32min": {
+    "source": "baseline.json:high_32min",
+    "all_18_tools_used": true,
+    "tool_elapsed_seconds": 82.695,
+    "elapsed_seconds": 1934.398
+  }
+}

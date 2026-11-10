@@ -1,0 +1,7 @@
+{
+  "batches": 30,
+  "complete_named_record_tokens": 131915,
+  "complete_column_table_tokens": 84027,
+  "exact_text_and_metadata_roundtrip": true,
+  "note": "Counterfactual wire-size measurement only. Named objects cost more input tokens; runtime/reasoning must be tested independently. Includes canonical evidence and citation labels."
+}

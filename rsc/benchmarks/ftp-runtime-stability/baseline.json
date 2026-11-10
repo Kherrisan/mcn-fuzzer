@@ -1,0 +1,300 @@
+{
+  "high_32min": {
+    "exit_code": 0,
+    "prime_sec": 4.051,
+    "rsc_sec": 1934.398,
+    "fuzz": "skipped",
+    "config": "/tmp/rsc-high.toml",
+    "auth_path": "/home/ubuntu/.codex/auth.json",
+    "protocol_json": "/output/rsc/task/protocol.json",
+    "protocol_present": true,
+    "protocol_bytes": 106508,
+    "agents": {
+      "parser": {
+        "profile": "codex-luna-high",
+        "provider": "codex",
+        "model": "gpt-6-luna",
+        "effort": "high"
+      },
+      "reviewer": {
+        "profile": "codex-luna-high",
+        "provider": "codex",
+        "model": "gpt-6-luna",
+        "effort": "high"
+      }
+    },
+    "phase": "published",
+    "round": 3,
+    "revision": 17,
+    "max_review_rounds": 5,
+    "review_limit_reached": false,
+    "finding_count": 4,
+    "findings_by_round": {
+      "1": {
+        "accepted": 3
+      },
+      "2": {
+        "accepted": 1
+      }
+    },
+    "phases": [
+      {
+        "phase": "preprocess",
+        "round": 0,
+        "revision": 0,
+        "elapsed_sec": 32.848
+      },
+      {
+        "phase": "parse",
+        "round": 0,
+        "revision": 14,
+        "elapsed_sec": 868.057
+      },
+      {
+        "phase": "review",
+        "round": 1,
+        "revision": 14,
+        "elapsed_sec": 275.993
+      },
+      {
+        "phase": "repair",
+        "round": 1,
+        "revision": 16,
+        "elapsed_sec": 369.624
+      },
+      {
+        "phase": "review",
+        "round": 2,
+        "revision": 16,
+        "elapsed_sec": 189.599
+      },
+      {
+        "phase": "repair",
+        "round": 2,
+        "revision": 17,
+        "elapsed_sec": 94.704
+      },
+      {
+        "phase": "review",
+        "round": 3,
+        "revision": 17,
+        "elapsed_sec": 98.383
+      }
+    ],
+    "phase_elapsed_sec": 1929.208,
+    "tool_elapsed_sec": 82.695,
+    "tool_elapsed_sec_by_tool": {
+      "workflow_status": 25.436,
+      "query_model": 18.247,
+      "prepare_sources": 12.255,
+      "advance_phase": 4.675,
+      "read_batches": 4.656,
+      "complete_review_batch": 4.471,
+      "check_gate": 3.721,
+      "claim_assignment": 2.151,
+      "complete_batch": 2.057,
+      "apply_changes": 2.027,
+      "read_batch": 0.821,
+      "get_changes": 0.757,
+      "list_findings": 0.532,
+      "list_batches": 0.299,
+      "submit_findings": 0.214,
+      "review_resolutions": 0.155,
+      "submit_resolutions": 0.151,
+      "search_source": 0.071
+    },
+    "rejected_by_tool": {
+      "apply_changes": 6,
+      "complete_review_batch": 28,
+      "read_batches": 3,
+      "submit_findings": 1
+    },
+    "event_count": 336,
+    "record_count": 323,
+    "batch_count": 30
+  },
+  "high_56min": {
+    "phase": "published",
+    "phases": [
+      {
+        "phase": "preprocess",
+        "role": "parser",
+        "round": 0,
+        "revision": 0,
+        "dispatch_id": "4f6c5e7fb81a723bb9a68cee",
+        "started_at": 1794234747.4608483,
+        "finished_at": 1794234840.6514828,
+        "elapsed_seconds": 93.19063448905945,
+        "timing_origin": "assignment_created",
+        "tool_calls": 15,
+        "rejected_calls": 0,
+        "tool_elapsed_ms": 12759.484140202403,
+        "calls_by_tool": {
+          "workflow_status": 11,
+          "claim_assignment": 1,
+          "prepare_sources": 1,
+          "check_gate": 1,
+          "advance_phase": 1
+        }
+      },
+      {
+        "phase": "parse",
+        "role": "parser",
+        "round": 0,
+        "revision": 23,
+        "dispatch_id": "e1668fb1fcd45151cec988e5",
+        "started_at": 1794234840.6515083,
+        "finished_at": 1794236747.6826806,
+        "elapsed_seconds": 1907.0311722755432,
+        "timing_origin": "assignment_created",
+        "tool_calls": 161,
+        "rejected_calls": 11,
+        "tool_elapsed_ms": 30635.581832379103,
+        "calls_by_tool": {
+          "workflow_status": 66,
+          "claim_assignment": 1,
+          "list_batches": 1,
+          "query_model": 12,
+          "read_batches": 13,
+          "read_batch": 1,
+          "apply_changes": 31,
+          "complete_batch": 33,
+          "check_gate": 2,
+          "advance_phase": 1
+        }
+      },
+      {
+        "phase": "review",
+        "role": "reviewer",
+        "round": 1,
+        "revision": 23,
+        "dispatch_id": "98c94096e624e407c9e92749",
+        "started_at": 1794236747.6827004,
+        "finished_at": 1794237118.0789988,
+        "elapsed_seconds": 370.3962984085083,
+        "timing_origin": "assignment_created",
+        "tool_calls": 91,
+        "rejected_calls": 18,
+        "tool_elapsed_ms": 12412.491718307137,
+        "calls_by_tool": {
+          "workflow_status": 13,
+          "claim_assignment": 1,
+          "query_model": 4,
+          "read_batches": 17,
+          "read_batch": 8,
+          "submit_findings": 1,
+          "complete_review_batch": 45,
+          "check_gate": 1,
+          "advance_phase": 1
+        }
+      },
+      {
+        "phase": "repair",
+        "role": "parser",
+        "round": 1,
+        "revision": 26,
+        "dispatch_id": "480d31c5085ab9e42a98cd22",
+        "started_at": 1794237118.079013,
+        "finished_at": 1794237622.5079079,
+        "elapsed_seconds": 504.4288947582245,
+        "timing_origin": "assignment_created",
+        "tool_calls": 36,
+        "rejected_calls": 3,
+        "tool_elapsed_ms": 8892.822863534093,
+        "calls_by_tool": {
+          "workflow_status": 18,
+          "claim_assignment": 1,
+          "list_findings": 1,
+          "read_batches": 1,
+          "read_batch": 6,
+          "query_model": 1,
+          "apply_changes": 5,
+          "submit_resolutions": 1,
+          "check_gate": 1,
+          "advance_phase": 1
+        }
+      },
+      {
+        "phase": "review",
+        "role": "reviewer",
+        "round": 2,
+        "revision": 26,
+        "dispatch_id": "999afb6af7fcb88a1e3b1fb1",
+        "started_at": 1794237622.5080268,
+        "finished_at": 1794237832.7253885,
+        "elapsed_seconds": 210.2173616886139,
+        "timing_origin": "assignment_created",
+        "tool_calls": 35,
+        "rejected_calls": 2,
+        "tool_elapsed_ms": 8381.252842023969,
+        "calls_by_tool": {
+          "workflow_status": 8,
+          "claim_assignment": 1,
+          "get_changes": 2,
+          "read_batches": 8,
+          "list_findings": 1,
+          "query_model": 5,
+          "submit_findings": 1,
+          "review_resolutions": 1,
+          "complete_review_batch": 6,
+          "check_gate": 1,
+          "advance_phase": 1
+        }
+      },
+      {
+        "phase": "repair",
+        "role": "parser",
+        "round": 2,
+        "revision": 27,
+        "dispatch_id": "aae7720f35aa89e9dda39341",
+        "started_at": 1794237832.7254033,
+        "finished_at": 1794237924.818472,
+        "elapsed_seconds": 92.09306859970093,
+        "timing_origin": "assignment_created",
+        "tool_calls": 13,
+        "rejected_calls": 0,
+        "tool_elapsed_ms": 3542.7161902189255,
+        "calls_by_tool": {
+          "workflow_status": 4,
+          "claim_assignment": 1,
+          "list_findings": 1,
+          "read_batch": 3,
+          "apply_changes": 1,
+          "submit_resolutions": 1,
+          "check_gate": 1,
+          "advance_phase": 1
+        }
+      },
+      {
+        "phase": "review",
+        "role": "reviewer",
+        "round": 3,
+        "revision": 27,
+        "dispatch_id": "081ce05f76ec8b8993152bea",
+        "started_at": 1794237924.818516,
+        "finished_at": 1794238115.4561412,
+        "elapsed_seconds": 190.63762521743774,
+        "timing_origin": "assignment_created",
+        "tool_calls": 26,
+        "rejected_calls": 1,
+        "tool_elapsed_ms": 7600.75956210494,
+        "calls_by_tool": {
+          "workflow_status": 8,
+          "claim_assignment": 1,
+          "get_changes": 1,
+          "list_findings": 1,
+          "read_batches": 4,
+          "query_model": 5,
+          "review_resolutions": 1,
+          "complete_review_batch": 3,
+          "check_gate": 1,
+          "advance_phase": 1
+        }
+      }
+    ],
+    "tool_elapsed_sec": 84.59955149143934,
+    "event_count": 378,
+    "phases_elapsed_sec": 3367.995055437088
+  },
+  "origin_caveat": "Historical workflow_status audit does not distinguish supervisor observations from agent calls. Non-tool wall time includes inference, scheduling and transport; it does not isolate model reasoning."
+}

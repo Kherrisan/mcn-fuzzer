@@ -73,7 +73,21 @@ class Handler(socketserver.StreamRequestHandler):
                     result = [schema(name) for name in sorted(names)]
                 elif payload["op"] == "call":
                     name, arguments = payload["name"], payload.get("arguments", {})
-                    result = workflow.call(role, name, arguments)
+                    origin = (
+                        "supervisor"
+                        if (
+                            name
+                            in {
+                                "workflow_status",
+                                "claim_assignment",
+                                "prepare_sources",
+                                "advance_phase",
+                            }
+                            and payload.get("origin") == "supervisor"
+                        )
+                        else "agent"
+                    )
+                    result = workflow.call(role, name, arguments, origin=origin)
                     if name in {"workflow_status", "claim_assignment", "advance_phase"}:
                         result["allowed_tools"] = sorted(workflow.allowed(role))
                 else:
@@ -174,7 +188,20 @@ def stdio(path, token_file, catalog="phase"):
                         "content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]
                     }
                 except WorkflowError as error:
-                    result = {"isError": True, "content": [{"type": "text", "text": str(error)}]}
+                    # Success and error payloads use the same JSON encoding, so code-mode
+                    # clients cannot mask the actual diagnostic with a JSON.parse error.
+                    result = {
+                        "isError": True,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    {"error": str(error), "tool": params["name"]},
+                                    ensure_ascii=False,
+                                ),
+                            }
+                        ],
+                    }
             else:
                 emit(
                     {

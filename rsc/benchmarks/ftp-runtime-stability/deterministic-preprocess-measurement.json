@@ -1,0 +1,11 @@
+{
+  "scope": "Preprocess-only microbenchmark; no Codex agents and no full-RSC runtime or semantic acceptance claim.",
+  "prototype_sha256": "c9750fc701f8b30d23dfb00a665f30677dcef3bc168f364156ac084a152e56ef",
+  "elapsed_seconds": 4.035338435322046,
+  "batches": 30,
+  "exact_batches_equal_fixed_rfc_baseline": true,
+  "phase": "parse",
+  "records": 0,
+  "receipts": 0,
+  "processed": 0
+}

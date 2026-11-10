@@ -1,0 +1,31 @@
+{
+  "compact": [
+    {
+      "cursor": 0,
+      "records": 383,
+      "dependency_rows": 227,
+      "tokens": 23958
+    },
+    {
+      "cursor": 383,
+      "records": 62,
+      "dependency_rows": 62,
+      "tokens": 5044
+    }
+  ],
+  "records": [
+    {
+      "cursor": 0,
+      "records": 227,
+      "dependency_rows": 78,
+      "tokens": 23959
+    },
+    {
+      "cursor": 227,
+      "records": 218,
+      "dependency_rows": 211,
+      "tokens": 23464
+    }
+  ],
+  "compact_first_group_filter_omits_dependency_rows": 62
+}

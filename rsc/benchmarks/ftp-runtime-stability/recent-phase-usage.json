@@ -1,0 +1,89 @@
+{
+  "iteration-10": [
+    {
+      "phase": "preprocess",
+      "round": 0,
+      "complete": true,
+      "output_tokens": 83,
+      "reasoning_tokens": 45,
+      "responses": 1,
+      "seconds": 26.133,
+      "visible_output_tokens": 38
+    },
+    {
+      "phase": "parse",
+      "round": 0,
+      "complete": false,
+      "output_tokens": 62474,
+      "reasoning_tokens": 37793,
+      "responses": 33,
+      "seconds": 1175.558,
+      "visible_output_tokens": 24681
+    }
+  ],
+  "iteration-11": [
+    {
+      "phase": "preprocess",
+      "round": 0,
+      "complete": true,
+      "output_tokens": 89,
+      "reasoning_tokens": 28,
+      "responses": 1,
+      "seconds": 25.005,
+      "visible_output_tokens": 61
+    },
+    {
+      "phase": "parse",
+      "round": 0,
+      "complete": false,
+      "output_tokens": 61178,
+      "reasoning_tokens": 39103,
+      "responses": 41,
+      "seconds": 1176.692,
+      "visible_output_tokens": 22075
+    }
+  ],
+  "iteration-12": [
+    {
+      "phase": "preprocess",
+      "round": 0,
+      "complete": true,
+      "output_tokens": 104,
+      "reasoning_tokens": 36,
+      "responses": 1,
+      "seconds": 30.308,
+      "visible_output_tokens": 68
+    },
+    {
+      "phase": "parse",
+      "round": 0,
+      "complete": true,
+      "output_tokens": 28118,
+      "reasoning_tokens": 10911,
+      "responses": 24,
+      "seconds": 535.318,
+      "visible_output_tokens": 17207
+    },
+    {
+      "phase": "review",
+      "round": 1,
+      "complete": true,
+      "output_tokens": 15828,
+      "reasoning_tokens": 8321,
+      "responses": 33,
+      "seconds": 338.081,
+      "visible_output_tokens": 7507
+    },
+    {
+      "phase": "repair",
+      "round": 1,
+      "complete": false,
+      "output_tokens": 14149,
+      "reasoning_tokens": 6831,
+      "responses": 15,
+      "seconds": 297.99,
+      "visible_output_tokens": 7318
+    }
+  ],
+  "note": "Cumulative usage deltas allocated by observed phase timestamps; handoff responses may cross boundaries. Incomplete metrics contain only reported usage before timeout, not a completed/equal-quality workload. Non-tool wall time also includes transport/scheduling."
+}

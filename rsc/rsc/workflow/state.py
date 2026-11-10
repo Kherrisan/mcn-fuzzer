@@ -16,6 +16,7 @@ from rsc.protocol.context import document_digest
 from rsc.protocol.contract import COLLECTIONS
 from rsc.protocol.validate import validate_protocol
 
+from .evidence import expand_evidence, source_citations
 from .metrics import phase_metrics
 from .model import reference_errors, validate_record
 from .paging import (
@@ -26,6 +27,7 @@ from .paging import (
     resolve_budget,
     seal_response,
 )
+from .source_format import encode_source_batch
 from .sources import digest, prepare, token_count, validate_batches
 
 READ = {
@@ -70,7 +72,14 @@ class Workflow:
 
     @classmethod
     def create(
-        cls, root, sources, protocol, *, target_tokens=8000, max_tokens=12000, max_review_rounds=5
+        cls,
+        root,
+        sources,
+        protocol,
+        *,
+        target_tokens=8000,
+        max_tokens=12000,
+        max_review_rounds=5,
     ):
         if not isinstance(protocol, str) or not protocol.strip():
             raise WorkflowError("protocol must be a nonempty name and version")
@@ -166,12 +175,13 @@ class Workflow:
         phases = ("preprocess", "parse", "repair") if role == "parser" else ("review",)
         return set().union(*(TOOLS[phase] for phase in phases))
 
-    def _audit(self, before, role, name, started, status, error=None):
+    def _audit(self, before, role, name, started, status, error=None, origin="agent"):
         event = {
             "time": time.time(),
             "task_id": before["task_id"],
             "role": role,
             "tool": name,
+            "origin": origin,
             "status": status,
             "phase": before["phase"],
             "next_phase": self.data["phase"],
@@ -187,13 +197,14 @@ class Workflow:
             event["delivery"] = delivery
         self.db.execute("INSERT INTO events(body) VALUES (?)", (json.dumps(event),))
 
-    def call(self, role, name, arguments=None):
+    def call(self, role, name, arguments=None, *, origin="agent"):
         from .tools import validate_arguments
 
         arguments = {} if arguments is None else arguments
         started = time.monotonic()
         with self.lock:
             self.data = self._load()
+            canonical_before = copy.deepcopy(self.data)
             before = copy.deepcopy(self.data)
             try:
                 with self.db:
@@ -209,24 +220,42 @@ class Workflow:
                     result = getattr(self, name)(**arguments)
                     if name in {"workflow_status", "claim_assignment", "advance_phase"}:
                         result["allowed_tools"] = sorted(self.allowed(role))
-                    if isinstance(result, dict) and "delivered_ids" in result:
+                        result["has_work"] = (
+                            role == self.actor and self.data["phase"] != "published"
+                        )
+                        result["stop_turn"] = name == "advance_phase" or not result["has_work"]
+                    delivery = result
+                    if name == "read_batch":
+                        delivery = {
+                            **result,
+                            "delivered_ids": [result["batch"]["batch_id"]],
+                            "format": "records",
+                            "max_tokens": resolve_budget(None),
+                            "tokens": token_count(result),
+                            "revision": self.data["revision"],
+                        }
+                    if isinstance(delivery, dict) and "delivered_ids" in delivery:
                         before["_last_delivery"] = {
-                            "format": result.get("format"),
-                            "max_tokens": result.get("max_tokens"),
-                            "tokens": result.get("tokens"),
-                            "delivered_ids": result.get("delivered_ids"),
-                            "revision": result.get("revision"),
+                            "format": delivery.get("format"),
+                            "max_tokens": delivery.get("max_tokens"),
+                            "tokens": delivery.get("tokens"),
+                            "delivered_ids": delivery.get("delivered_ids"),
+                            "revision": delivery.get("revision"),
                             "sha256": digest(result),
                         }
                         self.data.setdefault("response_log", []).append(
-                            {"tool": name, "dispatch_id": before["assignment"]["dispatch_id"], **before["_last_delivery"]}
+                            {
+                                "tool": name,
+                                "dispatch_id": before["assignment"]["dispatch_id"],
+                                **before["_last_delivery"],
+                            }
                         )
                     self._save()
-                    self._audit(before, role, name, started, "ok")
+                    self._audit(before, role, name, started, "ok", origin=origin)
             except (ValueError, KeyError, TypeError) as error:
-                self.data = before
+                self.data = canonical_before
                 with self.db:
-                    self._audit(before, role, name, started, "rejected", error)
+                    self._audit(before, role, name, started, "rejected", error, origin=origin)
                 raise WorkflowError(str(error)) from error
             if self.data["phase"] == "published":
                 self.export()
@@ -245,9 +274,11 @@ class Workflow:
                 "review_base",
             )
         } | {
-            "allowed_tools": sorted(TOOLS[self.data["phase"]]),
+            "allowed_tools": sorted(self.allowed(self.actor)),
             "gate": self.check_gate(),
+            "sources_prepared": self.data["source_hash"] is not None,
             "pending_batches": self.pending_batches(),
+            "next_batch": next(iter(self.pending_batches()), None),
         }
 
     def claim_assignment(self, dispatch_id):
@@ -316,7 +347,7 @@ class Workflow:
         except PageError as error:
             raise WorkflowError(str(error)) from error
 
-    def list_batches(self, filter=None, cursor=0, max_tokens=None, revision=None):
+    def list_batches(self, filter=None, cursor=0, max_tokens=None, revision=None, detail=False):
         self._page_revision(revision, cursor)
         rows = [
             {
@@ -327,6 +358,11 @@ class Workflow:
             }
             for b in self.data["batches"]
         ]
+        if detail:
+            for row in rows:
+                key = self._key(row["batch_id"])
+                if key in self.data["receipts"]:
+                    row["receipt_id"] = self.data["receipts"][key]
         if filter:
             rows = [r for r in rows if all(r.get(k) == v for k, v in filter.items())]
         return self._budget_page(rows, cursor, max_tokens)
@@ -337,7 +373,11 @@ class Workflow:
             raise WorkflowError(f"batch {batch_id} was not delivered")
         return result["batches"][0]
 
-    def read_batches(self, batch_ids, max_tokens=None):
+    def read_batches(self, batch_ids, max_tokens=None, format="records", include_evidence=True):
+        if format not in {"records", "compact"}:
+            raise WorkflowError("source format must be records or compact")
+        if type(include_evidence) is not bool:
+            raise WorkflowError("include_evidence must be a boolean")
         if not isinstance(batch_ids, list) or not batch_ids:
             raise WorkflowError("batch_ids must list at least one batch")
         order = [batch["batch_id"] for batch in self.data["batches"]]
@@ -346,23 +386,51 @@ class Workflow:
             if batch_id not in order:
                 raise WorkflowError("unknown batch")
             positions.append(order.index(batch_id))
-        if positions != list(range(positions[0], positions[0] + len(positions))):
-            raise WorkflowError("batches must be requested in assignment order without gaps")
+        if len(set(batch_ids)) != len(batch_ids):
+            raise WorkflowError("duplicate batch IDs; request each source batch once")
+        # Source evidence may span nonadjacent chapters, especially during repair.
+        batch_ids = [order[pos] for pos in sorted(positions)]
         try:
             budget = resolve_budget(max_tokens)
         except PageError as error:
             raise WorkflowError(str(error)) from error
+        citations = {
+            (ref["batch_id"], ref["block_id"]): name
+            for name, ref in source_citations(self.data["batches"]).items()
+        }
         prepared = []
         for batch_id in batch_ids:
             batch = self._batch(batch_id)
             prepared.append(
                 {
-                    "batch": batch,
+                    "batch": {
+                        **copy.deepcopy(batch),
+                        "segments": [
+                            {
+                                **segment,
+                                **(
+                                    {
+                                        "evidence": {
+                                            "batch_id": batch_id,
+                                            "block_id": segment["block_id"],
+                                        }
+                                    }
+                                    if include_evidence
+                                    else {}
+                                ),
+                                "citation": citations[(batch_id, segment["block_id"])],
+                            }
+                            for segment in batch["segments"]
+                        ],
+                    },
                     "receipt_id": digest(
                         {"dispatch": self.data["assignment"]["dispatch_id"], "batch": batch}
                     ),
                 }
             )
+
+        if format == "compact":
+            prepared = [{**item, "batch": encode_source_batch(item["batch"])} for item in prepared]
 
         def render(count, candidate):
             delivered = prepared[:count]
@@ -373,9 +441,20 @@ class Workflow:
                     "delivered": [item["batch"]["batch_id"] for item in delivered],
                     "remaining": remaining,
                     "delivered_ids": [item["batch"]["batch_id"] for item in delivered],
-                    "format": "records",
+                    "format": format,
                     "max_tokens": candidate,
                     "revision": self.data["revision"],
+                    "next_action": (
+                        "Cache complete sources and receipts; read all remaining assigned "
+                        "batches, then commit the complete actual-message/party/channel inventory "
+                        "before building its interactions. "
+                        "Preserve each source-stated direction/mode's own state checks and "
+                        "distinct reconnect/resumption lifecycles. Copy source citations, apply "
+                        "all supported changes, and report every batch without omitting behavior."
+                        if self.data["phase"] == "parse"
+                        else "Compare the complete delivered sources with the current model and "
+                        "resolve the assigned review/repair work using exact source citations."
+                    ),
                 }
             )
 
@@ -414,10 +493,18 @@ class Workflow:
         format="compact",
         max_tokens=None,
         revision=None,
+        batch_ids=None,
     ):
         self._page_revision(revision, cursor)
+        if batch_ids is not None:
+            for batch_id in batch_ids:
+                self._batch(batch_id)
         rows = []
         for rid, record in self.data["records"].items():
+            if batch_ids is not None and not any(
+                e["batch_id"] in batch_ids for e in record["evidence"]
+            ):
+                continue
             if kind and record["kind"] != kind or record_ids is not None and rid not in record_ids:
                 continue
             if filters and any(record["value"].get(k) != v for k, v in filters.items()):
@@ -434,6 +521,7 @@ class Workflow:
             and not kind
             and not filters
             and record_ids is None
+            and batch_ids is None
         ):
             key = self.data["assignment"]["dispatch_id"]
             reads = self.data.setdefault("model_reads", {}).setdefault(key, [])
@@ -445,32 +533,102 @@ class Workflow:
     def _evidence(self, evidence):
         if not isinstance(evidence, list) or not evidence:
             raise WorkflowError("source evidence is required")
-        for item in evidence:
-            batch = self._batch(item["batch_id"])
+        errors = []
+        for index, item in enumerate(evidence):
+            try:
+                batch = self._batch(item["batch_id"])
+            except WorkflowError as error:
+                errors.append(f"evidence[{index}]: {error}")
+                continue
             if not any(s["block_id"] == item["block_id"] for s in batch["segments"]):
-                raise WorkflowError("evidence does not belong to its source batch")
+                owners = [
+                    b["batch_id"]
+                    for b in self.data["batches"]
+                    if any(s["block_id"] == item["block_id"] for s in b["segments"])
+                ]
+                errors.append(
+                    f"evidence[{index}] block {item['block_id']} does not belong to its "
+                    f"source batch {item['batch_id']}; owning_batches={owners}; "
+                    f"revision={self.data['revision']}. Read an owning batch and copy its evidence."
+                )
             if self._key(item["batch_id"]) not in self.data["receipts"]:
-                raise WorkflowError("read evidence source before using it")
+                errors.append(
+                    f"evidence[{index}]: read evidence source {item['batch_id']} before using it"
+                )
+        if errors:
+            raise WorkflowError("; ".join(errors))
 
     def apply_changes(self, expected_revision, operation_id, changes):
+        from .change_targets import resolve_targets
+        from .tools import validate_arguments
+
+        citations = source_citations(self.data["batches"])
+        if isinstance(changes, dict):
+            from .change_format import decode_changes
+
+            changes = decode_changes(changes, citations)
+        changes = copy.deepcopy(changes)
+        for index, change in enumerate(changes):
+            if "evidence" in change:
+                change["evidence"] = expand_evidence(
+                    change["evidence"], citations, path=f"changes[{index}].evidence"
+                )
+        previous = self.data["operations"].get(operation_id)
+        if previous is None:
+            self._revision(expected_revision)
+        changes, target_bindings = resolve_targets(
+            changes, self.data["records"], previous, self.data["history"], self.data["revision"]
+        )
+        legacy_signature = digest({"revision": expected_revision, "changes": changes})
+        # Kind is selector metadata for edits; the record itself determines its kind.
+        for change in changes:
+            if change["op"] != "add":
+                change.pop("kind", None)
+        validation_changes = copy.deepcopy(changes)
+        for change in validation_changes:
+            if (
+                change["op"] in {"update", "patch"}
+                and change.get("record_id") in self.data["records"]
+            ):
+                change["kind"] = self.data["records"][change["record_id"]]["kind"]
+        validate_arguments(
+            "apply_changes",
+            {
+                "expected_revision": expected_revision,
+                "operation_id": operation_id,
+                "changes": validation_changes,
+            },
+        )
         signature = digest({"revision": expected_revision, "changes": changes})
         if operation_id in self.data["operations"]:
             old = self.data["operations"][operation_id]
-            if old["signature"] != signature:
+            if old["signature"] not in {signature, legacy_signature}:
                 raise WorkflowError("operation ID reused with different changes")
             return old["result"]
         self._revision(expected_revision)
         if not changes:
             raise WorkflowError("empty changes")
+        evidence_errors = []
+        for index, change in enumerate(changes):
+            if change["op"] in {"add", "update", "patch"}:
+                try:
+                    self._evidence(change["evidence"])
+                except ValueError as error:
+                    kind = change.get("kind") or self.data["records"].get(
+                        change.get("record_id"), {}
+                    ).get("kind", "unknown")
+                    evidence_errors.append(f"changes[{index}] kind={kind}: {error}")
+        if evidence_errors:
+            raise WorkflowError("; ".join(evidence_errors))
         updates = []
-        for change in changes:
+        for change_index, change in enumerate(changes):
             op = change["op"]
             rid = change.get("record_id")
             before = copy.deepcopy(self.data["records"].get(rid))
             if op == "add":
                 rid = secrets.token_hex(8)
                 kind = change["kind"]
-            elif op in {"update", "delete"} and before:
+            elif op in {"update", "patch", "delete"} and before:
                 kind = before["kind"]
             else:
                 raise WorkflowError("invalid operation or missing record")
@@ -485,18 +643,34 @@ class Workflow:
                         report.setdefault("removed_records", {})[rid] = change["reason"]
             else:
                 value = copy.deepcopy(change["value"])
+                if op == "patch":
+                    if not isinstance(value, dict) or not value:
+                        raise WorkflowError("patch requires a nonempty partial value")
+                    value = {**copy.deepcopy(before["value"]), **value}
                 if kind == "steps" and before and value.get("name") != before["value"].get("name"):
-                    raise WorkflowError("step name cannot change during update")
-                validate_record(kind, value)
-                self._evidence(change["evidence"])
-                if token_count({"value": value, "evidence": change["evidence"]}) > 8000:
+                    raise WorkflowError(
+                        f"changes[{change_index}]: step name cannot change during update; "
+                        f"keep {before['value']['name']!r}. A true rename requires delete/add "
+                        "and updating all references atomically."
+                    )
+                try:
+                    validate_record(kind, value)
+                except ValueError as error:
+                    raise WorkflowError(f"changes[{change_index}] kind={kind}: {error}") from error
+                evidence = copy.deepcopy(change["evidence"])
+                if op == "patch":
+                    evidence = copy.deepcopy(before["evidence"])
+                    for item in change["evidence"]:
+                        if item not in evidence:
+                            evidence.append(copy.deepcopy(item))
+                if token_count({"value": value, "evidence": evidence}) > 8000:
                     raise WorkflowError(
                         "record exceeds 8000 tokens; keep definitions concise and cite sources"
                     )
                 self.data["records"][rid] = {
                     "kind": kind,
                     "value": value,
-                    "evidence": change["evidence"],
+                    "evidence": evidence,
                 }
             updates.append(
                 {
@@ -507,33 +681,66 @@ class Workflow:
             )
         self.data["revision"] += 1
         self.data["history"].append({"revision": self.data["revision"], "changes": updates})
+        ledger = []
+        for update in updates:
+            record = update["after"] or update["before"]
+            entry = {
+                "record_id": update["record_id"],
+                "kind": record["kind"],
+                "name": record["value"].get("name"),
+                "deleted": update["after"] is None,
+            }
+            if record["kind"] == "messages":
+                entry["associated_fields"] = [
+                    f["name"] for f in record["value"]["associated_fields"]
+                ]
+            elif record["kind"] == "steps":
+                entry["action"] = record["value"]["action"]
+                if entry["action"] == "send":
+                    entry["message_name"] = record["value"]["message_name"]
+            ledger.append(entry)
         result = {
             "revision": self.data["revision"],
             "record_ids": [u["record_id"] for u in updates],
+            "records": ledger,
         }
-        self.data["operations"][operation_id] = {"signature": signature, "result": result}
+        result["draft_reference_errors"] = reference_errors(self.data["records"])
+        result["reference_note"] = (
+            "Forward references may remain while drafting. Correct invalid field carriers and "
+            "network-action field relations using source evidence; "
+            "do not invent facts to clear errors."
+        )
+        self.data["operations"][operation_id] = {
+            "signature": signature,
+            "result": result,
+            "target_bindings": target_bindings,
+        }
         return result
 
     def _revision(self, revision):
         if type(revision) is not int or revision != self.data["revision"]:
             raise WorkflowError("stale model revision")
 
-    def _complete(self, batch_id, receipt_id, report, review=False):
+    def _validate_report(self, batch_id, receipt_id, report):
         if self.data["receipts"].get(self._key(batch_id)) != receipt_id:
-            raise WorkflowError("missing complete batch receipt")
+            raise WorkflowError(
+                f"missing complete batch receipt for {batch_id}; "
+                "use its cached complete read response in this dispatch"
+            )
         if not isinstance(report, dict) or not str(report.get("summary", "")).strip():
             raise WorkflowError(
                 "report requires a summary, including when no information was found"
             )
-        pending = self.pending_batches()
-        if batch_id in pending and pending[0] != batch_id:
-            raise WorkflowError("complete batches in the assigned order")
+        self._batch(batch_id)
         for rid in report.get("record_ids", []):
             if rid not in self.data["records"]:
                 raise WorkflowError("report references missing record")
         for fid in report.get("finding_ids", []):
             if fid not in self.data["findings"]:
                 raise WorkflowError("report references missing finding")
+
+    def _complete(self, batch_id, receipt_id, report, review=False):
+        self._validate_report(batch_id, receipt_id, report)
         key = self._key(batch_id) if review else batch_id
         saved = {**copy.deepcopy(report), "revision": self.data["revision"]}
         if review:
@@ -545,13 +752,60 @@ class Workflow:
         self.data["reviews" if review else "processed"][key] = saved
         return {"completed": batch_id}
 
-    def complete_batch(self, batch_id, receipt_id, report):
-        return self._complete(batch_id, receipt_id, report)
+    def _complete_reports(self, batch_id, receipt_id, report, batches, review):
+        if batches is None:
+            items = [{"batch_id": batch_id, "receipt_id": receipt_id, "report": report}]
+        else:
+            if any(value is not None for value in (batch_id, receipt_id, report)):
+                raise WorkflowError("use either batches or the single-batch arguments")
+            if not batches:
+                raise WorkflowError("batches must be nonempty")
+            items = batches
+        ids = [item["batch_id"] for item in items]
+        if len(ids) != len(set(ids)):
+            raise WorkflowError("duplicate completion batch IDs")
+        order = {b["batch_id"]: i for i, b in enumerate(self.data["batches"])}
+        for bid in ids:
+            self._batch(bid)
+            if review and bid not in self.data["review_batches"]:
+                raise WorkflowError("batch is not assigned for this review")
+        # Workflow.call supplies the transaction and rolls back all reports on failure.
+        done = [
+            self._complete(**item, review=review)["completed"]
+            for item in sorted(items, key=lambda item: order[item["batch_id"]])
+        ]
+        collection = "reviews" if review else "processed"
+        self.data[collection] = dict(
+            sorted(
+                self.data[collection].items(),
+                key=lambda pair: (order.get(pair[1].get("batch_id", pair[0]), -1), pair[0]),
+            )
+        )
+        pending = self.pending_batches()
+        if not pending:
+            next_action = (
+                "All assigned source comparisons are reported. Finish resolution decisions, "
+                "check_gate, then advance_phase."
+                if review
+                else "All parsing batches are reported. Fix any concrete known omission or "
+                "draft-reference error, then call advance_phase NOW for independent full-model "
+                "review. If none is outstanding, do not start another whole-document planning "
+                "or comparison pass; hand off the completed extraction and end this turn."
+            )
+        else:
+            next_action = "Continue the pending source work and use cached receipts/record ledgers."
+        return {
+            "completed": done if batches is not None else done[0],
+            "pending_batches": pending,
+            "next_batch": next(iter(pending), None),
+            "next_action": next_action,
+        }
 
-    def complete_review_batch(self, batch_id, receipt_id, report):
-        if batch_id not in self.data["review_batches"]:
-            raise WorkflowError("batch is not assigned for this review")
-        return self._complete(batch_id, receipt_id, report, True)
+    def complete_batch(self, batch_id=None, receipt_id=None, report=None, batches=None):
+        return self._complete_reports(batch_id, receipt_id, report, batches, False)
+
+    def complete_review_batch(self, batch_id=None, receipt_id=None, report=None, batches=None):
+        return self._complete_reports(batch_id, receipt_id, report, batches, True)
 
     def list_findings(self, filters=None, cursor=0, max_tokens=None, revision=None):
         self._page_revision(revision, cursor)
@@ -562,10 +816,13 @@ class Workflow:
 
     def submit_findings(self, reviewed_revision, findings):
         self._revision(reviewed_revision)
+        findings = copy.deepcopy(findings)
+        citations = source_citations(self.data["batches"])
         ids = []
         for finding in findings:
             if not str(finding.get("description", "")).strip():
                 raise WorkflowError("finding requires a description")
+            finding["evidence"] = expand_evidence(finding["evidence"], citations)
             self._evidence(finding["evidence"])
             if any(r not in self.data["records"] for r in finding.get("record_ids", [])):
                 raise WorkflowError("finding refers to missing record")
@@ -582,6 +839,8 @@ class Workflow:
 
     def submit_resolutions(self, expected_revision, resolutions):
         self._revision(expected_revision)
+        resolutions = copy.deepcopy(resolutions)
+        citations = source_citations(self.data["batches"])
         for resolution in resolutions:
             finding = self.data["findings"][resolution["finding_id"]]
             if finding["status"] == "accepted":
@@ -590,6 +849,7 @@ class Workflow:
                 raise WorkflowError("invalid resolution status")
             if not str(resolution.get("reason", "")).strip():
                 raise WorkflowError("resolution requires a source-based reason")
+            resolution["evidence"] = expand_evidence(resolution["evidence"], citations)
             self._evidence(resolution["evidence"])
             finding["resolution"] = {**resolution, "revision": expected_revision}
             finding["status"] = "submitted"

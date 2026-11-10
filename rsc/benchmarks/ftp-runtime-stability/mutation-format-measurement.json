@@ -1,0 +1,9 @@
+{
+  "mutations": 186,
+  "operations": 17,
+  "expanded_tokens": 26050,
+  "compact_tokens": 19868,
+  "reduction_fraction": 0.23731285988483686,
+  "exact_round_trip": true,
+  "note": "Offline prototype on actual mutation history. No runtime tool/API change yet; JS code-token savings may differ."
+}

@@ -1,0 +1,28 @@
+[
+  {
+    "session": "rollout-2026-11-09T12-54-25-01a1c05f-c800-7390-b8b9-8ffbee7ac64c.jsonl",
+    "start": "2026-11-09T12:54:28.888Z",
+    "last": "2026-11-09T13:24:57.195Z",
+    "usage": {
+      "input_tokens": 11811675,
+      "cached_input_tokens": 11441664,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 60336,
+      "reasoning_output_tokens": 25100,
+      "total_tokens": 11872011
+    }
+  },
+  {
+    "session": "rollout-2026-11-09T12-54-25-01a1c05f-c891-7212-8416-4097929b34e4.jsonl",
+    "start": "2026-11-09T13:09:28.557Z",
+    "last": "2026-11-09T13:26:35.737Z",
+    "usage": {
+      "input_tokens": 8463132,
+      "cached_input_tokens": 8194048,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 22523,
+      "reasoning_output_tokens": 12156,
+      "total_tokens": 8485655
+    }
+  }
+]

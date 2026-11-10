@@ -1,0 +1,161 @@
+{
+  "baseline_high": [
+    {
+      "phase": "preprocess",
+      "round": 0,
+      "seconds": 32.84834384918213,
+      "model_responses": 6,
+      "input_tokens": 95872,
+      "cached_input_tokens": 84608,
+      "output_tokens": 352,
+      "reasoning_output_tokens": 92
+    },
+    {
+      "phase": "parse",
+      "round": 0,
+      "seconds": 868.0566875934601,
+      "model_responses": 56,
+      "input_tokens": 7691434,
+      "cached_input_tokens": 7465472,
+      "output_tokens": 42384,
+      "reasoning_output_tokens": 18112
+    },
+    {
+      "phase": "review",
+      "round": 1,
+      "seconds": 275.9928505420685,
+      "model_responses": 23,
+      "input_tokens": 1767115,
+      "cached_input_tokens": 1626880,
+      "output_tokens": 12052,
+      "reasoning_output_tokens": 6362
+    },
+    {
+      "phase": "repair",
+      "round": 1,
+      "seconds": 369.62366127967834,
+      "model_responses": 26,
+      "input_tokens": 2851302,
+      "cached_input_tokens": 2737920,
+      "output_tokens": 17807,
+      "reasoning_output_tokens": 4807
+    },
+    {
+      "phase": "review",
+      "round": 2,
+      "seconds": 189.59935975074768,
+      "model_responses": 22,
+      "input_tokens": 3945555,
+      "cached_input_tokens": 3867008,
+      "output_tokens": 8012,
+      "reasoning_output_tokens": 4982
+    },
+    {
+      "phase": "repair",
+      "round": 2,
+      "seconds": 94.70426416397095,
+      "model_responses": 9,
+      "input_tokens": 970593,
+      "cached_input_tokens": 952320,
+      "output_tokens": 4306,
+      "reasoning_output_tokens": 2065
+    },
+    {
+      "phase": "review",
+      "round": 3,
+      "seconds": 98.38339591026306,
+      "model_responses": 17,
+      "input_tokens": 2621526,
+      "cached_input_tokens": 2572160,
+      "output_tokens": 3709,
+      "reasoning_output_tokens": 714
+    }
+  ],
+  "iteration_03": [
+    {
+      "phase": "preprocess",
+      "round": 0,
+      "seconds": 28.505281686782837,
+      "model_responses": 4,
+      "input_tokens": 57935,
+      "cached_input_tokens": 48128,
+      "output_tokens": 251,
+      "reasoning_output_tokens": 0
+    },
+    {
+      "phase": "parse",
+      "round": 0,
+      "seconds": 1151.2824580669403,
+      "model_responses": 68,
+      "input_tokens": 8925249,
+      "cached_input_tokens": 8651392,
+      "output_tokens": 57498,
+      "reasoning_output_tokens": 18042
+    }
+  ],
+  "note": "API usage records allocated to phase wall-time windows; excludes inference timing unavailable from logs. Older sessions may not expose every usage record.",
+  "iteration_04": [
+    {
+      "phase": "preprocess",
+      "round": 0,
+      "seconds": 35.56057786941528,
+      "model_responses": 5,
+      "input_tokens": 80623,
+      "cached_input_tokens": 62976,
+      "output_tokens": 507,
+      "reasoning_output_tokens": 63
+    },
+    {
+      "phase": "parse",
+      "round": 0,
+      "seconds": 737.7463026046753,
+      "model_responses": 39,
+      "input_tokens": 3593069,
+      "cached_input_tokens": 3454464,
+      "output_tokens": 37673,
+      "reasoning_output_tokens": 12132
+    },
+    {
+      "phase": "review",
+      "round": 1,
+      "seconds": 169.75530362129211,
+      "model_responses": 18,
+      "input_tokens": 1319037,
+      "cached_input_tokens": 1185920,
+      "output_tokens": 7682,
+      "reasoning_output_tokens": 4556
+    }
+  ],
+  "iteration_07": [
+    {
+      "phase": "preprocess",
+      "round": 0,
+      "seconds": 32.12265419960022,
+      "model_responses": 5,
+      "input_tokens": 77080,
+      "cached_input_tokens": 67840,
+      "output_tokens": 467,
+      "reasoning_output_tokens": 54
+    },
+    {
+      "phase": "parse",
+      "round": 0,
+      "seconds": 925.0121853351593,
+      "model_responses": 46,
+      "input_tokens": 5494324,
+      "cached_input_tokens": 5284992,
+      "output_tokens": 46693,
+      "reasoning_output_tokens": 23234
+    },
+    {
+      "phase": "review",
+      "round": 1,
+      "seconds": 175.72907495498657,
+      "model_responses": 21,
+      "input_tokens": 1894344,
+      "cached_input_tokens": 1749248,
+      "output_tokens": 6507,
+      "reasoning_output_tokens": 3243
+    }
+  ]
+}

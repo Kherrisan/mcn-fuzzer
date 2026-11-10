@@ -81,7 +81,9 @@ def test_stdio_bridge(tmp_path):
             assert replies[1]["result"]["capabilities"]["tools"]["listChanged"]
             assert "prepare_sources" in [t["name"] for t in replies[2]["result"]["tools"]]
             assert replies[3]["result"]["isError"]
-            assert "forbidden" in replies[3]["result"]["content"][0]["text"]
+            error = json.loads(replies[3]["result"]["content"][0]["text"])
+            assert "forbidden" in error["error"]
+            assert error["tool"] == "apply_changes"
         finally:
             server.shutdown()
             thread.join()

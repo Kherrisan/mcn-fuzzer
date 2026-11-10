@@ -1,0 +1,8 @@
+{
+  "batch_count": 30,
+  "record_source_tokens": 124939,
+  "compact_source_tokens": 79261,
+  "saved_tokens": 45678,
+  "reduction_fraction": 0.3656024139780213,
+  "exact_round_trip": true
+}

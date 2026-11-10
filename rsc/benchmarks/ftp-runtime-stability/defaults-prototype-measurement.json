@@ -1,0 +1,7 @@
+{
+  "compact_citation_tokens": 15990,
+  "compact_with_shared_defaults_tokens": 15365,
+  "groups_factored": 23,
+  "exact_round_trip": true,
+  "note": "Offline prototype only; reconstructed iteration-07 full-value mutations, not observed model generation or runtime. No running RSC package was modified."
+}

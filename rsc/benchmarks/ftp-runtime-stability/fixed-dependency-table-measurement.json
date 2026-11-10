@@ -1,0 +1,16 @@
+{
+  "scope": "Offline same 195 dependency additions as prior measurement; fixed five columns, one group, exact original field_relations/evidence. No runtime or semantic claim.",
+  "dependency_additions": 195,
+  "columns": [
+    "prior_step",
+    "dependent_step",
+    "condition",
+    "field_relations",
+    "@evidence"
+  ],
+  "groups": 1,
+  "tokens": 7166,
+  "prior_variable_width_tokens": 7632,
+  "named_rows_tokens": 10915,
+  "exact_round_trip": true
+}

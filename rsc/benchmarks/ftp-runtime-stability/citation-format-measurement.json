@@ -1,0 +1,14 @@
+{
+  "source_batch_count": 30,
+  "source_body_compact_tokens_before": 79261,
+  "source_body_compact_tokens_with_citations": 84027,
+  "reconstructed_full_value_mutations": 315,
+  "argument_tokens": {
+    "expanded_pairs": 33507,
+    "compact_pools": 18792,
+    "expanded_citations": 24923,
+    "compact_direct_citations": 15990
+  },
+  "exact_round_trip": true,
+  "note": "Counterfactual full-value add/update representations reconstructed from committed iteration-07 history; excludes deletes and does not measure actual generated code, partial patches, reasoning or runtime. Source counts are batch bodies without response envelopes."
+}

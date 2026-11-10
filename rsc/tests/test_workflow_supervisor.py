@@ -83,6 +83,10 @@ def test_review_repair_reuses_original_terminal_addresses(tmp_path):
     assignment.update(dispatch_id="review-2", role="reviewer", phase="review", round=2)
     assert s.step()
     assert [c[1] for c in calls if c[0] == "send"] == ["t8", "t7", "t8"]
+    messages = [c[2] for c in calls if c[0] == "send"]
+    assert "Round: 1." in messages[0] and "This is the first review" in messages[0]
+    assert "do not request historical diffs" in messages[0]
+    assert "Round: 2." in messages[2] and "EVERY get_changes page" in messages[2]
     assert all(c[0] != "run" for c in calls)
 
 

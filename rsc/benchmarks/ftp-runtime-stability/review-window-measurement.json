@@ -1,0 +1,62 @@
+{
+  "scope": "Offline pending-metadata navigation only; no semantic or workflow completion claim.",
+  "window_tokens": 4000,
+  "windows": [
+    {
+      "batches": [
+        "batch-00001",
+        "batch-00002",
+        "batch-00003",
+        "batch-00004",
+        "batch-00005",
+        "batch-00006",
+        "batch-00007"
+      ],
+      "tokens": 3775
+    },
+    {
+      "batches": [
+        "batch-00008",
+        "batch-00009",
+        "batch-00010",
+        "batch-00011",
+        "batch-00012",
+        "batch-00013"
+      ],
+      "tokens": 3861
+    },
+    {
+      "batches": [
+        "batch-00014",
+        "batch-00015",
+        "batch-00016",
+        "batch-00017",
+        "batch-00018",
+        "batch-00019",
+        "batch-00020",
+        "batch-00021",
+        "batch-00022",
+        "batch-00023"
+      ],
+      "tokens": 3802
+    },
+    {
+      "batches": [
+        "batch-00024",
+        "batch-00025",
+        "batch-00026",
+        "batch-00027",
+        "batch-00028"
+      ],
+      "tokens": 3918
+    },
+    {
+      "batches": [
+        "batch-00029",
+        "batch-00030"
+      ],
+      "tokens": 806
+    }
+  ],
+  "all_thirty_once": true
+}

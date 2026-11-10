@@ -1,0 +1,11 @@
+{
+  "scope": "Offline mutation payloads from every dependency addition in iteration-20, including later revised/deleted records. Same group defaults/citations; exact decoding to original records and evidence. This measures serialized arguments, not agent-generated helper code, reasoning or runtime.",
+  "dependency_additions": 195,
+  "groups": 15,
+  "named_rows_tokens": 10915,
+  "column_rows_tokens": 7632,
+  "reduction_percent": 30.08,
+  "exact_round_trip": true,
+  "already_supported_tool": "apply_changes",
+  "new_tools": 0
+}

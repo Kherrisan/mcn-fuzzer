@@ -62,9 +62,19 @@ def reference_errors(records: dict) -> list[str]:
                     f"on channel {s.get('channel_name')!r}"
                 )
             network_nodes[key] = s.get("name")
+            role = {"connect": "initiator_party_name", "listen": "acceptor_party_name"}.get(action)
+            if channel and channel.get("connection") == "connection_oriented" and role:
+                expected = channel.get(role)
+                if expected is not None and s.get("party_name") != expected:
+                    errors.append(
+                        f"step {s['name']!r} {action} party {s.get('party_name')!r} "
+                        f"contradicts channel {channel['name']!r} {role}={expected!r}; "
+                        "use a distinct channel for a source-supported reversed-role lifecycle"
+                    )
         else:
             errors.append(
-                f"step {s.get('name')!r} action is {action!r}, expected send, listen, connect, or close"
+                f"step {s.get('name')!r} action is {action!r}, "
+                "expected send, listen, connect, or close"
             )
             continue
         if channel and any(party not in channel["endpoint_party_names"] for party in parties):
@@ -76,7 +86,8 @@ def reference_errors(records: dict) -> list[str]:
         known = [step for step in ends if step]
         if d["field_relations"] and any(step.get("action") != "send" for step in known):
             errors.append(
-                f"field relations require send steps on both ends of {d['prior_step']} -> {d['dependent_step']}"
+                "field relations require send steps on both ends of "
+                f"{d['prior_step']} -> {d['dependent_step']}"
             )
             continue
         for relation in d["field_relations"]:

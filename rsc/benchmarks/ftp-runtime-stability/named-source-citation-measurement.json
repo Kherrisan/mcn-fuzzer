@@ -1,0 +1,12 @@
+{
+  "scope": "Offline per-batch serialization; every original named source field and citation retained, derived duplicate evidence omitted only. Not a runtime or semantic claim.",
+  "batches": 30,
+  "segments": 1135,
+  "tokens": {
+    "legacy_records": 131915,
+    "cited_named_records": 104675,
+    "legacy_compact": 84027
+  },
+  "derived_evidence_exact_reconstruction": true,
+  "named_reduction_percent": 20.65
+}

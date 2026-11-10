@@ -1,0 +1,8 @@
+{
+  "records": 445,
+  "compact_tokens": 23468,
+  "records_tokens": 42278,
+  "named_citation_tokens": 36747,
+  "exact_roundtrip": true,
+  "scope": "Offline encoding comparison only; iteration-17 uses the existing records format and no new codec."
+}

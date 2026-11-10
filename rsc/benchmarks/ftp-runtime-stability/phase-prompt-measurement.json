@@ -1,0 +1,18 @@
+{
+  "preprocess": {
+    "previous_tokens": 1967,
+    "candidate_tokens": 166
+  },
+  "parse": {
+    "previous_tokens": 2337,
+    "candidate_tokens": 1712
+  },
+  "review": {
+    "previous_tokens": 2119,
+    "candidate_tokens": 1355
+  },
+  "repair": {
+    "previous_tokens": 2149,
+    "candidate_tokens": 1596
+  }
+}

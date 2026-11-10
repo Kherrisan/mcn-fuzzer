@@ -560,8 +560,8 @@ def test_read_batches_stops_on_budget_without_a_receipt(task):
         assert task._key(batch_id) in task.data["receipts"]
     for batch_id in first["remaining"]:
         assert task._key(batch_id) not in task.data["receipts"]
-    with pytest.raises(WorkflowError, match="assignment order"):
-        call(task, "read_batches", batch_ids=list(reversed(ids)))
+    reordered = call(task, "read_batches", batch_ids=list(reversed(ids)))
+    assert reordered["delivered"] == ids
     with pytest.raises(WorkflowError, match="requires"):
         call(task, "read_batches", batch_ids=[ids[0]], max_tokens=1)
 
@@ -581,3 +581,484 @@ def test_query_model_compact_matches_records(task):
                 cursor=compact["next_cursor"],
                 revision=compact["revision"] + 1,
             )
+
+
+@pytest.fixture
+def window_task(tmp_path):
+    source = tmp_path / "rfc9999.txt"
+    source.write_text(
+        "RFC 9999\n\n"
+        + "\n\n".join(
+            f"{i}. Section {i}\n\n" + "The client sends HELLO to the server. " * 40
+            for i in range(1, 7)
+        )
+    )
+    w = Workflow.create(tmp_path / "window", [source], "Example", target_tokens=256, max_tokens=512)
+    claim(w)
+    call(w, "prepare_sources")
+    call(w, "advance_phase")
+    claim(w)
+    assert len(w.data["batches"]) >= 3
+    return w
+
+
+def reports_for(read):
+    return [
+        {
+            "batch_id": item["batch"]["batch_id"],
+            "receipt_id": item["receipt_id"],
+            "report": {"summary": "Source-specific comparison: no protocol detail beyond HELLO"},
+        }
+        for item in read["batches"]
+    ]
+
+
+def test_nonadjacent_reads_copy_evidence_and_duplicate_rejection(window_task):
+    w = window_task
+    ids = [b["batch_id"] for b in w.data["batches"]]
+    read = call(w, "read_batches", batch_ids=[ids[2], ids[0]])
+    assert read["delivered"] == [ids[0], ids[2]]
+    assert w._key(ids[1]) not in w.data["receipts"]
+    for item in read["batches"]:
+        for seg in item["batch"]["segments"]:
+            assert seg["evidence"] == {
+                "batch_id": item["batch"]["batch_id"],
+                "block_id": seg["block_id"],
+            }
+    with pytest.raises(WorkflowError, match="duplicate"):
+        call(w, "read_batches", batch_ids=[ids[0], ids[0]])
+
+
+def test_bulk_completion_atomic_retry_and_single_out_of_order(window_task):
+    w = window_task
+    ids = [b["batch_id"] for b in w.data["batches"]]
+    reports = reports_for(call(w, "read_batches", batch_ids=ids))
+    bad = copy.deepcopy(reports)
+    bad[-1]["receipt_id"] = "wrong"
+    with pytest.raises(WorkflowError, match="receipt"):
+        call(w, "complete_batch", batches=bad)
+    assert not w.data["processed"]
+    # Individual completions may arrive out of order too.
+    call(w, "complete_batch", **reports[-1])
+    result = call(w, "complete_batch", batches=list(reversed(reports)))
+    assert result["completed"] == ids
+    assert result["pending_batches"] == []
+    assert list(w.data["processed"]) == ids
+    assert call(w, "complete_batch", batches=reports) == result
+    with pytest.raises(WorkflowError):
+        call(w, "complete_batch", batches=reports, **reports[0])
+
+
+def test_bulk_review_keeps_full_model_and_receipt_gates(window_task):
+    w = window_task
+    ids = [b["batch_id"] for b in w.data["batches"]]
+    call(w, "complete_batch", batches=reports_for(call(w, "read_batches", batch_ids=ids)))
+    evidence = w.data["batches"][0]["segments"][0]["block_id"]
+    call(
+        w,
+        "apply_changes",
+        expected_revision=0,
+        operation_id="initial",
+        changes=[
+            {
+                "op": "add",
+                "kind": "parties",
+                "value": {"name": "client", "description": "sender"},
+                "evidence": [{"batch_id": ids[0], "block_id": evidence}],
+            }
+        ],
+    )
+    transition = call(w, "advance_phase")
+    assert transition["stop_turn"] is True
+    assert transition["has_work"] is False
+    assert w.call("parser", "workflow_status")["stop_turn"] is True
+    claim(w)
+    # Receipts from the parsing dispatch do not authorize review completion.
+    with pytest.raises(WorkflowError, match="receipt"):
+        call(
+            w,
+            "complete_review_batch",
+            batch_id=ids[0],
+            receipt_id="old",
+            report={"summary": "compared"},
+        )
+    reports = reports_for(call(w, "read_batches", batch_ids=ids))
+    bad = copy.deepcopy(reports)
+    bad[-1]["report"]["record_ids"] = ["missing"]
+    with pytest.raises(WorkflowError, match="missing record"):
+        call(w, "complete_review_batch", batches=bad)
+    assert not w.data["reviews"]
+    call(w, "complete_review_batch", batches=list(reversed(reports)))
+    with pytest.raises(WorkflowError, match="model page"):
+        call(w, "advance_phase")
+    # A filtered model read never satisfies the full-model review gate.
+    call(w, "query_model", batch_ids=[ids[0]])
+    with pytest.raises(WorkflowError, match="model page"):
+        call(w, "advance_phase")
+    call(w, "query_model")
+    assert call(w, "check_gate")["ready"]
+    # Later reviews may need supplemental sources beyond affected batches.
+    w.data["review_batches"] = [ids[0]]
+    with w.db:
+        w._save()
+    extra = call(w, "read_batch", batch_id=ids[-1])
+    with pytest.raises(WorkflowError, match="not assigned"):
+        call(
+            w,
+            "complete_review_batch",
+            batch_id=ids[-1],
+            receipt_id=extra["receipt_id"],
+            report={"summary": "Supplementary cross-reference"},
+        )
+
+
+def test_evidence_diagnostic_and_change_ledger(window_task):
+    w = window_task
+    ids = [b["batch_id"] for b in w.data["batches"]]
+    read = call(w, "read_batches", batch_ids=ids)
+    evidence = read["batches"][0]["batch"]["segments"][0]["evidence"]
+    change = {
+        "op": "add",
+        "kind": "parties",
+        "value": {"name": "client", "description": "sender"},
+        "evidence": [{**evidence, "batch_id": ids[-1]}],
+    }
+    with pytest.raises(WorkflowError, match="owning_batches=.*revision=0"):
+        call(w, "apply_changes", expected_revision=0, operation_id="bad", changes=[change])
+    assert w.data["revision"] == 0
+    change["evidence"] = [evidence]
+    args = dict(expected_revision=0, operation_id="good", changes=[change])
+    result = call(w, "apply_changes", **args)
+    assert result["records"] == [
+        {
+            "record_id": result["record_ids"][0],
+            "kind": "parties",
+            "name": "client",
+            "deleted": False,
+        }
+    ]
+    assert call(w, "apply_changes", **args) == result
+    from rsc.workflow.paging import decode_compact
+
+    assert decode_compact(call(w, "query_model", batch_ids=[ids[-1]])) == []
+    assert len(decode_compact(call(w, "query_model", batch_ids=[ids[0]]))) == 1
+
+
+def test_observer_origin_and_no_new_tools(task):
+    from rsc.workflow.instructions import assignment_instructions
+    from rsc.workflow.tools import CONTRACTS, schema
+
+    assert len(CONTRACTS) == 18
+    assert all(schema(name)["name"] == name for name in CONTRACTS)
+    task.call("parser", "workflow_status", origin="supervisor")
+    task.call("parser", "workflow_status")
+    events = [json.loads(row[0]) for row in task.db.execute("select body from events")]
+    assert [e["origin"] for e in events] == ["supervisor", "agent"]
+    instructions = assignment_instructions("parser", "dispatch", "repair")
+    assert "complete_batch(batches=" not in instructions
+    assert "submit_resolutions" in instructions
+    assert "do not poll" in instructions.lower()
+
+
+def test_unresolved_schema_error_identifies_exact_kind_and_field(window_task):
+    w = window_task
+    bid = w.data["batches"][0]["batch_id"]
+    read = call(w, "read_batch", batch_id=bid)
+    evidence = read["batch"]["segments"][0]["evidence"]
+    with pytest.raises(WorkflowError, match=r"changes\[0\].value kind=unresolved:.*name"):
+        call(
+            w,
+            "apply_changes",
+            expected_revision=0,
+            operation_id="bad-issue",
+            changes=[
+                {
+                    "op": "add",
+                    "kind": "unresolved",
+                    "value": {
+                        "name": "not permitted",
+                        "description": "RFC ambiguity",
+                        "object_names": [],
+                    },
+                    "evidence": [evidence],
+                }
+            ],
+        )
+    assert not w.data["records"]
+    event = json.loads(
+        w.db.execute("select body from events order by seq desc limit 1").fetchone()[0]
+    )
+    assert "not valid under any" not in event["error"]
+    delivery = json.loads(
+        w.db.execute(
+            "select body from events where json_extract(body, '$.tool')='read_batch'"
+        ).fetchone()[0]
+    )["delivery"]
+    assert delivery["delivered_ids"] == [bid]
+    assert delivery["tokens"] > 0
+
+
+def test_referenced_mutation_schema_is_lossless_and_smaller():
+    from jsonschema import Draft202012Validator
+    from protocol_samples import base, interactions
+
+    from rsc.protocol.contract import DEFINITIONS
+    from rsc.workflow.tools import schema
+
+    compact = schema("apply_changes")["inputSchema"]
+    expanded = copy.deepcopy(compact)
+    legacy = expanded["properties"]["changes"]["oneOf"][0]["items"]
+    legacy["allOf"][0]["else"]["properties"]["value"] = {
+        "anyOf": [
+            copy.deepcopy(compact["$defs"][name]) for name in [*DEFINITIONS.values(), "issue"]
+        ]
+    }
+    a, b = Draft202012Validator(compact), Draft202012Validator(expanded)
+    inventory = base()
+    examples = {
+        **inventory,
+        **interactions(inventory),
+        "unresolved": [{"description": "Ambiguous boundary", "object_names": []}],
+    }
+    for kind, values in examples.items():
+        for value in [*values, {}, {"name": None}]:
+            args = {
+                "expected_revision": 0,
+                "operation_id": "example",
+                "changes": [
+                    {
+                        "op": "add",
+                        "kind": kind,
+                        "value": value,
+                        "evidence": [{"batch_id": "b", "block_id": "1"}],
+                    }
+                ],
+            }
+            assert a.is_valid(args) == b.is_valid(args)
+    assert token_count(compact) < token_count(expanded)
+
+
+def test_phase_metrics_separate_observers_and_repeated_reads():
+    from rsc.workflow.metrics import phase_metrics
+
+    events = []
+    for i, (tool, origin, ids) in enumerate(
+        [
+            ("workflow_status", "supervisor", []),
+            ("read_batches", "agent", ["batch-1", "batch-3"]),
+            ("read_batch", "agent", ["batch-1"]),
+            ("advance_phase", "agent", []),
+        ]
+    ):
+        event = {
+            "dispatch_id": "d",
+            "tool": tool,
+            "origin": origin,
+            "phase": "parse",
+            "role": "parser",
+            "round": 0,
+            "revision": 1,
+            "time": i + 1,
+            "elapsed_ms": 100,
+            "status": "ok",
+        }
+        if ids:
+            event["delivery"] = {"delivered_ids": ids, "tokens": 20}
+        events.append(event)
+    report = phase_metrics({}, events)[0]
+    assert report["calls_by_origin"] == {"supervisor": 1, "agent": 3}
+    assert report["delivered_tokens"] == 40
+    assert report["delivered_items"] == 3
+    assert report["repeated_delivered_items"] == 1
+    assert report["non_tool_wall_seconds"] == pytest.approx(2.6)
+
+
+def test_compact_sources_budget_receipts_and_legacy_single_read(window_task):
+    from rsc.workflow.source_format import decode_source_batch
+
+    w = window_task
+    ids = [b["batch_id"] for b in w.data["batches"]]
+    with pytest.raises(WorkflowError, match="requires") as raised:
+        call(w, "read_batches", batch_ids=ids, format="compact", max_tokens=1)
+    needed = int(str(raised.value).split("requires ", 1)[1].split()[0])
+    page = call(w, "read_batches", batch_ids=ids, format="compact", max_tokens=needed)
+    assert page["tokens"] == token_count(page) <= needed
+    assert page["format"] == "compact"
+    assert page["delivered"] == ids[:1]
+    assert w._key(ids[0]) in w.data["receipts"]
+    assert all(w._key(bid) not in w.data["receipts"] for bid in ids[1:])
+    original = call(w, "read_batch", batch_id=ids[0])
+    assert decode_source_batch(page["batches"][0]["batch"]) == original["batch"]
+    assert page["batches"][0]["receipt_id"] == original["receipt_id"]
+    call(
+        w,
+        "complete_batch",
+        batch_id=ids[0],
+        receipt_id=original["receipt_id"],
+        report={"summary": "Entire compact source was delivered"},
+    )
+    assert w.pending_batches() == ids[1:]
+
+
+def test_incremental_reference_feedback_does_not_weaken_gate(window_task):
+    from protocol_samples import base, interactions
+
+    from rsc.protocol.contract import COLLECTIONS
+
+    w = window_task
+    ids = [b["batch_id"] for b in w.data["batches"]]
+    page = call(w, "read_batches", batch_ids=ids)
+    evidence = [page["batches"][0]["batch"]["segments"][0]["evidence"]]
+    inventory = base()
+    model = {**inventory, **interactions(inventory)}
+    initial = call(
+        w,
+        "apply_changes",
+        expected_revision=0,
+        operation_id="base",
+        changes=[
+            {"op": "add", "kind": kind, "value": value, "evidence": evidence}
+            for kind in COLLECTIONS
+            for value in model.get(kind, [])
+        ],
+    )
+    assert initial["draft_reference_errors"] == []
+    assert any(
+        r.get("associated_fields") and "CSeq" in r["associated_fields"]
+        for r in initial["records"]
+        if r["kind"] == "messages"
+    )
+    bad = call(
+        w,
+        "apply_changes",
+        expected_revision=1,
+        operation_id="bad-field",
+        changes=[
+            {
+                "op": "add",
+                "kind": "steps",
+                "value": {
+                    "name": "listen",
+                    "action": "listen",
+                    "channel_name": "control",
+                    "party_name": "responder",
+                    "condition": "",
+                },
+                "evidence": evidence,
+            },
+            {
+                "op": "add",
+                "kind": "step_dependencies",
+                "value": {
+                    "prior_step": "listen",
+                    "dependent_step": "send request",
+                    "condition": "ready",
+                    "field_relations": [{"prior_field": "port", "dependent_field": "CSeq"}],
+                },
+                "evidence": evidence,
+            },
+        ],
+    )
+    assert any("send steps on both ends" in error for error in bad["draft_reference_errors"])
+    assert w.data["revision"] == 2  # Drafts stay editable; publication is still gated.
+    call(w, "complete_batch", batches=reports_for(page))
+    with pytest.raises(WorkflowError, match="send steps"):
+        call(w, "advance_phase")
+    args = {
+        "expected_revision": 2,
+        "operation_id": "fix-field",
+        "changes": [
+            {
+                "op": "update",
+                "record_id": bad["record_ids"][1],
+                "value": {
+                    "prior_step": "listen",
+                    "dependent_step": "send request",
+                    "condition": "ready",
+                    "field_relations": [],
+                },
+                "evidence": evidence,
+            }
+        ],
+    }
+    result = call(w, "apply_changes", **args)
+    assert result["draft_reference_errors"] == []
+    assert call(w, "apply_changes", **args) == result
+    assert call(w, "check_gate")["ready"]
+
+
+def test_compact_mutations_use_existing_atomic_idempotent_validation(window_task):
+    from rsc.workflow.change_format import encode_changes
+
+    w = window_task
+    ids = [b["batch_id"] for b in w.data["batches"]]
+    read = call(w, "read_batches", batch_ids=ids)
+    evidence = [read["batches"][0]["batch"]["segments"][0]["evidence"]]
+    changes = [
+        {
+            "op": "add",
+            "kind": "parties",
+            "value": {"name": "client", "description": "source-defined sender"},
+            "evidence": evidence,
+        }
+    ]
+    args = {"expected_revision": 0, "operation_id": "compact", "changes": encode_changes(changes)}
+    result = call(w, "apply_changes", **args)
+    assert call(w, "apply_changes", **args) == result
+    # Canonical expansion gives the same idempotence signature as legacy records.
+    assert call(w, "apply_changes", **{**args, "changes": changes}) == result
+    assert w.data["revision"] == 1
+    bad = encode_changes(
+        changes
+        + [
+            {
+                "op": "add",
+                "kind": "parties",
+                "value": {"name": "bad", "description": "unread source"},
+                "evidence": [{"batch_id": ids[-1], "block_id": "not-a-block"}],
+            }
+        ]
+    )
+    with pytest.raises(WorkflowError, match="source batch"):
+        call(w, "apply_changes", expected_revision=1, operation_id="bad", changes=bad)
+    assert w.data["revision"] == 1
+    assert len(w.data["records"]) == 1
+    bad = encode_changes(
+        [
+            {
+                "op": "update",
+                "record_id": result["record_ids"][0],
+                "value": {"name": "client"},
+                "evidence": evidence,
+            }
+        ]
+    )
+    with pytest.raises(WorkflowError, match="description"):
+        call(w, "apply_changes", expected_revision=1, operation_id="bad-schema", changes=bad)
+    assert w.data["revision"] == 1
+
+
+def test_evidence_errors_include_all_bad_pairs_in_one_change(window_task):
+    w = window_task
+    batch = w.data["batches"][0]
+    call(w, "read_batch", batch_id=batch["batch_id"])
+    with pytest.raises(WorkflowError) as raised:
+        call(
+            w,
+            "apply_changes",
+            expected_revision=0,
+            operation_id="two-errors",
+            changes=[
+                {
+                    "op": "add",
+                    "kind": "parties",
+                    "value": {"name": "client", "description": "sender"},
+                    "evidence": [
+                        {"batch_id": batch["batch_id"], "block_id": "wrong-1"},
+                        {"batch_id": batch["batch_id"], "block_id": "wrong-2"},
+                    ],
+                }
+            ],
+        )
+    assert "evidence[0]" in str(raised.value) and "evidence[1]" in str(raised.value)
+    assert w.data["revision"] == 0

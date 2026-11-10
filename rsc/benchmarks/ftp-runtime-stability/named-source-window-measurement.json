@@ -1,0 +1,206 @@
+{
+  "scope": "Offline real read_batches responses at 16000-token requested budget; exact original batches, complete delivery-only receipts, no model or semantic claim.",
+  "modes": {
+    "legacy": {
+      "windows": [
+        {
+          "batch_ids": [
+            "batch-00001",
+            "batch-00002",
+            "batch-00003",
+            "batch-00004",
+            "batch-00005"
+          ],
+          "tokens": 12585,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00006",
+            "batch-00007"
+          ],
+          "tokens": 9595,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00008"
+          ],
+          "tokens": 10900,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00009"
+          ],
+          "tokens": 10554,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00010",
+            "batch-00011",
+            "batch-00012",
+            "batch-00013",
+            "batch-00014",
+            "batch-00015"
+          ],
+          "tokens": 15690,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00016",
+            "batch-00017",
+            "batch-00018",
+            "batch-00019",
+            "batch-00020",
+            "batch-00021"
+          ],
+          "tokens": 15409,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00022"
+          ],
+          "tokens": 11326,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00023"
+          ],
+          "tokens": 6814,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00024"
+          ],
+          "tokens": 11532,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00025",
+            "batch-00026"
+          ],
+          "tokens": 14431,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00027",
+            "batch-00028"
+          ],
+          "tokens": 4949,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00029",
+            "batch-00030"
+          ],
+          "tokens": 12068,
+          "budget": 16000
+        }
+      ],
+      "window_count": 12,
+      "total_tokens": 135853,
+      "all_canonical_batches_exact": true
+    },
+    "cited_named": {
+      "windows": [
+        {
+          "batch_ids": [
+            "batch-00001",
+            "batch-00002",
+            "batch-00003",
+            "batch-00004",
+            "batch-00005",
+            "batch-00006"
+          ],
+          "tokens": 13222,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00007",
+            "batch-00008"
+          ],
+          "tokens": 13287,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00009"
+          ],
+          "tokens": 8778,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00010",
+            "batch-00011",
+            "batch-00012",
+            "batch-00013",
+            "batch-00014",
+            "batch-00015",
+            "batch-00016",
+            "batch-00017"
+          ],
+          "tokens": 15464,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00018",
+            "batch-00019",
+            "batch-00020",
+            "batch-00021"
+          ],
+          "tokens": 9767,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00022",
+            "batch-00023"
+          ],
+          "tokens": 14065,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00024",
+            "batch-00025"
+          ],
+          "tokens": 14838,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00026",
+            "batch-00027",
+            "batch-00028"
+          ],
+          "tokens": 9521,
+          "budget": 16000
+        },
+        {
+          "batch_ids": [
+            "batch-00029",
+            "batch-00030"
+          ],
+          "tokens": 9092,
+          "budget": 16000
+        }
+      ],
+      "window_count": 9,
+      "total_tokens": 108034,
+      "all_canonical_batches_exact": true
+    }
+  },
+  "identical_receipts": true
+}
