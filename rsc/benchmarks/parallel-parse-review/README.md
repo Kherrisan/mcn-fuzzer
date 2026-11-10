@@ -116,6 +116,68 @@ These observations establish failures in the unpublished model, not a completed 
 The direct-terminal-role finding and other open findings have not been accepted merely because
 reviewers reported them. Trial 3 uses the same frozen code and will be assessed separately.
 
+### Third trial: intermediate observation
+
+At 2026-11-10 07:19:45 UTC, `ftp-1110065041-r3` was still running, in its first Review,
+after 1,742.7 seconds. Preprocess took 1.2 seconds, Parse 514.9 seconds, and Merge 1,066.4
+seconds; Review had run for 160.1 seconds. This already misses the 20-minute target, but
+it is not a final outcome. The process remains subject to the same 2,400-second deadline.
+
+Merge began with 496 candidate records and 351 entries: 8 same-name conflicts, 328 structural
+errors and 15 obligations. At submission, the 15 obligations and 11 generated free-text checks
+were resolved and the conflict list was empty. The frozen model has 442 records. Observed
+rejections included merge-argument shape, unreceived source batches, stale/sealed-view revisions,
+insufficient page budget, removed candidate selectors and selecting one candidate twice.
+The smaller Parse time did not translate to a shorter complete run: Merge was the dominant
+completed phase. These observations describe the frozen implementation, not a timing test of
+the later scoped-diagnostic changes.
+
+Independent checks of frozen revision 1 against the saved RFC text found:
+
+| Source checked | Model evidence | Assessment |
+| --- | --- | --- |
+| RFC 3659 §7.3.1 (`blk-000216`) | `User-PI sends MLST command` → `Server-PI sends MLST control response` allows a fully qualified equivalent pathname and has no raw-path equality relation | This specific defect from trials 1–2 is absent. It does not establish complete MLST acceptance. |
+| RFC 959 §5.2 (`blk-000462`, `blk-000465`) | Separate `Listen/Connect FTP control to server A/B` steps; both connects precede `Third party PASV A` | The missing A/B control setup seen in trial 1 is represented here. This is not acceptance of the whole third-party transfer model. |
+| RFC 3659 §7.2 (`blk-000202`–`blk-000203`), RFC 959 PASV §4.1.2 (`blk-000316`) | `Server-DTP sends MLSD listing entry` uses only `FTP data, server initiates`; the MLSD request leads to the active connect. The passive download step explicitly covers only RETR/LIST/NLST | Passive MLSD is omitted; the presence of a generic passive channel does not complete its MLSD setup and data path. |
+| RFC 959 §3.2 (`blk-000213`, `blk-000215`–`blk-000216`) | `FTP passive data close by user` requires first seeing the server close; `Passive transfer user to server` leads to the server close | This fails to represent the user-as-sender exception when closing signals EOF. A server-first close cannot substitute for that upload termination. |
+
+Review is ongoing, and these are selected checks of its input, not acceptance of a published
+protocol or a prediction that the reviewers will miss the same issues. Final timings, findings,
+any later model revision and publication status still need inspection.
+
+### Observed workload and interface costs
+
+The Review assignments retain unique ownership, but their model loads differ considerably:
+
+| Trial / reviewer | Assigned source batches | Owned records | Cross-range context records | Cross-range source batches |
+| --- | ---: | ---: | ---: | ---: |
+| 1 / reviewer-1 | 7 | 259 | 288 | 10 |
+| 1 / reviewer-2 | 12 | 234 | 249 | 12 |
+| 1 / reviewer-3 | 10 | 33 | 36 | 7 |
+| 2 / reviewer-1 | 7 | 302 | 340 | 15 |
+| 2 / reviewer-2 | 12 | 312 | 365 | 14 |
+| 2 / reviewer-3 | 10 | 27 | 47 | 11 |
+
+These counts come from the stored Review assignments. Context includes referenced definitions;
+it is not an additional ownership claim. Balanced source tokens therefore do not balance the
+number of model records to inspect. In trial 2, reviewer-3 occupied 52.0% of the Review phase,
+while reviewer-1/2 occupied 96.4% each. In trial 1 those fractions were 80.8%, 96.2% and 91.1%:
+even the smallest model assignment was not proportionally faster. Record count alone cannot
+explain the elapsed time; source reading, missing-model checks and report retries also matter.
+
+Review delivered 934,949 / 1,558,271 MCP payload tokens in trials 1 / 2, including repeated
+delivery. This is separate from the native API token totals above. Trial 1's aggregate agent
+tool execution time was 70.9 seconds across concurrent reviewers, against 1,150.9 seconds of
+Review wall time. It is not valid to subtract this concurrent sum to obtain exact inference
+time, but SQLite/tool execution alone does not account for the long Review critical path.
+
+All observed worker catalogs contained 11 tools (the role union from the 13-tool total).
+Review recorded 345 / 319 catalog requests and 2 / 9 argument-schema errors. Catalog requests
+are recorded separately from the agent tool-call counts; supervisor status observations are
+also separate. Review report calls produced 32 / 30 conclusions, all fresh, with zero carried
+conclusions. Neither run reached incremental re-review, so these trials provide no measured
+incremental-review speedup. Trial 1 started its first Fix; trial 2 did not reach Fix.
+
 Each published model needs a separate inspection against the
 [FTP semantic checklist](../ftp-runtime-stability/semantic-checklist.md), including original
 sections, supporting model names, accepted alternatives and actual failures. The runner's
@@ -153,7 +215,8 @@ be reported; missing the target does not start an unlimited tuning loop.
 - Current configuration, thirteen named contracts, migration and recovery documentation:
   [README](../../README.md), [pipeline](../../docs/pipeline.md) and `config.example.toml`.
 
-The implementation and tests were checkpointed in `c3f55df7` (274 tests and 78 subtests passed).
+The implementation and tests were checkpointed in `c3f55df7` (274 tests and 78 subtests passed),
+then `62964270` with the subsequent diagnostics, shared validator and regression tests.
 Subsequent changes improve report diagnostics, normalize Fix selectors and distinguish failed
 workflow audits from partial publication in benchmark outcomes. Exact Codex session restoration
 has simulated tests and a read-only lookup against a real saved session; its current launch path
