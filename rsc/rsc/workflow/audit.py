@@ -15,10 +15,11 @@ import tiktoken
 
 from rsc.protocol.validate import validate_protocol
 
+from .archive import Archive as Workflow
 from .metrics import phase_metrics
 from .model import reference_errors, validate_record
 from .sources import digest
-from .state import Workflow, WorkflowError
+from .store import StoreError as WorkflowError
 
 
 def require(condition, message):
@@ -117,7 +118,9 @@ def _audit(w):
             "recorded page exceeds its token budget",
         )
         require(isinstance(entry.get("delivered_ids"), list), "recorded page has no delivered ids")
-        require(isinstance(entry.get("sha256"), str) and entry["sha256"], "recorded page has no digest")
+        require(
+            isinstance(entry.get("sha256"), str) and entry["sha256"], "recorded page has no digest"
+        )
 
     def receipt(dispatch, bid):
         require(

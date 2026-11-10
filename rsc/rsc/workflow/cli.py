@@ -46,9 +46,8 @@ def register(sub):
                 )
                 p.add_argument("--hc", default="hc")
                 p.add_argument(
-                    "--retry-role",
-                    choices=["parser", "reviewer"],
-                    help="explicitly replace this task's active agent and redeliver its assignment",
+                    "--retry-worker",
+                    help="retry a worker only after its original terminal is confirmed dead",
                 )
 
 
@@ -94,6 +93,8 @@ def run_task(args, root, socket):
             target_tokens=options.get("batch_target_tokens", 8000),
             max_tokens=options.get("batch_max_tokens", 12000),
             max_review_rounds=options.get("max_review_rounds", 5),
+            parse_workers=options["parse_workers"],
+            review_workers=options["review_workers"],
         )
         task.db.close()
         private_json(
@@ -123,6 +124,8 @@ def run_task(args, root, socket):
             "batch_target_tokens": task.data["target_tokens"],
             "batch_max_tokens": task.data["max_tokens"],
             "max_review_rounds": task.data["max_review_rounds"],
+            "parse_workers": task.data["parse_workers"],
+            "review_workers": task.data["review_workers"],
         }
         if task.data["phase"] == "published":
             task.export()
@@ -131,11 +134,18 @@ def run_task(args, root, socket):
                 return 0
         task.db.close()
     # Connection refusal is evidence of a dead service, unlike a timeout.
-    token = (root / "parser.token").read_text().strip()
+    token = (root / "coordinator.token").read_text().strip()
 
     def healthy():
         return request(
-            socket, {"op": "call", "token": token, "name": "workflow_status", "arguments": {}}
+            socket,
+            {
+                "op": "call",
+                "token": token,
+                "name": "workflow_status",
+                "arguments": {},
+                "origin": "health",
+            },
         )
 
     child = None
@@ -184,7 +194,7 @@ def run_task(args, root, socket):
             except (ConnectionRefusedError, FileNotFoundError):
                 time.sleep(0.05)
     try:
-        Supervisor(root, socket, config, args.hc, retry_role=args.retry_role).run()
+        Supervisor(root, socket, config, args.hc, retry_worker=args.retry_worker).run()
     finally:
         # Leave a resumed external service alone; only stop the one we created.
         if child:

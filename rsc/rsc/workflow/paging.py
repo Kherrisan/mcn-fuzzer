@@ -97,6 +97,17 @@ def delivered_ids(rows) -> list:
         or row.get("change_id")
         or row.get("batch_id")
         or row.get("finding_id")
+        or row.get("name")
+        or (
+            {
+                "kind": row["kind"],
+                "target": {"name": row["value"]["name"]}
+                if "name" in row["value"]
+                else row["value"],
+            }
+            if "kind" in row and "value" in row
+            else None
+        )
         for row in rows
     ]
 
@@ -154,9 +165,7 @@ def fit_page(rows, cursor, max_tokens, revision, build):
                 needed = minimum_budget(
                     lambda candidate: finish_at(rows[cursor : cursor + 1], candidate)
                 )
-                raise PageError(
-                    f"single record requires {needed} tokens; budget is {budget}"
-                )
+                raise PageError(f"single record requires {needed} tokens; budget is {budget}")
             break
         chosen.append(row)
     return finish(chosen)

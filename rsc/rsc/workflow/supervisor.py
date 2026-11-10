@@ -1,15 +1,17 @@
-"""Code-only HC dispatcher. Workflow gates, not terminal output, decide progress."""
+"""Fair HC dispatcher: persisted assignments, independent credentials, fenced retries."""
 
 from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 from rsc.agents import ADAPTERS, AgentContext, check_profiles
+from rsc.agents.files import private_json
 
 from .instructions import assignment_instructions
 from .server import request
@@ -23,37 +25,41 @@ class HcFailure(WorkflowError):
 
 
 class HcObservationTimeout(WorkflowError):
-    """The observer timed out; this says nothing about the terminal's liveness."""
+    """Observer timeout does not prove process death or revoke an attempt."""
 
 
 class Supervisor:
-    def __init__(self, root, socket, config=None, hc="hc", retry_role=None):
-        self.root = Path(root).resolve()
-        self.socket = str(socket)
-        self.config = config or {}
-        self.hc = hc
-        self.roles = self.config["resolved_agents"]
-        self.retry_role = retry_role
-        self.retry_dispatch = None
+    def __init__(self, root, socket, config, hc="hc", retry_worker=None):
+        self.root, self.socket = Path(root).resolve(), str(socket)
+        self.config, self.hc, self.roles = config, hc, config["resolved_agents"]
+        self.retry_worker = retry_worker
         self.path = self.root / "supervisor.json"
-        self.state = json.loads(self.path.read_text()) if self.path.exists() else {"terminals": {}}
-        self.token = (self.root / "parser.token").read_text().strip()
-        task = self.status()["task_id"]
-        self.task_id = task
-        runtime = Path("/tmp") / f"rsc-hc-{task}"
+        self.state = (
+            json.loads(self.path.read_text())
+            if self.path.exists()
+            else {"terminals": {}, "sessions": {}}
+        )
+        self.token = (self.root / "coordinator.token").read_text().strip()
+        self.task_name = self.status()["name"]
+        slug = re.sub("[^a-z0-9_-]", "-", self.task_name.lower())[:24]
+        runtime = Path("/tmp") / f"rsc-{os.getuid()}-{slug}"
         runtime.mkdir(mode=0o700, exist_ok=True)
-        for name in ("hc-state", "hc-config"):
-            (self.root / name).mkdir(exist_ok=True)
+        owner = runtime / "owner.json"
+        if owner.exists() and json.loads(owner.read_text())["root"] != str(self.root):
+            raise WorkflowError(
+                "HC runtime name belongs to another campaign; use a unique directory name"
+            )
+        private_json(owner, {"root": str(self.root)})
         self.env = {
             **os.environ,
-            "HC_SESSION": f"rsc-{task}",
+            "HC_SESSION": f"rsc-{slug}",
             "XDG_RUNTIME_DIR": str(runtime),
             "XDG_STATE_HOME": str(self.root / "hc-state"),
             "XDG_CONFIG_HOME": str(self.root / "hc-config"),
-            "HC_SOCKET": str(runtime / "herdr-core" / f"rsc-{task}.sock"),
+            "HC_SOCKET": str(runtime / "herdr-core" / f"rsc-{slug}.sock"),
         }
-        # Never accidentally inherit the caller's terminal ownership.
         self.env.pop("HC_TERMINAL_ID", None)
+        self.wait_index = 0
 
     def workflow_call(self, name, arguments=None):
         return request(
@@ -62,7 +68,7 @@ class Supervisor:
                 "op": "call",
                 "token": self.token,
                 "name": name,
-                "arguments": {} if arguments is None else arguments,
+                "arguments": arguments or {},
                 "origin": "supervisor",
             },
         )
@@ -70,45 +76,267 @@ class Supervisor:
     def status(self):
         return self.workflow_call("workflow_status")
 
-    def preprocess(self):
-        status = self.status()
-        if status["phase"] != "preprocess":
-            return False
-        assignment = status["assignment"]
-        dispatch = assignment["dispatch_id"]
-        owned = self.state.get("preprocess_dispatch_id") == dispatch
-        if not owned and (assignment["claimed"] or self.state.get("dispatch_id") == dispatch):
-            # Existing/uncertain agent delivery keeps its original ownership path.
-            return False
-        self.state["preprocess_dispatch_id"] = dispatch
-        self.save()  # Intent precedes RPC, so lost replies can resume safely.
-        if not assignment["claimed"]:
-            status = self.workflow_call("claim_assignment", {"dispatch_id": dispatch})
-        if not status["sources_prepared"]:
-            self.workflow_call("prepare_sources")
-        # The original source/snapshot/batch gates remain mandatory.
-        self.workflow_call("advance_phase")
-        self.event("preprocess_completed", dispatch_id=dispatch, origin="supervisor")
-        return True
-
     def save(self):
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(self.state, indent=2))
-        temporary.replace(self.path)
+        private_json(self.path, self.state)
 
     def event(self, kind, **body):
         with (self.root / "supervisor-events.jsonl").open("a") as out:
             out.write(
-                json.dumps(
-                    {
-                        "time": time.time(),
-                        "task_id": getattr(self, "task_id", None),
-                        "kind": kind,
-                        **body,
-                    }
-                )
+                json.dumps({"time": time.time(), "campaign": self.task_name, "kind": kind, **body})
                 + "\n"
             )
+
+    def context(self, a):
+        return AgentContext(
+            self.root,
+            self.socket,
+            self.task_name,
+            a["role"],
+            self.config["workflow"]["batch_max_tokens"],
+            worker=a["worker"],
+            resume=a["worker"] in self.state["sessions"],
+        )
+
+    @staticmethod
+    def observed(info):
+        return (info.get("status") or {}).get("state", "unknown")
+
+    def observe(self, worker):
+        saved = self.state["terminals"][worker]
+        try:
+            info = self.hc_call("get", saved["address"])
+        except HcFailure as error:
+            if error.code == 3:
+                return {"state": "missing", "name": saved["name"]}
+            raise
+        if info.get("name") != saved["name"]:
+            raise WorkflowError("recorded HC address belongs to another terminal")
+        return info
+
+    def wait_once(self, address):
+        return self.hc_call("wait", address, "--timeout", "1", timeout=5)
+
+    def retire(self, worker):
+        saved = self.state["terminals"][worker]
+        info = self.observe(worker)
+        if info["state"] not in {"finished", "missing"}:
+            self.hc_call("kill", saved["address"])
+            self.wait_once(saved["address"])
+            info = self.observe(worker)
+            if info["state"] not in {"finished", "missing"}:
+                raise HcObservationTimeout("old worker has not confirmed termination")
+        self.state.setdefault("retired", []).append({**saved, "worker": worker, "terminal": info})
+        del self.state["terminals"][worker]
+        self.save()
+
+    def start_worker(self, a):
+        context = self.context(a)
+        profile = self.roles[a["role"]]["profile"]
+        context.directory.mkdir(parents=True, exist_ok=True)
+        fatal = context.directory / "fatal.json"
+        if fatal.exists():
+            fatal.rename(context.directory / f"fatal-{time.time_ns()}.json")
+        launch = context.directory / "launch.json"
+        ADAPTERS[profile["provider"]].prepare(profile, context).write(launch)
+        # Persist launch intent; recovery looks up its unique name before starting
+        # anything new when the run response was lost.
+        intent = {"name": context.terminal_name, "assignment": a["name"], "attempt": a["attempt"]}
+        self.state["launching"] = intent
+        self.save()
+        value = self.hc_call(
+            "run",
+            "--bg",
+            "--no-parent",
+            "--no-notify",
+            "--cwd",
+            str(self.root),
+            "--name",
+            context.terminal_name,
+            "--",
+            sys.executable,
+            str(Path(__file__).resolve().parents[1] / "agents" / "launch.py"),
+            str(launch),
+        )
+        address = value.get("address") or value.get("terminal")
+        if not isinstance(address, str):
+            raise WorkflowError("HC run returned no terminal address")
+        self.state["terminals"][a["worker"]] = {**intent, "address": address, "ready": False}
+        self.state.pop("launching", None)
+        self.save()
+        self.ready(a)
+        self.event(
+            "worker_started",
+            worker=a["worker"],
+            terminal=address,
+            model=profile["model"],
+            effort=profile["effort"],
+        )
+
+    def ready(self, a):
+        context = self.context(a)
+        saved = self.state["terminals"][a["worker"]]
+        adapter = ADAPTERS[self.roles[a["role"]]["profile"]["provider"]]
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            info = self.observe(a["worker"])
+            if info["state"] in {"finished", "missing"}:
+                return  # step() fences this confirmed failure before replacement.
+            state = self.observed(info)
+            if state in {"blocked", "error"}:
+                raise WorkflowError(f"worker {a['worker']} startup needs attention: {state}")
+            if state in {"idle", "done"} and adapter.ready(context):
+                if self.roles[a["role"]]["profile"]["provider"] == "codex":
+                    screen = self.hc_call("read", saved["address"]).get("text", "")
+                    if f" · {context.terminal_name}" not in screen:
+                        if not saved.get("rename_sent"):
+                            saved["rename_sent"] = True
+                            self.save()
+                            self.hc_call(
+                                "send", saved["address"], f"/rename {context.terminal_name}"
+                            )
+                        self.wait_once(saved["address"])
+                        continue
+                saved["ready"] = True
+                self.state["sessions"][a["worker"]] = {
+                    "name": context.terminal_name,
+                    "provider": self.roles[a["role"]]["profile"]["provider"],
+                }
+                private_json(
+                    context.directory / "session.json", self.state["sessions"][a["worker"]]
+                )
+                self.save()
+                return
+            self.wait_once(saved["address"])
+        raise HcObservationTimeout(
+            "worker initialization observation timed out; process left intact"
+        )
+
+    def recover_launch(self, assignments):
+        intent = self.state.get("launching")
+        if not intent:
+            return
+        try:
+            info = self.hc_call("get", intent["name"])
+        except HcFailure as error:
+            if error.code != 3:
+                raise
+            self.state.pop("launching")
+            self.save()
+            return
+        a = next(
+            a
+            for a in assignments
+            if a["name"] == intent["assignment"] and a["attempt"] == intent["attempt"]
+        )
+        self.state["terminals"][a["worker"]] = {
+            **intent,
+            "address": info["address"],
+            "ready": False,
+        }
+        self.state.pop("launching")
+        self.save()
+
+    def step(self):
+        status = self.status()
+        if status["phase"] == "published":
+            return False
+        if status["phase"] == "preprocess":
+            self.workflow_call("prepare_sources")
+            self.workflow_call("advance_phase")
+            return True
+        assignments = [
+            a
+            for a in status["assignments"]
+            if a["phase"] == status["phase"] and a["round"] == status["round"]
+        ]
+        if all(a["status"] == "submitted" for a in assignments):
+            for worker in list(self.state["terminals"]):
+                self.retire(worker)
+            self.workflow_call("advance_phase")
+            return True
+        self.recover_launch(assignments)
+        active = [a for a in assignments if a["status"] != "submitted"]
+        for a in active:
+            if a["status"] == "failed":
+                raise WorkflowError(f"worker {a['worker']} exhausted its two retries")
+            saved = self.state["terminals"].get(a["worker"])
+            if saved and (saved["assignment"], saved["attempt"]) != (a["name"], a["attempt"]):
+                self.retire(a["worker"])
+                saved = None
+            if saved is None:
+                self.start_worker(a)  # All startup/SQLite initialization is serialized.
+            elif not saved["ready"]:
+                self.ready(a)
+        # Dispatch every ready worker before waiting on any one of them.
+        waiting = []
+        for a in active:
+            try:
+                info = self.observe(a["worker"])
+            except HcObservationTimeout:
+                continue
+            saved = self.state["terminals"][a["worker"]]
+            if info["state"] in {"finished", "missing"}:
+                terminal = {
+                    "name": saved["name"],
+                    "state": "missing" if info["state"] == "missing" else "exited",
+                    "details": info,
+                }
+                self.workflow_call(
+                    "replace_attempt",
+                    {"name": a["name"], "attempt": a["attempt"], "terminal": terminal},
+                )
+                self.retire(a["worker"])
+                continue
+            if self.retry_worker == a["worker"]:
+                raise WorkflowError(
+                    "cannot retry a live worker; observation timeout is not termination"
+                )
+            fatal = self.context(a).directory / "fatal.json"
+            if fatal.exists() or self.observed(info) in {"blocked", "error"}:
+                raise WorkflowError(
+                    f"worker {a['worker']} needs attention; inspect its terminal and logs"
+                )
+            if (
+                a["status"] == "pending"
+                and saved["ready"]
+                and self.observed(info) in {"idle", "done"}
+            ):
+                self.workflow_call("record_send", {"name": a["name"], "attempt": a["attempt"]})
+                saved["send_turn"] = info.get("turn", 0)
+                self.save()
+                self.hc_call(
+                    "send",
+                    saved["address"],
+                    assignment_instructions(a) + "\nMCP namespace: " + self.context(a).namespace,
+                )
+                self.event("assignment_sent", **a, terminal=saved["address"])
+            elif self.observed(info) in {"idle", "done"} and info.get("turn", 0) > saved.get(
+                "send_turn", 0
+            ):
+                # A turn ended, but the authoritative assignment did not submit.
+                # Never infer success from the final terminal text.
+                fresh = next(x for x in self.status()["assignments"] if x["name"] == a["name"])
+                if fresh["status"] != "submitted":
+                    raise WorkflowError(f"worker {a['worker']} ended its turn without submitting")
+            waiting.append(saved["address"])
+        if waiting:
+            self.wait_once(waiting[self.wait_index % len(waiting)])
+            self.wait_index += 1
+        return True
+
+    def cleanup(self):
+        for worker in list(self.state["terminals"]):
+            self.retire(worker)
+        self.hc_call("server", "stop")
+        self.state["cleanup_complete"] = True
+        self.save()
+
+    def run(self):
+        check_profiles(self.roles)
+        self.hc_call("server", "start")
+        while self.step():
+            pass
+        self.cleanup()
 
     def hc_call(self, *args, timeout=65):
         try:
@@ -133,188 +361,3 @@ class Supervisor:
         except ValueError as error:
             raise WorkflowError(f"HC {args[0]} returned invalid JSON") from error
         return value.get("result", value)
-
-    def start(self):
-        check_profiles(self.roles)
-        status = self.status()
-        current = status["assignment"]
-        if self.retry_role is not None and self.retry_role != current["role"]:
-            raise WorkflowError("--retry-role must match the active assignment role")
-        if not self.state.get("core_started"):
-            self.hc_call("server", "start")
-            self.state["core_started"] = True
-            self.save()
-        for role in ("parser", "reviewer"):
-            if role == self.retry_role and role in self.state["terminals"]:
-                old = self.state["terminals"][role]
-                try:
-                    info = self.hc_call("get", old)
-                    expected = f"rsc-{role}-{self.task_id}"
-                    if info.get("name") != expected:
-                        raise WorkflowError("recorded HC address no longer belongs to this role")
-                    if info.get("state") != "finished":
-                        self.hc_call("kill", old)
-                        self.hc_call("wait", old, "--timeout", "30", timeout=35)
-                except HcFailure as error:
-                    if error.code != 3:
-                        raise
-                self.state.setdefault("retired_terminals", []).append(
-                    {"role": role, "terminal": old}
-                )
-                del self.state["terminals"][role]
-                self.save()
-            if role == self.retry_role:
-                self.retry_dispatch = current["dispatch_id"]
-            if role in self.state["terminals"]:
-                self.hc_call("get", self.state["terminals"][role])
-                continue
-            selected = self.roles[role]
-            profile = selected["profile"]
-            context = AgentContext(
-                self.root,
-                self.socket,
-                self.task_id,
-                role,
-                self.config.get("workflow", {}).get("batch_max_tokens", 12000),
-            )
-            spec = ADAPTERS[profile["provider"]].prepare(profile, context)
-            path = context.directory / "launch.json"
-            fatal = context.directory / "fatal.json"
-            if fatal.exists():
-                fatal.rename(context.directory / f"fatal-{time.time_ns()}.json")
-            spec.write(path)
-            argv = [
-                sys.executable,
-                str(Path(__file__).resolve().parents[1] / "agents" / "launch.py"),
-                str(path),
-            ]
-            metadata = {
-                "profile": selected["name"],
-                "provider": profile["provider"],
-                "model": profile["model"],
-                "effort": profile["effort"],
-                "namespace": context.namespace,
-            }
-            self.state.setdefault("agents", {})[role] = metadata
-            value = self.hc_call(
-                "run",
-                "--bg",
-                "--no-parent",
-                "--cwd",
-                str(self.root),
-                "--name",
-                f"rsc-{role}-{self.status()['task_id']}",
-                "--",
-                *argv,
-            )
-            terminal = value.get("address") or value.get("terminal")
-            if not isinstance(terminal, str):
-                raise WorkflowError("HC run did not return a terminal address")
-            self.state["terminals"][role] = terminal
-            self.save()
-            self.event("agent_started", role=role, terminal=terminal, **metadata)
-        self.retry_role = None
-
-    @staticmethod
-    def observed(info):
-        status = info.get("status") or {}
-        if isinstance(status, str):
-            return status
-        return status.get("state", "unknown")
-
-    def step(self):
-        status = self.status()
-        if status["phase"] == "published":
-            return False
-        a = status["assignment"]
-        terminal = self.state["terminals"][a["role"]]
-        fatal = self.root / "agents" / a["role"] / "fatal.json"
-        if fatal.exists():
-            raise WorkflowError(
-                "agent adapter reported a fatal delivery/model error; inspect " + str(fatal)
-            )
-        try:
-            info = self.hc_call("get", terminal)
-        except HcObservationTimeout:
-            return True
-        state = self.observed(info)
-        if info.get("state") == "finished" or state in {"blocked", "error"}:
-            raise WorkflowError(f"agent {terminal} needs attention: {state}")
-        metadata = self.state.get("agents", {}).get(a["role"])
-        if metadata:
-            context = AgentContext(self.root, self.socket, self.task_id, a["role"])
-            if not ADAPTERS[metadata["provider"]].ready(context):
-                self.hc_call(
-                    "wait", terminal, "--output", "RSC adapter ready", "--timeout", "30", timeout=35
-                )
-                return True
-        if state not in {"idle", "done"}:
-            self.hc_call("wait", terminal, "--timeout", "30", timeout=35)
-            return True
-        retrying = getattr(self, "retry_dispatch", None) == a["dispatch_id"]
-        if a["claimed"] and not retrying:
-            raise WorkflowError(
-                "agent stopped without completing its assignment; inspect HC terminal"
-            )
-        if self.state.get("dispatch_id") == a["dispatch_id"] and not retrying:
-            raise WorkflowError(
-                "delivery uncertain or not claimed; inspect terminal before retrying"
-            )
-        # Persist intent first: a crash during send must not cause blind redelivery.
-        self.retry_dispatch = None
-        self.state.update(dispatch_id=a["dispatch_id"], delivery="sending")
-        self.save()
-        self.hc_call(
-            "send",
-            terminal,
-            assignment_instructions(
-                a["role"],
-                a["dispatch_id"],
-                a["phase"],
-                round_number=a.get("round"),
-            )
-            + "\nMCP namespace: "
-            + self.state.get("agents", {}).get(a["role"], {}).get("namespace", "rsc"),
-        )
-        self.state["delivery"] = "sent"
-        self.save()
-        self.event(
-            "task_sent",
-            terminal=terminal,
-            pid=info.get("foreground", {}).get("pid", info.get("pid")),
-            **a,
-        )
-        self.hc_call("wait", terminal, "--timeout", "30", timeout=35)
-        return True
-
-    def cleanup(self):
-        if self.state.get("cleanup_complete"):
-            return
-        # Starting this task's own core is idempotent and can restore its holders.
-        self.hc_call("server", "start")
-        for role, terminal in self.state["terminals"].items():
-            try:
-                info = self.hc_call("get", terminal)
-            except HcFailure as error:
-                if error.code == 3:
-                    continue
-                raise
-            if info.get("name") != f"rsc-{role}-{self.task_id}":
-                raise WorkflowError("cleanup refused: terminal identity does not match this task")
-            if info.get("state") != "finished":
-                self.hc_call("kill", terminal)
-                self.hc_call("wait", terminal, "--timeout", "30", timeout=35)
-        self.hc_call("server", "stop")
-        self.state.update(cleanup_complete=True, core_started=False)
-        self.save()
-        self.event("cleanup_complete")
-
-    def run(self):
-        if self.status()["phase"] == "published":
-            self.cleanup()
-            return
-        self.start()
-        self.preprocess()
-        while self.step():
-            pass
-        self.cleanup()

@@ -62,9 +62,10 @@ class Handler(socketserver.StreamRequestHandler):
                 raise WorkflowError("request must be an object")
             workflow = self.server.workflow
             with workflow.lock:
-                workflow.data = workflow._load()
                 role = workflow.authenticate(payload.get("token", ""))
                 if payload["op"] == "list":
+                    if role.role == "coordinator":
+                        raise WorkflowError("coordinator operations are not agent MCP tools")
                     names = (
                         workflow.catalog(role)
                         if payload.get("catalog") == "role"
@@ -75,21 +76,10 @@ class Handler(socketserver.StreamRequestHandler):
                     name, arguments = payload["name"], payload.get("arguments", {})
                     origin = (
                         "supervisor"
-                        if (
-                            name
-                            in {
-                                "workflow_status",
-                                "claim_assignment",
-                                "prepare_sources",
-                                "advance_phase",
-                            }
-                            and payload.get("origin") == "supervisor"
-                        )
+                        if role.role == "coordinator" and payload.get("origin") == "supervisor"
                         else "agent"
                     )
                     result = workflow.call(role, name, arguments, origin=origin)
-                    if name in {"workflow_status", "claim_assignment", "advance_phase"}:
-                        result["allowed_tools"] = sorted(workflow.allowed(role))
                 else:
                     raise WorkflowError("unknown operation")
             response = {"ok": True, "result": result}
@@ -121,8 +111,7 @@ def serve(root, path):
                     raise WorkflowError("task service is already running")
             path.unlink()
         workflow = Workflow(root)
-        if workflow.data is None:
-            raise WorkflowError("task has not been initialized")
+        workflow.store.write_credentials()
         marker.write_text(json.dumps({"socket": str(path), "pid": os.getpid()}))
         if workflow.data["phase"] == "published":
             workflow.export()
@@ -172,7 +161,7 @@ def stdio(path, token_file, catalog="phase"):
                 result = {
                     "protocolVersion": msg.get("params", {}).get("protocolVersion", "2024-11-05"),
                     "capabilities": {"tools": {"listChanged": True}},
-                    "serverInfo": {"name": "rsc-workflow", "version": "1.0.0"},
+                    "serverInfo": {"name": "rsc-workflow", "version": "2.0.0"},
                 }
             elif method == "ping":
                 result = {}

@@ -1,479 +1,322 @@
-"""MCP tool contracts shared by the socket service and stdio bridge."""
+"""The thirteen agent contracts. Coordinator operations have no MCP schema."""
 
-import json
 from copy import deepcopy
 
 from jsonschema import Draft202012Validator
 
-from rsc.protocol.contract import DEFINITIONS, protocol_schema
+from rsc.protocol.contract import COLLECTIONS, DEFINITIONS, protocol_schema
 
-from .state import WorkflowError
+from .store import StoreError as WorkflowError
 
 STRING = {"type": "string", "minLength": 1}
 INTEGER = {"type": "integer", "minimum": 0}
-TOKEN = {"type": "integer", "minimum": 1, "maximum": 30000}
-FORMAT = {"enum": ["compact", "records"]}
 OBJECT = {"type": "object"}
-OBJECT_ARRAY = {"type": "array", "items": OBJECT}
-EVIDENCE = {
-    "type": "array",
-    "minItems": 1,
-    "items": {
-        "anyOf": [
-            {"type": "string", "minLength": 1},
-            {
-                "type": "object",
-                "properties": {"batch_id": STRING, "block_id": STRING},
-                "required": ["batch_id", "block_id"],
-                "additionalProperties": False,
-            },
-        ],
+STRINGS = {"type": "array", "items": STRING}
+TOKEN = {"type": "integer", "minimum": 1, "maximum": 30000}
+
+
+def obj(properties, required=()):
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(required),
+        "additionalProperties": False,
+    }
+
+
+def array(items, minimum=0):
+    return {"type": "array", "items": items, "minItems": minimum}
+
+
+REF = obj(
+    {"kind": {"enum": [*COLLECTIONS, "unresolved"]}, "target": OBJECT, "scope": STRING},
+    ["kind", "target"],
+)
+EVIDENCE = array(
+    {"oneOf": [STRING, obj({"batch_id": STRING, "block_id": STRING}, ["batch_id", "block_id"])]}, 1
+)
+QUERY = obj({"kind": STRING, "filters": OBJECT}, ["kind", "filters"])
+REQUIREMENT = obj(
+    {
+        "requirement": STRING,
+        "objects": array(REF),
+        "result": {"enum": ["pass", "finding"]},
+        "findings": STRINGS,
     },
-}
-REPORT_VALUE = {
-    "type": "object",
-    "properties": {
+    ["requirement", "objects", "result", "findings"],
+)
+OBLIGATION = obj(
+    {"description": STRING, "objects": array(REF), "evidence": EVIDENCE},
+    ["description", "objects", "evidence"],
+)
+REPORT = obj(
+    {
         "summary": STRING,
+        "objects": array(REF),
+        "requirements": array(REQUIREMENT),
+        "obligations": array(OBLIGATION),
+        "queries": array(QUERY),
     },
-    "required": ["summary"],
-    "additionalProperties": True,
+    ["summary", "objects"],
+)
+PAGING = {"cursor": INTEGER, "revision": INTEGER, "max_tokens": TOKEN}
+FINDING = obj(
+    {
+        "name": STRING,
+        "requirement": STRING,
+        "description": STRING,
+        "objects": array(REF),
+        "evidence": EVIDENCE,
+        "acceptance": STRING,
+        "batch_id": STRING,
+        "check_name": STRING,
+    },
+    ["name", "requirement", "description", "objects", "evidence", "acceptance"],
+)
+RESOLUTION = obj(
+    {
+        "name": STRING,
+        "status": {"enum": ["fixed", "not_applicable", "unresolved"]},
+        "description": STRING,
+        "objects": array(REF),
+        "evidence": EVIDENCE,
+    },
+    ["name", "status", "description", "objects", "evidence"],
+)
+
+READ = {"read_batches", "list_batches", "search_source", "query_model"}
+PHASE_TOOLS = {
+    "parse": READ | {"apply_changes", "complete_batch", "advance_phase"},
+    "merge": READ | {"apply_changes", "get_changes", "advance_phase"},
+    "review": READ
+    | {
+        "complete_batch",
+        "submit_findings",
+        "list_findings",
+        "get_changes",
+        "review_resolutions",
+        "advance_phase",
+    },
+    "fix": READ
+    | {"apply_changes", "list_findings", "get_changes", "submit_resolutions", "advance_phase"},
 }
-REPORT = {
-    "type": "object",
-    "properties": {"batch_id": STRING, "receipt_id": STRING, "report": REPORT_VALUE},
-    "required": ["batch_id", "receipt_id", "report"],
-    "additionalProperties": False,
-}
-STRING_ARRAY = {"type": "array", "items": STRING}
-JSON_VALUE = {
-    "anyOf": [{"type": kind} for kind in ("string", "number", "boolean", "null", "object", "array")]
-}
-# Required parameters precede optional parameters in each contract.
 CONTRACTS = {
-    "workflow_status": ("Read phase, assignment, allowed tools and gate blockers.", {}, []),
     "claim_assignment": (
-        "Claim the exact dispatch ID provided by the supervisor.",
-        {"dispatch_id": STRING},
-        ["dispatch_id"],
+        "Claim the named assignment and attempt supplied by the coordinator.",
+        {"name": STRING, "attempt": {"type": "integer", "minimum": 1}},
+        ["name", "attempt"],
     ),
-    "check_gate": ("Check the current phase without advancing it.", {}, []),
     "advance_phase": (
-        "Submit this phase. The server selects the next phase after validation.",
-        {},
-        [],
-    ),
-    "prepare_sources": (
-        "Parse the task's immutable RFC inputs and create bounded chapter batches.",
+        "Submit only your assignment after its gate passes. End this turn; "
+        "the coordinator alone advances the global phase.",
         {},
         [],
     ),
     "list_batches": (
-        "List source batches and pending work; follow next_cursor and resend revision. "
-        "detail=true includes this dispatch's already-issued receipt_id; listing issues no "
-        "receipt and completes no report. Complete source bodies remain required. "
-        "With filter={pending:true}, completing reports changes the filtered collection; "
-        "restart cursor=0 for the next work window after reporting the delivered one.",
-        {
-            "filter": OBJECT,
-            "cursor": INTEGER,
-            "max_tokens": TOKEN,
-            "revision": INTEGER,
-            "detail": {"type": "boolean"},
-        },
+        "List immutable source ranges, ownership and your progress; no reading receipt is issued.",
+        {**PAGING, "assigned_only": {"type": "boolean"}},
         [],
     ),
-    "read_batch": (
-        "Read the COMPLETE source batch and receive its delivery receipt.",
-        {"batch_id": STRING},
-        ["batch_id"],
-    ),
     "read_batches": (
-        "Read complete batches in source order until max_tokens (default 24000). "
-        "Nonadjacent assigned batches are allowed; prefer segment.citation for evidence. "
-        "format=compact uses lossless segments={encoding:columns-v1,groups:[{columns,rows,"
-        "derive_evidence}]}; each row maps columns to values, and derive_evidence adds "
-        "{batch_id:parent batch_id,block_id:row block_id}. No source text is omitted. "
-        "Every segment has a short citation such as e42. Copy these directly as "
-        'evidence:["e42"] in changes, findings and resolutions; the server expands them '
-        "to exact batch/block pairs and still requires current-dispatch receipts. "
-        "include_evidence=false omits only the redundant per-segment evidence object; "
-        "all original named source fields and citations remain. The canonical pair is "
-        "{batch_id:parent batch_id,block_id:segment block_id}. Default true retains legacy output. "
-        "Undelivered batches get no receipt.",
-        {
-            "batch_ids": STRING_ARRAY,
-            "max_tokens": TOKEN,
-            "format": FORMAT,
-            "include_evidence": {"type": "boolean"},
-        },
+        "Read complete named source batches in source order within max_tokens. "
+        "Follow remaining; undelivered batches have no receipt. Supplementary reads "
+        "do not transfer batch ownership. Cite segment.citation or batch_id/block_id.",
+        {"batch_ids": array(STRING, 1), "max_tokens": TOKEN},
         ["batch_ids"],
     ),
     "search_source": (
-        "Find supplementary source text; this does not satisfy batch reading gates.",
-        {
-            "query": STRING,
-            "filters": OBJECT,
-            "cursor": INTEGER,
-            "max_tokens": TOKEN,
-            "revision": INTEGER,
-        },
+        "Find supplementary context; search never replaces complete source reading.",
+        {"query": STRING, "batch_ids": STRINGS, **PAGING},
         ["query"],
     ),
     "query_model": (
-        "Read records, internal IDs and evidence. format=compact is the default table; "
-        "format=records returns the original objects. Follow next_cursor with revision.",
+        "Read named records and evidence at a fixed revision. Default view is your "
+        "draft, or the frozen review model. sealed excludes active drafts; conflicts "
+        "lists merge decisions still needed. index omits definitions and does not "
+        "count as full model delivery. Batch filtering includes the reference closure.",
         {
+            "view": {"enum": ["current", "sealed", "index", "conflicts"]},
             "kind": STRING,
             "filters": OBJECT,
-            "record_ids": STRING_ARRAY,
-            "batch_ids": STRING_ARRAY,
-            "detail": {"type": "boolean"},
-            "cursor": INTEGER,
-            "format": FORMAT,
-            "max_tokens": TOKEN,
-            "revision": INTEGER,
+            "batch_ids": STRINGS,
+            "scope": STRING,
+            "check_name": STRING,
+            **PAGING,
         },
-        [],
-    ),
-    "apply_changes": (
-        "Atomically add/update/patch/delete records. Add requires kind,value,evidence; "
-        "Edits select a record by kind plus target fields (prefer target:{name:...}), or legacy "
-        "record_id. target must match EXACTLY one record in the transaction's starting model. "
-        "Dependencies can use target:{prior_step:...,dependent_step:...}; "
-        "add fields if ambiguous. "
-        "Never guess opaque IDs or combine target with record_id. Delete also needs reason. "
-        "Update replaces the COMPLETE value. Prefer patch for a few changed fields: "
-        "patch needs a selector,nonempty partial value,evidence, shallow-merges fields "
-        "into the existing value. Retain prior evidence plus the supplied current-source evidence. "
-        "Arrays replace the whole array. Merged records pass the same complete validation. "
-        'Use condition:"" for an unconditional ordering edge or a step with no intrinsic guard; '
-        "the edge/action already supplies the order/action. Preserve real branch guards and "
-        "comparisons instead of repeating ordering or message descriptions. "
-        'Evidence is a list of source citation strings (e.g. ["e42"]) or legacy '
-        "{batch_id,block_id} objects. Copy citations from source reads; do not guess pairs. "
-        "Internal record IDs are allocated by the server; step names are "
-        "immutable on update. Use the current revision "
-        "and a unique operation_id. Reusing the same operation with the same content is safe. "
-        "For kind=unresolved, value has description and object_names, and no name field. "
-        "Result includes draft_reference_errors; field_relations require two send steps and exact "
-        "associated_fields names on their messages. Network ordering uses empty field_relations "
-        "and endpoint binding uses channel.endpoint_sources.",
-        {"expected_revision": INTEGER, "operation_id": STRING, "changes": OBJECT_ARRAY},
-        ["expected_revision", "operation_id", "changes"],
-    ),
-    "complete_batch": (
-        "Complete parsing batches in one atomic call using batches=[{batch_id,receipt_id,report}]. "
-        "Single-batch arguments remain supported. Submission order is unrestricted. "
-        "Each batch needs its own receipt and a report with summary. "
-        "record_ids and finding_ids are optional; use cached ledgers when supplying them. "
-        "Explicitly justify no relevant information.",
-        {
-            "batch_id": STRING,
-            "receipt_id": STRING,
-            "report": REPORT_VALUE,
-            "batches": {"type": "array", "items": REPORT, "minItems": 1},
-        },
-        [],
-    ),
-    "list_findings": (
-        "Read findings, resolutions and reviewer decisions, following pagination.",
-        {"filters": OBJECT, "cursor": INTEGER, "max_tokens": TOKEN, "revision": INTEGER},
         [],
     ),
     "get_changes": (
-        "Read every model-diff page in later reviews (round > 1) from review_base to the "
-        "current revision. Initial review uses the full current snapshot, without historical "
-        "diffs. Each change keeps its own before and after.",
+        "Read complete before/after images since a model or local draft revision.",
+        {"from_revision": INTEGER, **PAGING},
+        ["from_revision"],
+    ),
+    "apply_changes": (
+        "Atomically apply changes=[named operations] with a unique operation_id. "
+        "Targets are exact named value fields. Patch replaces supplied fields, including "
+        "whole arrays; update replaces the complete value. Local forward references "
+        "are allowed until merge. Only merge assignments may merge or rename scoped "
+        "candidates; the server rewrites structured references and report mappings.",
+        {"expected_revision": INTEGER, "operation_id": STRING, "changes": {}},
+        ["expected_revision", "operation_id", "changes"],
+    ),
+    "complete_batch": (
+        "Submit actual source extraction or independent review reports in assigned "
+        "source order. Each source report uses its current attempt's receipt. "
+        "Review reports include requirements, compared objects, outcomes and absence "
+        "query scopes. Cross-range checks use check_name and the same report shape.",
         {
-            "from_revision": INTEGER,
-            "to_revision": INTEGER,
-            "cursor": INTEGER,
-            "max_tokens": TOKEN,
             "revision": INTEGER,
+            "reports": array(
+                {
+                    "oneOf": [
+                        obj(
+                            {"batch_id": STRING, "receipt": STRING, "report": REPORT},
+                            ["batch_id", "receipt", "report"],
+                        ),
+                        obj({"check_name": STRING, "report": REPORT}, ["check_name", "report"]),
+                    ]
+                },
+                1,
+            ),
         },
-        ["from_revision", "to_revision"],
+        ["revision", "reports"],
     ),
-    "submit_findings": (
-        "Submit findings with description, evidence (prefer source citation strings; "
-        "legacy {batch_id,block_id} objects remain accepted), "
-        "optional record_ids and suggestion. Cannot edit the model.",
-        {"reviewed_revision": INTEGER, "findings": OBJECT_ARRAY},
-        ["reviewed_revision", "findings"],
-    ),
-    "complete_review_batch": (
-        "Atomically record source/model comparisons using batches=[{batch_id,receipt_id,report}], "
-        "or single-batch arguments. Submission order is unrestricted. "
-        "Require receipt and report.summary; "
-        "include finding_ids or explicitly report no findings.",
-        {
-            "batch_id": STRING,
-            "receipt_id": STRING,
-            "report": REPORT_VALUE,
-            "batches": {"type": "array", "items": REPORT, "minItems": 1},
-        },
+    "list_findings": (
+        "Read assigned findings, resolutions and independent acceptance history.",
+        PAGING,
         [],
     ),
+    "submit_findings": (
+        "Report source-backed discrepancies against the frozen revision. "
+        "Names are local to your assignment; do not reuse a name for different content.",
+        {"revision": INTEGER, "findings": array(FINDING, 1)},
+        ["revision", "findings"],
+    ),
     "submit_resolutions": (
-        "Submit resolutions with finding_id,status (applied/not_applicable/"
-        "unresolved),reason,evidence. Only the reviewer can accept them.",
-        {"expected_revision": INTEGER, "resolutions": OBJECT_ARRAY},
-        ["expected_revision", "resolutions"],
+        "Propose resolutions for your assigned findings; only a reviewer can accept them.",
+        {"revision": INTEGER, "resolutions": array(RESOLUTION, 1)},
+        ["revision", "resolutions"],
     ),
     "review_resolutions": (
-        "Decide each submitted resolution using finding_id,accepted:boolean,reason.",
-        {"reviewed_revision": INTEGER, "decisions": OBJECT_ARRAY},
-        ["reviewed_revision", "decisions"],
+        "Independently accept or reject fixes against the new frozen model and sources.",
+        {
+            "revision": INTEGER,
+            "reviews": array(
+                obj(
+                    {
+                        "name": STRING,
+                        "accepted": {"type": "boolean"},
+                        "reason": STRING,
+                        "evidence": EVIDENCE,
+                    },
+                    ["name", "accepted", "reason", "evidence"],
+                ),
+                1,
+            ),
+        },
+        ["revision", "reviews"],
     ),
 }
 
 
-def _value_shape(value, definitions):
-    """Keep nested value types visible when code-mode discovery drops $defs."""
-    if "$ref" in value:
-        return _value_shape(definitions[value["$ref"].rsplit("/", 1)[-1]], definitions)
-    for union in ("anyOf", "oneOf"):
-        if union in value:
-            return " | ".join(_value_shape(item, definitions) for item in value[union])
-    if "const" in value:
-        return json.dumps(value["const"])
-    if "enum" in value:
-        return " | ".join(json.dumps(item) for item in value["enum"])
-    kind = value.get("type")
-    if kind == "array":
-        return "Array<" + _value_shape(value.get("items", {}), definitions) + ">"
-    if kind == "object":
-        required = value.get("required", [])
-        return (
-            "{"
-            + ",".join(
-                key + ("" if key in required else "?") + ":" + _value_shape(item, definitions)
-                for key, item in value.get("properties", {}).items()
-            )
-            + "}"
-        )
-    return "number" if kind == "integer" else kind or "JSON"
-
-
 def schema(name):
     description, properties, required = CONTRACTS[name]
-    properties = deepcopy(properties)
+    contract = obj(deepcopy(properties), required)
     if name == "apply_changes":
-        definitions = deepcopy(protocol_schema()["$defs"])
-        shapes = {**DEFINITIONS, "unresolved": "issue"}
-        description += (
-            " Complete value shapes (closed objects; patches select fields; ? means optional): "
-            + "; ".join(
-                kind + ":" + _value_shape(definitions[definition], definitions)
-                for kind, definition in shapes.items()
-            )
-            + "."
+        definitions = protocol_schema()["$defs"]
+        contract["$defs"] = definitions
+        variants = []
+        for kind, definition in {**DEFINITIONS, "unresolved": "issue"}.items():
+            for op in ("add", "update", "patch", "delete"):
+                props = {"op": {"const": op}, "kind": {"const": kind}}
+                if op != "add":
+                    props["target"] = OBJECT
+                if op == "delete":
+                    props["reason"] = STRING
+                else:
+                    props["value"] = OBJECT if op == "patch" else {"$ref": f"#/$defs/{definition}"}
+                    props["evidence"] = EVIDENCE
+                props["scope"] = STRING
+                variants.append(obj(props, set(props) - {"scope"}))
+        variants.extend(
+            [
+                obj(
+                    {
+                        "op": {"const": "rename"},
+                        "source": REF,
+                        "name": STRING,
+                        "evidence": EVIDENCE,
+                    },
+                    ["op", "source", "name", "evidence"],
+                ),
+                obj(
+                    {
+                        "op": {"const": "merge"},
+                        "sources": array(REF, 1),
+                        "value": OBJECT,
+                        "evidence": EVIDENCE,
+                    },
+                    ["op", "sources", "value", "evidence"],
+                ),
+                obj(
+                    {
+                        "op": {"const": "resolve"},
+                        "name": STRING,
+                        "decision": STRING,
+                        "evidence": EVIDENCE,
+                    },
+                    ["op", "name", "decision", "evidence"],
+                ),
+            ]
         )
-        values = []
-        for definition in [*DEFINITIONS.values(), "issue"]:
-            values.append({"$ref": f"#/$defs/{definition}"})
-        properties["changes"]["items"] = {
-            "type": "object",
-            "properties": {
-                "op": {"enum": ["add", "update", "patch", "delete"]},
-                "kind": {"enum": [*DEFINITIONS, "unresolved"]},
-                "record_id": STRING,
-                "target": {"type": "object", "minProperties": 1},
-                "value": {"type": "object"},
-                "evidence": EVIDENCE,
-                "reason": STRING,
-            },
-            "required": ["op"],
-            "additionalProperties": False,
-            "allOf": [
-                {
-                    "if": {"properties": {"op": {"const": "patch"}}, "required": ["op"]},
-                    "then": {
-                        "required": ["value", "evidence"],
-                        "properties": {"value": {"type": "object", "minProperties": 1}},
-                    },
-                    "else": {"properties": {"value": {"anyOf": values}}},
-                },
-                {
-                    "if": {
-                        "properties": {"op": {"enum": ["update", "patch", "delete"]}},
-                        "required": ["op"],
-                    },
-                    "then": {"oneOf": [{"required": ["record_id"]}, {"required": ["target"]}]},
-                },
-                {
-                    "if": {"required": ["target"]},
-                    "then": {
-                        "required": ["kind"],
-                        "properties": {"op": {"enum": ["update", "patch", "delete"]}},
-                    },
-                },
-            ],
-        }
-    if name == "apply_changes":
-        expanded = properties["changes"]
-        named_row = {
-            "type": "object",
-            "properties": deepcopy(expanded["items"]["properties"]),
-            "additionalProperties": False,
-        }
-        # Defaults can supply value fields, so rows need not carry complete values.
-        # Keep metadata visible to code-mode clients without weakening expansion checks.
-        named_row["properties"]["evidence"]["items"]["anyOf"].append(INTEGER)
-        table = {
-            "type": "object",
-            "required": ["groups"],
-            "additionalProperties": False,
-            "properties": {
-                "evidence": {"type": "array", "items": EVIDENCE["items"]},
-                "groups": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "required": ["op", "rows"],
-                        "additionalProperties": False,
-                        "properties": {
-                            "op": {"enum": ["add", "update", "patch", "delete"]},
-                            "kind": {"enum": [*DEFINITIONS, "unresolved"]},
-                            "defaults": {"type": "object"},
-                            "columns": {
-                                "type": "array",
-                                "minItems": 1,
-                                "uniqueItems": True,
-                                "items": STRING,
-                            },
-                            "rows": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {
-                                    "anyOf": [
-                                        named_row,
-                                        {
-                                            "type": "array",
-                                            "items": {
-                                                "anyOf": [
-                                                    *deepcopy(JSON_VALUE["anyOf"][:-1]),
-                                                    {
-                                                        "type": "array",
-                                                        "items": deepcopy(JSON_VALUE),
-                                                    },
-                                                ]
-                                            },
-                                        },
-                                    ]
-                                },
-                            },
-                        },
-                    },
-                },
-            },
-        }
-        properties["changes"] = {"oneOf": [expanded, table]}
-        description += (
-            " Compact changes={evidence?:[{batch_id,block_id}],"
-            "groups:[{op,kind?,defaults?,columns?,rows}]}. "
-            'Prefer named rows {value:{...},evidence:["e42"],target?:{name:...}} to avoid '
-            "positional counts. defaults contains shared VALUE fields, shallow-merged with each "
-            "row.value. Rows override defaults. A target selector requires kind and must match "
-            "exactly one existing record; record_id remains supported, never combine both. "
-            "Legacy array rows require columns; @record_id/@target and @reason are metadata, "
-            "@evidence accepts source citation strings directly; no evidence pool is then needed. "
-            "Integer evidence-pool indexes remain supported. Add groups require kind. "
-            "Cells keep native JSON types including nested objects/arrays and null. "
-            "Example group: {op:add,kind:steps,defaults:{action:send,channel_name:control,"
-            'sender_name:client,receiver_name:server,condition:""},'
-            'rows:[{value:{name:send_HELLO,message_name:HELLO},evidence:["e42"]}]}. '
-            "Expanded arrays remain supported. "
-            "Returned record_ids follow group/row order."
-        )
-    result = {
-        "name": name,
-        "description": description,
-        "inputSchema": {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-            "additionalProperties": False,
-        },
-    }
-    if name == "apply_changes":
-        result["inputSchema"]["$defs"] = definitions
-    if name in {"complete_batch", "complete_review_batch"}:
-        forms = [("batches",), ("batch_id", "receipt_id", "report")]
-        fields = set().union(*forms)
-        result["inputSchema"]["oneOf"] = [
-            {
-                "required": list(form),
-                "not": {"anyOf": [{"required": [field]} for field in sorted(fields - set(form))]},
-            }
-            for form in forms
-        ]
-    if name in {"submit_findings", "submit_resolutions"}:
-        key = "findings" if name == "submit_findings" else "resolutions"
-        result["inputSchema"]["properties"][key]["items"] = {
-            "type": "object",
-            "properties": {"evidence": EVIDENCE},
-        }
-    return result
+        contract["properties"]["changes"] = array({"oneOf": variants}, 1)
+    return {"name": name, "description": description, "inputSchema": contract}
 
 
 def validate_arguments(name, arguments):
     if name not in CONTRACTS:
-        raise WorkflowError("unknown tool")
+        raise WorkflowError("unknown agent tool")
     contract = schema(name)["inputSchema"]
-    if name == "apply_changes" and isinstance(arguments, dict):
-        branches = contract["properties"]["changes"]["oneOf"]
-        if isinstance(arguments.get("changes"), list):
-            contract["properties"]["changes"] = branches[0]
-        elif isinstance(arguments.get("changes"), dict):
-            contract["properties"]["changes"] = branches[1]
-    errors = list(Draft202012Validator(contract).iter_errors(arguments))
-    if errors:
-        messages = []
-        for error in errors:
-            path = list(error.absolute_path)
-            if (
-                name == "apply_changes"
-                and error.validator == "anyOf"
-                and len(path) == 5
-                and path[:2] == ["changes", "groups"]
-                and path[3] == "rows"
-                and isinstance(error.instance, dict)
-            ):
-                # Report the named-row branch, not a whole-row dump plus array errors.
-                messages.extend(
-                    f"{'/'.join(map(str, item.absolute_path))}: {item.message}"
-                    for item in error.context
-                    if item.schema_path[0] == 0
-                )
+    # Select the declared operation/kind branch for precise row diagnostics;
+    # validating every other kind's oneOf branch obscures the actual problem.
+    if (
+        name == "apply_changes"
+        and isinstance(arguments, dict)
+        and isinstance(arguments.get("changes"), list)
+    ):
+        variants = contract["properties"]["changes"]["items"]["oneOf"]
+        errors = []
+        base = deepcopy(contract)
+        base["properties"]["changes"]["items"] = OBJECT
+        errors.extend(Draft202012Validator(base).iter_errors(arguments))
+        messages = [f"{'/'.join(map(str, e.absolute_path))}: {e.message}" for e in errors]
+        for i, row in enumerate(arguments["changes"]):
+            if not isinstance(row, dict):
                 continue
-            if name == "apply_changes" and error.validator == "anyOf" and len(path) == 3:
-                change = arguments["changes"][path[1]]
-                kind = change.get("kind")
-                definition = {**DEFINITIONS, "unresolved": "issue"}.get(kind)
-                if definition:
-                    contract = protocol_schema()["$defs"]
-                    if definition == "step" and isinstance(change.get("value"), dict):
-                        action = change.get("value", {}).get("action")
-                        if isinstance(action, str) and action in {
-                            "send",
-                            "listen",
-                            "connect",
-                            "close",
-                        }:
-                            definition = action + "_step"
-                    check = Draft202012Validator(
-                        {"$ref": f"#/$defs/{definition}", "$defs": contract}
+            branch = next(
+                (
+                    v
+                    for v in variants
+                    if v["properties"]["op"]["const"] == row.get("op")
+                    and (
+                        "kind" not in v["properties"]
+                        or v["properties"]["kind"]["const"] == row.get("kind")
                     )
-                    messages.extend(
-                        f"changes[{path[1]}].value"
-                        + "".join(
-                            f"[{part}]" if isinstance(part, int) else f".{part}"
-                            for part in item.absolute_path
-                        )
-                        + f" kind={kind}: {item.message}"
-                        for item in check.iter_errors(change["value"])
-                    )
-                    continue
-            messages.append(f"{'/'.join(map(str, error.absolute_path)) or name}: {error.message}")
+                ),
+                None,
+            )
+            if branch is None:
+                messages.append(f"changes[{i}]: unknown operation or kind")
+                continue
+            check = {**branch, "$defs": contract["$defs"]}
+            messages.extend(
+                f"changes[{i}].{'/'.join(map(str, e.absolute_path))}: {e.message}"
+                for e in Draft202012Validator(check).iter_errors(row)
+            )
+    else:
+        messages = [
+            f"{'/'.join(map(str, e.absolute_path)) or name}: {e.message}"
+            for e in Draft202012Validator(contract).iter_errors(arguments)
+        ]
+    if messages:
         raise WorkflowError("invalid arguments: " + "; ".join(messages))

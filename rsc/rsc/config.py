@@ -20,6 +20,8 @@ DEFAULTS = {
         "batch_target_tokens": 8000,
         "batch_max_tokens": 12000,
         "max_review_rounds": 5,
+        "parse_workers": 3,
+        "review_workers": 3,
     },
     "agents": {
         "default_profile": "codex-luna-max",

@@ -34,14 +34,22 @@ class AgentContext:
     task_id: str
     role: str
     batch_max_tokens: int = 12000
+    worker: str | None = None
+    resume: bool = False
 
     @property
     def directory(self):
-        return self.root / "agents" / self.role
+        return self.root / "agents" / (self.worker or self.role)
+
+    @property
+    def terminal_name(self):
+        worker = self.worker or self.role
+        campaign = re.sub("[^a-z0-9_-]", "-", self.task_id.lower())
+        return f"rsc-{campaign[: 27 - len(worker)]}-{worker}"
 
     @property
     def namespace(self):
-        return f"rsc_{self.task_id}_{self.role}"
+        return re.sub("[^a-zA-Z0-9_]", "_", self.terminal_name)
 
     def bridge(self, profile):
         environment = dict(profile["envs"])
@@ -60,7 +68,7 @@ class AgentContext:
                 "--socket",
                 self.socket,
                 "--token-file",
-                str(self.root / f"{self.role}.token"),
+                str(self.root / f"{self.worker or self.role}.token"),
                 "--catalog",
                 "role",
             ],
@@ -128,6 +136,30 @@ class CodexAdapter(Adapter):
     required_flags = ("--no-daemon", "--model", "--config")
     reserved = Adapter.reserved | {"--remote", "--profile", "-p"}
 
+    @staticmethod
+    def executable(profile):
+        path = shutil.which(profile["executable"], path=dict(profile["envs"]).get("PATH"))
+        if path is None:
+            raise ConfigError("Codex executable is unavailable")
+        path = Path(path).resolve()
+        with path.open("rb") as stream:
+            header = stream.read(2048)
+        if b"Unified entry point for the Codex CLI" in header:
+            # Resolve the installed package's native executable without running
+            # its npm launcher, an installer, or an update check.
+            for candidate in sorted(path.parent.parent.rglob("codex")):
+                if candidate.is_file() and candidate.parent.name == "bin":
+                    with candidate.open("rb") as stream:
+                        if stream.read(4) == b"\x7fELF":
+                            return str(candidate)
+            raise ConfigError("installed Codex native executable is missing")
+        if header.startswith(b"#!"):
+            raise ConfigError("Codex must point to its native executable, not a wrapper")
+        return str(path)
+
+    def check(self, profile):
+        super().check({**profile, "executable": self.executable(profile)})
+
     def validate(self, profile):
         super().validate(profile)
         if profile["effort"] == "off":
@@ -152,7 +184,7 @@ class CodexAdapter(Adapter):
     def prepare(self, profile, context):
         self.validate(profile)
         argv = [
-            profile["executable"],
+            self.executable(profile),
             "--no-daemon",
             "--disable",
             "multi_agent",
@@ -178,7 +210,6 @@ class CodexAdapter(Adapter):
             f'{prefix}.default_tools_approval_mode="approve"',
         ]
         for tool in (
-            "read_batch",
             "read_batches",
             "query_model",
             "get_changes",
@@ -186,8 +217,9 @@ class CodexAdapter(Adapter):
             "search_source",
             "list_findings",
         ):
-            limit = 31024 if tool in {"read_batch", "read_batches"} else 31024
-            argv += ["-c", f"{prefix}.tools.{tool}.output_token_limit={limit}"]
+            argv += ["-c", f"{prefix}.tools.{tool}.output_token_limit=31024"]
+        if context.resume:
+            argv += ["resume", context.terminal_name]
         return LaunchSpec(argv + profile["args"], dict(profile["envs"]), str(context.root))
 
 
@@ -278,8 +310,10 @@ class PiAdapter(Adapter):
             "--session-dir",
             str(context.directory / "sessions"),
             "--name",
-            f"rsc-{context.role}-{context.task_id}",
+            context.terminal_name,
         ]
+        if context.resume:
+            argv.append("--continue")
         return LaunchSpec(
             argv + profile["args"],
             {**dict(profile["envs"]), "RSC_PI_RUNTIME": str(runtime)},
