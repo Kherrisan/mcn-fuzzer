@@ -1,4 +1,4 @@
-"""Scoped candidates and deterministic reference-aware merging for Parse and Fix."""
+"""ID-bound references and deterministic integration of independent group results."""
 
 import json
 from copy import deepcopy
@@ -6,7 +6,6 @@ from copy import deepcopy
 from rsc.protocol.references import reference_issues
 
 from .model import validate_record
-from .mutations import plan_changes, record_key, target
 from .store import dumps
 
 
@@ -41,367 +40,270 @@ def assign_path(value, path, replacement):
     value[path[-1]] = replacement
 
 
-def ref(candidate):
-    return {"scope": candidate["scope"], "kind": candidate["kind"], "target": target(candidate)}
+def number(key):
+    return int(key.removeprefix("i"))
 
 
-def display(record, candidates=None):
-    """Agent pages use named references; storage keys and merge bookkeeping stay internal."""
-    result = {key: record[key] for key in ("kind", "value", "evidence", "scope") if key in record}
-    if candidates is not None and "links" in record:
-        result["references"] = [
-            {"path": json.loads(path), "targets": [ref(candidates[k]) for k in keys]}
-            for path, keys in record["links"].items()
-        ]
-    return result
-
-
-def bind(candidates):
-    """Local definitions win. Unresolved foreign matches never choose by arrival."""
-    for candidate in candidates.values():
-        previous = candidate.get("links", {})
-        links = {}
-        for path, kind, name in reference_paths(candidate):
-            pointer = dumps(path)
-            old = previous.get(pointer, [])
-            if len(old) > 1 and all(key in candidates for key in old):
-                links[pointer] = old
-                continue
-            # Retain established bindings after a scoped rename/merge.
-            if (
-                len(old) == 1
-                and old[0] in candidates
-                and candidates[old[0]]["value"].get("name") == name
-            ):
-                links[pointer] = old
-                continue
+def bind(row, records):
+    links = {}
+    for path, kind, name in reference_paths(row):
+        old = row.get("refs", {}).get(dumps(path), {})
+        if name in records:
+            matches = [name] if records[name]["kind"] == kind else []
+        elif old.get("id") in records and old.get("name") == name:
+            matches = [old["id"]]
+        else:
             matches = [
-                key
-                for key, value in candidates.items()
-                if value["kind"] == kind and value["value"].get("name") == name
+                k
+                for k, r in sorted(records.items(), key=lambda pair: number(pair[0]))
+                if r["kind"] == kind and r["value"].get("name") == name
             ]
-            scopes = set(candidate["local_scopes"])
-            local = [key for key in matches if scopes & set(candidates[key]["local_scopes"])]
-            links[pointer] = local or matches
-        candidate["links"] = links
-    return candidates
-
-
-def combine(drafts):
-    candidates = {}
-    for scope, records in drafts:
-        for record in records.values():
-            key = dumps([scope, record_key(record)])
-            candidates[key] = {
-                **deepcopy(record),
-                "scope": scope,
-                "local_scopes": [scope],
-                "origins": deepcopy(record.get("origins", [])),
-            }
-            origin = {"scope": scope, "kind": record["kind"], "target": target(record)}
-            if origin not in candidates[key]["origins"]:
-                candidates[key]["origins"].append(origin)
-    return automatic(bind(candidates))
-
-
-def redirect(candidates, old_keys, final):
-    for candidate in candidates.values():
-        for pointer, targets in candidate.get("links", {}).items():
-            candidate["links"][pointer] = list(
-                dict.fromkeys(final if k in old_keys else k for k in targets)
-            )
-
-
-def automatic(candidates):
-    """Deduplicate only equal definitions with already-unique, equal bindings."""
-    while True:
-        bind(candidates)
-        seen, changed = {}, False
-        for key, record in list(candidates.items()):
-            if any(len(targets) != 1 for targets in record["links"].values()):
-                continue
-            signature = dumps([record["kind"], record["value"], record["links"]])
-            if signature not in seen:
-                seen[signature] = key
-                continue
-            first = seen[signature]
-            for field in ("origins", "evidence", "local_scopes"):
-                candidates[first][field].extend(
-                    x for x in record[field] if x not in candidates[first][field]
-                )
-            del candidates[key]
-            redirect(candidates, {key}, first)
-            changed = True
-        if not changed:
-            return candidates
-
-
-def conflicts(candidates, checks=()):
-    result, names = [], {}
-    bindings = {
-        (key, tuple(json.loads(path))): targets
-        for key, record in candidates.items()
-        for path, targets in record["links"].items()
-    }
-    reverse = {key: set() for key in candidates}
-    for (owner, _), targets in bindings.items():
-        for key in targets:
-            reverse[key].add(owner)
-
-    def context(keys):
-        affected, pending = set(keys), list(keys)
-        while pending:
-            for key in reverse[pending.pop()] - affected:
-                affected.add(key)
-                pending.append(key)
-        evidence = {dumps(e): e for key in keys for e in candidates[key]["evidence"]}
-        return {
-            "affected_records": [ref(candidates[k]) for k in sorted(affected)],
-            "evidence": list(evidence.values()),
-            "status": "open",
+            local = [k for k in matches if records[k]["owner"] == row["owner"]]
+            matches = local or matches
+        links[dumps(path)] = {
+            "kind": kind,
+            "name": name,
+            "id": matches[0] if len(matches) == 1 else None,
+            "candidates": matches,
         }
+    row["refs"] = links
+    return row
 
-    for key, record in candidates.items():
-        name = record["value"].get("name")
-        if name is not None:
-            names.setdefault((record["kind"], name), []).append(key)
-        for path, kind, name in reference_paths(record):
-            targets = record["links"].get(dumps(path), [])
-            if len(targets) != 1:
-                result.append(
+
+def grouped(records, groups):
+    expected = {
+        k
+        for k, r in sorted(records.items(), key=lambda pair: number(pair[0]))
+        if r["kind"] != "step_dependencies"
+    }
+    seen = set()
+    for members in groups:
+        if not members or len(members) != len(set(members)):
+            raise ValueError("groups must be nonempty with unique members")
+        if not set(members) <= expected or seen.intersection(members):
+            raise ValueError("unknown or multiply grouped item")
+        if len({records[k]["kind"] for k in members}) != 1:
+            raise ValueError("a group must contain a single item kind")
+        seen.update(members)
+    if seen != expected:
+        raise ValueError(f"ungrouped items: {sorted(expected - seen)}")
+    return [sorted(m, key=number) for m in groups]
+
+
+def evidence(rows):
+    return list({dumps(e): e for r in rows for e in r["evidence"]}.values())
+
+
+def canonical_target(link, mapping):
+    if link.get("id") in mapping:
+        return mapping[link["id"]]
+    alternatives = {mapping[k] for k in link.get("candidates", []) if k in mapping}
+    return next(iter(alternatives)) if len(alternatives) == 1 else None
+
+
+def group_owners(original, groups):
+    owners = {key: name for name, g in groups.items() for key in g["members"]}
+    for key, row in original.items():
+        if row["kind"] == "step_dependencies":
+            owners[key] = canonical_target(row["refs"][dumps(["dependent_step"])], owners)
+    return owners
+
+
+def at_path(value, path):
+    for part in path:
+        value = value[part]
+    return value
+
+
+def validate_proposals(original, groups, name, result):
+    """Reject invalid owned edits before accepting a group's immutable submission."""
+    owners = group_owners(original, groups)
+    seen = set()
+    for update in result.get("dependencies", []):
+        key = update["id"]
+        if (
+            key not in original
+            or original[key]["kind"] != "step_dependencies"
+            or owners.get(key) != name
+            or key in seen
+        ):
+            raise ValueError(f"dependency {key} must be unique and owned by {name}")
+        seen.add(key)
+    for patch in result.get("text_updates", []):
+        key, path = patch["id"], patch["path"]
+        if key not in original or not path or path[-1] not in {"description", "condition", "from"}:
+            raise ValueError("text update requires a known item and a prose field path")
+        try:
+            before = at_path(original[key]["value"], path)
+        except (KeyError, IndexError, TypeError) as error:
+            raise ValueError("invalid text update path") from error
+        if before != patch["before"]:
+            raise ValueError("text update old value mismatch")
+
+
+def integrate(original, groups):
+    mapping, owners, candidate = {}, group_owners(original, groups), {}
+    for name, g in groups.items():
+        keep = min(g["members"], key=number)
+        mapping.update({k: keep for k in g["members"]})
+        owners[keep] = name
+        row = deepcopy(original[keep])
+        row.update(
+            value=deepcopy(g["result"]["value"]),
+            evidence=evidence([original[k] for k in g["members"]] + [g["result"]]),
+        )
+        candidate[keep] = bind(row, original)
+    for key, row in sorted(original.items(), key=lambda pair: number(pair[0])):
+        if row["kind"] == "step_dependencies":
+            candidate[key] = deepcopy(row)
+            mapping[key] = key
+    errors, edits = [], {}
+    for name, g in groups.items():
+        validate_proposals(original, groups, name, g["result"])
+        for update in g["result"].get("dependencies", []):
+            key = update["id"]
+            candidate[key] = bind({**deepcopy(original[key]), **deepcopy(update)}, original)
+        for patch in g["result"].get("text_updates", []):
+            key, path = patch["id"], patch["path"]
+            target = mapping.get(key)
+            pointer = (target, dumps(path))
+            if pointer in edits and edits[pointer][0] != patch["after"]:
+                errors.append(
                     {
-                        "type": "missing_reference" if not targets else "ambiguous_reference",
-                        "record": ref(record),
-                        "path": list(path),
-                        "kind": kind,
-                        "name": name,
-                        "candidates": [ref(candidates[k]) for k in targets],
-                        "definitions": [display(candidates[k]) for k in targets],
-                        **context([key, *targets]),
+                        "type": "write_conflict",
+                        "records": [target],
+                        "path": path,
+                        "groups": [name, edits[pointer][1]],
+                        "description": "conflicting text updates",
                     }
                 )
-    for (kind, name), keys in names.items():
-        if len(keys) > 1:
-            records = [candidates[key] for key in keys]
-            fields = set().union(*(r["value"] for r in records))
-            result.append(
-                {
-                    "type": "same_name",
-                    "kind": kind,
-                    "name": name,
-                    "candidates": [
-                        {
-                            "ref": ref(r),
-                            "value": r["value"],
-                            "references": display(r, candidates).get("references", []),
-                            "evidence": r["evidence"],
-                        }
-                        for r in records
-                    ],
-                    "differences": sorted(
-                        f for f in fields if len({dumps(r["value"].get(f)) for r in records}) > 1
-                    ),
-                    **context(keys),
-                }
-            )
-    # Name/reference conflicts already have scoped candidate detail above. The same
-    # validator supplies role/field issues using those bindings, without choosing a
-    # last-arriving global definition or repeating each global name ambiguity.
-    for issue in reference_issues(candidates, bindings):
-        if issue["type"] == "structure":
-            keys = issue["records"]
-            result.append(
-                {
-                    **issue,
-                    "record": ref(candidates[keys[0]]),
-                    "records": [display(candidates[k]) for k in keys],
-                    **context(keys),
-                }
-            )
-    result.extend(check for check in checks if check.get("status") != "resolved")
-    return result
-
-
-def scoped_select(candidates, selector):
-    if not selector.get("scope"):
-        raise ValueError("merge targets must specify their source scope")
-    scope = selector["scope"]
-    matches = []
-    for key, r in candidates.items():
-        if r["kind"] != selector["kind"]:
-            continue
-        aliases = [o["target"] for o in r["origins"] if o["scope"] == scope]
-        if scope in r["local_scopes"]:
-            aliases.append(r["value"])
-        if any(
-            all(
-                field in value and dumps(value[field]) == dumps(expected)
-                for field, expected in selector["target"].items()
-            )
-            for value in aliases
-        ):
-            matches.append(key)
-    if len(matches) != 1:
-        raise ValueError(f"scoped target {selector!r} has {len(matches)} matches")
-    return matches[0]
-
-
-def rewrite(candidates, selected, final, old_names, checks):
-    redirect(candidates, selected, final)
-    name = candidates[final]["value"].get("name")
-    if name is None:
-        return
-    for record in candidates.values():
-        for path, _, _ in list(reference_paths(record)):
-            if record["links"].get(dumps(path)) == [final]:
-                assign_path(record["value"], path, name)
-        if record["kind"] == "step_dependencies" and candidates[final]["kind"] == "messages":
-            for endpoint, field in (
-                ("prior_step", "prior_field"),
-                ("dependent_step", "dependent_field"),
-            ):
-                steps = record["links"].get(dumps([endpoint]), [])
-                if len(steps) != 1:
-                    continue
-                step = candidates[steps[0]]
-                if step["links"].get(dumps(["message_name"])) != [final]:
-                    continue
-                for relation in record["value"]["field_relations"]:
-                    for old in old_names:
-                        if relation[field].startswith(old + "."):
-                            relation[field] = name + relation[field][len(old) :]
-                            break
-        # These fields are prose, not structured references. Never replace text.
-        prose = {
-            f: v
-            for f, v in record["value"].items()
-            if f in {"condition", "description", "endpoint_sources", "object_names"}
-        }
-        if any(old != name and old in dumps(prose) for old in old_names):
-            checks.append(
-                {
-                    "name": f"text-{len(checks) + 1}",
-                    "type": "text_check",
-                    "record": ref(record),
-                    "description": f"Check prose after renaming {old_names!r} to {name!r}",
-                    "evidence": record["evidence"],
-                    "status": "open",
-                }
-            )
-
-
-def apply(candidates, changes, checks, *, evidence_check):
-    """Return a new candidate revision; caller commits it and its decisions atomically."""
-    result, pending, decisions, errors = deepcopy(candidates), deepcopy(checks), [], []
-    for index, change in enumerate(changes):
-        try:
-            op = change["op"]
-            evidence_check(change.get("evidence", [])) if op != "delete" else None
-            if op == "resolve":
-                matches = [c for c in pending if c["name"] == change["name"]]
-                if len(matches) != 1:
-                    raise ValueError(
-                        "unknown or ambiguous semantic check; structural conflicts require edits"
-                    )
-                matches[0].update(
-                    status="resolved",
-                    decision=change["decision"],
-                    decision_evidence=change["evidence"],
-                )
-            elif op in {"rename", "merge"}:
-                selectors = [change["source"]] if op == "rename" else change["sources"]
-                keys = [scoped_select(result, s) for s in selectors]
-                if len(set(keys)) != len(keys):
-                    raise ValueError("source candidate selected more than once")
-                first = keys[0]
-                kind = result[first]["kind"]
-                if any(result[key]["kind"] != kind for key in keys):
-                    raise ValueError("cannot merge different record kinds")
-                value = (
-                    {**result[first]["value"], "name": change["name"]}
-                    if op == "rename"
-                    else deepcopy(change["value"])
-                )
-                validate_record(kind, value)
-                if "name" in value and any(
-                    k not in keys and r["kind"] == kind and r["value"].get("name") == value["name"]
-                    for k, r in result.items()
-                ):
-                    raise ValueError(
-                        "target name collides with another candidate; "
-                        "include it in an explicit merge"
-                    )
-                old_names = list(dict.fromkeys(result[k]["value"].get("name") for k in keys))
-                old_names = [n for n in old_names if n is not None]
-                for key in keys[1:]:
-                    for field in ("origins", "evidence", "local_scopes"):
-                        result[first][field].extend(
-                            x for x in result[key][field] if x not in result[first][field]
-                        )
-                    del result[key]
-                result[first]["value"] = value
-                result[first]["evidence"].extend(
-                    e for e in change["evidence"] if e not in result[first]["evidence"]
-                )
-                rewrite(result, set(keys), first, old_names, pending)
             else:
-                scope = change.get("scope")
-                if not scope:
-                    raise ValueError("merge edits must specify a scope")
-                subset = {k: r for k, r in result.items() if r["scope"] == scope}
-                plain = {
-                    record_key(r): {f: r[f] for f in ("kind", "value", "evidence")}
-                    for r in subset.values()
-                }
-                delta, _, _ = plan_changes(
-                    plain,
-                    [{k: v for k, v in change.items() if k != "scope"}],
-                    evidence_check=evidence_check,
+                previous = edits.get(pointer)
+                ev = evidence([patch, {"evidence": previous[2] if previous else []}])
+                edits[pointer] = (patch["after"], name, ev)
+    for (key, path), (after, name, ev) in edits.items():
+        try:
+            current = candidate[key]["value"]
+            old = original[key]["value"]
+            for part in json.loads(path):
+                current, old = current[part], old[part]
+            if current != old and current != after:
+                errors.append(
+                    {
+                        "type": "write_conflict",
+                        "records": [key],
+                        "path": json.loads(path),
+                        "groups": sorted({g for g in (name, owners.get(key)) if g}),
+                        "description": "text update conflicts with canonical definition",
+                    }
                 )
-                for old, new in delta.values():
-                    old_key = next(
-                        (k for k, r in subset.items() if old and record_key(r) == record_key(old)),
-                        None,
-                    )
-                    if new is None:
-                        del result[old_key]
-                        redirect(result, {old_key}, "missing-deleted-candidate")
-                    elif old_key:
-                        # Explicit edits to a reference resolve its previous ambiguity.
-                        old_refs = {dumps(p): n for p, _, n in reference_paths(result[old_key])}
-                        new_refs = {dumps(p): n for p, _, n in reference_paths(new)}
-                        for pointer in list(result[old_key].get("links", {})):
-                            if old_refs.get(pointer) != new_refs.get(pointer):
-                                del result[old_key]["links"][pointer]
-                        result[old_key].update(new)
-                    else:
-                        key = dumps([scope, record_key(new)])
-                        if key in result:
-                            raise ValueError(
-                                "local name already has an origin mapping; use a new scope"
+                continue
+            assign_path(candidate[key]["value"], json.loads(path), after)
+            candidate[key]["evidence"] = evidence([candidate[key], {"evidence": ev}])
+        except (KeyError, IndexError, TypeError):
+            errors.append(
+                {
+                    "type": "write_conflict",
+                    "records": [key],
+                    "path": json.loads(path),
+                    "groups": sorted({g for g in (name, owners.get(key)) if g}),
+                    "description": "text update path disappeared in merged item",
+                }
+            )
+    for key, row in candidate.items():
+        for path, link in row.get("refs", {}).items():
+            target = canonical_target(link, mapping)
+            if target is None:
+                matches = [
+                    k
+                    for k, r in candidate.items()
+                    if r["kind"] == link["kind"] and r["value"].get("name") == link["name"]
+                ]
+                target = matches[0] if len(matches) == 1 else None
+            if target not in candidate or candidate[target]["kind"] != link["kind"]:
+                errors.append(
+                    {
+                        "type": "reference",
+                        "records": [key],
+                        "path": json.loads(path),
+                        "description": f"unresolved {link['kind']} reference {link['name']!r}",
+                    }
+                )
+                continue
+            link["id"] = target
+            assign_path(row["value"], json.loads(path), candidate[target]["value"]["name"])
+        if row["kind"] == "step_dependencies":
+            for side, field in (
+                ("prior_field", "prior_step"),
+                ("dependent_field", "dependent_step"),
+            ):
+                source_link = original[key].get("refs", {}).get(dumps([field]), {})
+                source_steps = [source_link.get("id"), *source_link.get("candidates", [])]
+                prefixes = {}
+                for step in source_steps:
+                    link = original.get(step, {}).get("refs", {}).get(dumps(["message_name"]), {})
+                    target = canonical_target(link, mapping)
+                    if target not in candidate:
+                        continue
+                    for msg in [link.get("id"), *link.get("candidates", [])]:
+                        if msg in original and mapping.get(msg) == target:
+                            prefixes[original[msg]["value"]["name"] + "."] = (
+                                candidate[target]["value"]["name"] + "."
                             )
-                        result[key] = {
-                            **new,
-                            "scope": scope,
-                            "local_scopes": [scope],
-                            "origins": [
-                                {"scope": scope, "kind": new["kind"], "target": target(new)}
-                            ],
-                        }
-            bind(result)
-            decisions.append(deepcopy(change))
-        except (ValueError, KeyError, TypeError) as error:
-            errors.append(f"changes[{index}]: {error}")
-    if errors:
-        raise ValueError("; ".join(errors))
-    return automatic(result), pending, decisions
+                for relation in row["value"]["field_relations"]:
+                    for prefix in sorted(prefixes, key=len, reverse=True):
+                        if relation[side].startswith(prefix):
+                            relation[side] = prefixes[prefix] + relation[side][len(prefix) :]
+                            break
+    seen = {}
+    for key, row in list(candidate.items()):
+        try:
+            validate_record(row["kind"], row["value"])
+        except ValueError as error:
+            errors.append({"type": "schema", "records": [key], "description": str(error)})
+        if row["kind"] == "step_dependencies":
+            signature = dumps(row["value"])
+            if signature in seen:
+                keep = seen[signature]
+                candidate[keep]["evidence"] = evidence([candidate[keep], row])
+                mapping[key] = keep
+                del candidate[key]
+            else:
+                seen[signature] = key
+    if not any(e["type"] == "schema" for e in errors):
+        errors.extend(reference_issues(candidate))
+    for error in errors:
+        error.setdefault("groups", sorted({owners[k] for k in error["records"] if owners.get(k)}))
+    updates = []
 
+    def difference(key, before, after, path=()):
+        if before == after:
+            return
+        if isinstance(before, dict) and isinstance(after, dict) and before.keys() == after.keys():
+            for field in before:
+                difference(key, before[field], after[field], (*path, field))
+        elif isinstance(before, list) and isinstance(after, list) and len(before) == len(after):
+            for index, (old, new) in enumerate(zip(before, after, strict=True)):
+                difference(key, old, new, (*path, index))
+        else:
+            updates.append(
+                {
+                    "id": key,
+                    "path": list(path),
+                    "before": before,
+                    "after": after,
+                    "group": edits.get((key, dumps(path)), (None, owners.get(key)))[1],
+                }
+            )
 
-def final_records(candidates):
-    errors = conflicts(candidates)
-    if errors:
-        raise ValueError("cannot freeze unresolved merge conflicts")
-    return {
-        record_key(r): {k: deepcopy(r[k]) for k in ("kind", "value", "evidence", "origins")}
-        for r in candidates.values()
-    }
+    for key, row in candidate.items():
+        difference(key, original[key]["value"], row["value"])
+    return (
+        candidate,
+        {
+            "replacements": mapping,
+            "deletions": [k for k in original if k not in candidate],
+            "updates": updates,
+        },
+        errors,
+    )

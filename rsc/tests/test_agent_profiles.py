@@ -20,7 +20,7 @@ def configuration(tmp_path, extra=""):
     path.write_text(
         """[agents]
 default_profile = "a"
-reviewer_profile = "b"
+merge_profile = "b"
 [agents.profiles.a]
 provider = "codex"
 model = "gpt-6-luna"
@@ -37,10 +37,10 @@ effort = "high"
 
 def test_profile_precedence_and_toml(tmp_path):
     _, config = configuration(tmp_path)
-    assert resolve_profiles(config)["reviewer"]["name"] == "b"
-    assert resolve_profiles(config, profile="a")["reviewer"]["name"] == "a"
-    selected = resolve_profiles(config, profile="a", reviewer_profile="b")
-    assert [selected[r]["name"] for r in ("parser", "reviewer")] == ["a", "b"]
+    assert resolve_profiles(config)["merge"]["name"] == "b"
+    assert resolve_profiles(config, profile="a")["merge"]["name"] == "a"
+    selected = resolve_profiles(config, profile="a", merge_profile="b")
+    assert [selected[r]["name"] for r in ("parser", "merge")] == ["a", "b"]
     with pytest.raises(ConfigError, match="unknown profile"):
         resolve_profiles(config, parser_profile="missing")
 
@@ -89,10 +89,10 @@ def test_frozen_profiles_survive_resume_and_reject_mutations(tmp_path):
     path, config = configuration(tmp_path)
     root = tmp_path / "task"
     root.mkdir()
-    args = SimpleNamespace(config=str(path), profile="b", parser_profile=None, reviewer_profile="a")
+    args = SimpleNamespace(config=str(path), profile="b", parser_profile=None, merge_profile="a")
     original = bind_profiles(root, config, existing=False, args=args)
     assert (root / "agent-profiles.json").stat().st_mode & 0o777 == 0o600
-    args = SimpleNamespace(config=None, profile=None, parser_profile=None, reviewer_profile=None)
+    args = SimpleNamespace(config=None, profile=None, parser_profile=None, merge_profile=None)
     assert bind_profiles(root, config, existing=True, args=args) == original
     args.config = str(path)
     assert bind_profiles(root, config, existing=True, args=args) == original
@@ -123,9 +123,18 @@ def test_provider_launch_specs_are_bound_and_do_not_embed_env_in_argv(tmp_path, 
         bridge = json.loads((context.directory / "mcp-launch.json").read_text())
         assert str(tmp_path / f"{role}.token") in bridge["argv"]
         assert (context.directory / "launch.json").stat().st_mode & 0o777 == 0o600
-        assert bridge["env"].get("SECRET") == ("private value" if role == "reviewer" else None)
+        assert bridge["env"].get("SECRET") == ("private value" if role == "merge" else None)
         if role == "parser":
             assert "--no-daemon" in spec.argv and "--thinking" not in spec.argv
+            from rsc.workflow.tools import READ
+
+            limited = {
+                arg.split(".tools.")[1].split(".")[0]
+                for arg in spec.argv
+                if ".output_token_limit=" in arg
+            }
+            assert limited == READ
+            assert all(arg.endswith("=31024") for arg in spec.argv if ".output_token_limit=" in arg)
         else:
             assert "--thinking" in spec.argv and "--no-daemon" not in spec.argv
 

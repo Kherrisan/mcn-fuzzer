@@ -281,39 +281,22 @@ impl GeneratorSynthesisStage {
     }
 
     /// Seedless bootstrap needs an initialized agent before it can create a corpus.
-    fn wait_initialized(&mut self) -> Result<(), Error> {
+    fn wait_initialized(
+        &mut self,
+        poll: &mut impl FnMut() -> Result<(), Error>,
+    ) -> Result<(), Error> {
         if !self.enabled || self.initialized {
             return Ok(());
         }
         loop {
+            poll()?;
             self.initialize()?;
             match self.recv_one(Duration::from_millis(200)) {
                 Some(Outcome::Launched(fact)) => {
                     self.record_session("launch", SessionPhase::Initializing, &fact, None)
                 }
                 Some(Outcome::Ready((), fact)) => return self.accept_initialization(&fact),
-                Some(Outcome::Failed(failure)) if failure.timeout => {
-                    self.init_timeouts = self.init_timeouts.saturating_add(1);
-                    self.note_terminal_failure(&failure);
-                    if self.init_timeouts >= crate::agents::INIT_TIMEOUT_ATTEMPTS {
-                        return Err(Error::unknown(format!(
-                            "synthesis initialization timed out {} consecutive times",
-                            self.init_timeouts
-                        )));
-                    }
-                    self.paused = false;
-                    self.initialization_started = false;
-                    self.record_session(
-                        "init_retry",
-                        SessionPhase::Initializing,
-                        &failure.fact,
-                        Some(format!(
-                            "initialization timed out; starting attempt {} of {}",
-                            self.init_timeouts + 1,
-                            crate::agents::INIT_TIMEOUT_ATTEMPTS
-                        )),
-                    );
-                }
+                Some(Outcome::InitTimedOut(failure)) => self.consume_init_timeout(failure)?,
                 Some(Outcome::Failed(failure)) => {
                     self.note_terminal_failure(&failure);
                     return Err(Error::unknown(format!(
@@ -328,11 +311,16 @@ impl GeneratorSynthesisStage {
 
     /// Block until the first candidate artifact is published. The caller
     /// enqueues it for baseline + mutation exploration; it is not evaluated here.
-    pub(crate) fn bootstrap_first(&mut self, rand: &mut impl Rand) -> Result<ReadyInput, Error> {
-        self.wait_initialized()?;
+    pub(crate) fn bootstrap_first(
+        &mut self,
+        rand: &mut impl Rand,
+        mut poll: impl FnMut() -> Result<(), Error>,
+    ) -> Result<ReadyInput, Error> {
+        self.wait_initialized(&mut poll)?;
         self.dispatch_with(rand, true)?;
         let deadline = Instant::now() + Duration::from_secs(self.config.task_timeout_secs.max(1));
         while Instant::now() < deadline {
+            poll()?;
             if let Some(outcome) = self.recv_one(Duration::from_millis(200)) {
                 if let Outcome::Artifact {
                     result: Ok(ready), ..
@@ -576,51 +564,19 @@ impl GeneratorSynthesisStage {
                 self.mirror_session(state);
                 Ok(())
             }
+            Outcome::InitTimedOut(failure) => {
+                let result = self.consume_init_timeout(failure);
+                self.mirror_session(state);
+                result
+            }
             Outcome::Failed(failure) => {
                 if !self.initialized {
                     let reason = self.redacted(&failure.reason);
-                    if !failure.timeout {
-                        self.note_terminal_failure(&failure);
-                        self.note_failure(state, reason.clone());
-                        return Err(Error::unknown(format!(
-                            "synthesis initialization failed: {reason}"
-                        )));
-                    }
-                    self.init_timeouts = self.init_timeouts.saturating_add(1);
                     self.note_terminal_failure(&failure);
                     self.note_failure(state, reason.clone());
-                    if self.init_timeouts >= crate::agents::INIT_TIMEOUT_ATTEMPTS {
-                        let error = format!(
-                            "synthesis initialization timed out {} consecutive times",
-                            self.init_timeouts
-                        );
-                        self.paused = true;
-                        self.record_session(
-                            "blocked",
-                            SessionPhase::Paused,
-                            &failure.fact,
-                            Some(error.clone()),
-                        );
-                        return Err(Error::unknown(error));
-                    }
-                    self.paused = false;
-                    self.initialization_started = false;
-                    self.record_session(
-                        "init_retry",
-                        SessionPhase::Initializing,
-                        &failure.fact,
-                        Some(format!(
-                            "initialization timed out; starting attempt {} of {}",
-                            self.init_timeouts + 1,
-                            crate::agents::INIT_TIMEOUT_ATTEMPTS
-                        )),
-                    );
-                    self.initialize()?;
-                    state
-                        .metadata_or_insert_with(BitmapProgress::default)
-                        .take_synthesis_request();
-                    self.mirror_session(state);
-                    return Ok(());
+                    return Err(Error::unknown(format!(
+                        "synthesis initialization failed: {reason}"
+                    )));
                 }
                 let reason = failure.reason.clone();
                 self.finish_request(true);
@@ -675,6 +631,31 @@ impl GeneratorSynthesisStage {
                 Ok(())
             }
         }
+    }
+
+    fn consume_init_timeout(&mut self, failure: AgentFailure) -> Result<(), Error> {
+        self.init_timeouts = self.init_timeouts.saturating_add(1);
+        let reason = format!(
+            "synthesis initialization timed out {} times (limit {}): {}",
+            self.init_timeouts,
+            crate::agents::INIT_TIMEOUT_LIMIT,
+            self.redacted(&failure.reason)
+        );
+        self.paused = self.init_timeouts >= crate::agents::INIT_TIMEOUT_LIMIT;
+        self.record_session(
+            "timeout",
+            if self.paused {
+                SessionPhase::Paused
+            } else {
+                SessionPhase::Initializing
+            },
+            &failure.fact,
+            Some(reason.clone()),
+        );
+        if self.paused {
+            return Err(Error::unknown(reason));
+        }
+        Ok(())
     }
 
     fn accept_initialization(&mut self, fact: &TerminalFact) -> Result<(), Error> {

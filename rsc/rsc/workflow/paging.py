@@ -93,7 +93,8 @@ def decode_compact(payload: dict) -> list[dict]:
 
 def delivered_ids(rows) -> list:
     return [
-        row.get("record_id")
+        row.get("id")
+        or row.get("record_id")
         or row.get("change_id")
         or row.get("batch_id")
         or row.get("finding_id")

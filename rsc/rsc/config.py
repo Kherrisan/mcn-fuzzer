@@ -14,14 +14,14 @@ class ConfigError(ValueError):
     """Invalid workflow configuration."""
 
 
-ROLES = ("parser", "reviewer")
+ROLES = ("parser", "merge")
 DEFAULTS = {
     "workflow": {
         "batch_target_tokens": 8000,
         "batch_max_tokens": 12000,
-        "max_review_rounds": 5,
         "parse_workers": 3,
-        "review_workers": 3,
+        "merge_workers": 3,
+        "max_feedback_rounds": 2,
     },
     "agents": {
         "default_profile": "codex-luna-max",
@@ -79,13 +79,13 @@ def load_workflow_config(path=None):
     if not isinstance(agents, dict) or set(agents) - {
         "default_profile",
         "parser_profile",
-        "reviewer_profile",
+        "merge_profile",
         "profiles",
     }:
         raise ConfigError(
             "use [agents.profiles.NAME] and role profile names; inline agents are removed"
         )
-    for key in ("default_profile", "parser_profile", "reviewer_profile"):
+    for key in ("default_profile", "parser_profile", "merge_profile"):
         if key in agents:
             if not isinstance(agents[key], str) or not agents[key].strip():
                 raise ConfigError(f"agents.{key} must be a profile name")
@@ -134,24 +134,24 @@ def load_workflow_config(path=None):
                 )
             profiles[name] = value
         result["agents"]["profiles"] = profiles
-    for key in ("default_profile", "parser_profile", "reviewer_profile"):
+    for key in ("default_profile", "parser_profile", "merge_profile"):
         if key in result["agents"] and result["agents"][key] not in result["agents"]["profiles"]:
             raise ConfigError(f"agents.{key} references unknown profile {result['agents'][key]!r}")
     return result
 
 
-def resolve_profiles(
-    config, *, profile=None, parser_profile=None, reviewer_profile=None, saved=None
-):
+def resolve_profiles(config, *, profile=None, parser_profile=None, merge_profile=None, saved=None):
     agents = config["agents"]
-    overrides = {"parser": parser_profile, "reviewer": reviewer_profile}
+    overrides = {"parser": parser_profile, "merge": merge_profile}
     roles = {}
     for role in ROLES:
         name = (
             overrides[role]
             or profile
             or (saved or {}).get(role, {}).get("name")
-            or agents.get(f"{role}_profile", agents["default_profile"])
+            or agents.get(f"{role}_profile")
+            or (roles.get("parser", {}).get("name") if role == "merge" else None)
+            or agents["default_profile"]
         )
         if name not in agents["profiles"]:
             raise ConfigError(f"{role} references unknown profile {name!r}")

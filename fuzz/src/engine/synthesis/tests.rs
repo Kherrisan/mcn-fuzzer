@@ -141,3 +141,101 @@ fn coverage_proposal_keeps_its_analysis_request_identity() {
     assert_eq!(validated.origin.request_id, "analysis-1");
     assert_eq!(validated.origin.step_names, vec!["hello".to_string()]);
 }
+
+fn timeout_stage() -> super::GeneratorSynthesisStage {
+    let campaign: crate::app::config::Campaign = toml::from_str(
+        r#"
+[target]
+binary = "b"
+workdir = "w"
+port = 0
+[timeouts]
+connect_ms = 1
+io_ms = 1
+case_ms = 1
+exit_grace_ms = 1
+[campaign]
+seeds = "s"
+corpus = "co"
+crashes = "cr"
+python = "python"
+pythonpath = "pp"
+"#,
+    )
+    .unwrap();
+    let mut stage = super::GeneratorSynthesisStage::disabled(
+        &campaign,
+        crate::coverage::proposal::ProposalMailbox::default(),
+    );
+    stage.initialization_started = true;
+    stage
+}
+
+fn init_timeout() -> crate::agents::AgentFailure {
+    crate::agents::AgentFailure::new(
+        "ready.json was not published before the deadline".into(),
+        crate::agents::TerminalFact::default(),
+    )
+}
+
+#[test]
+fn init_timeout_count_is_per_stage_and_only_the_third_is_fatal() {
+    let mut first = timeout_stage();
+    let mut second = timeout_stage();
+    for count in 1..=3 {
+        let result = first.consume_init_timeout(init_timeout());
+        assert_eq!(result.is_err(), count == 3);
+        assert_eq!(first.init_timeouts, count);
+        assert_eq!(second.init_timeouts, 0);
+        assert_eq!(first.paused, count == 3);
+        assert!(first.initialization_started);
+        assert!(!first.initialized);
+    }
+    second.consume_init_timeout(init_timeout()).unwrap();
+    assert_eq!(second.init_timeouts, 1);
+}
+
+#[test]
+fn bootstrap_propagates_analysis_failure_while_waiting_for_synthesis() {
+    let (_, _, dir) = fixture();
+    let mut stage = timeout_stage();
+    stage.enabled = true;
+    stage.output = dir.clone();
+    let error = stage
+        .wait_initialized(&mut || {
+            Err(libafl::Error::unknown(
+                "coverage analysis initialization timed out 3 times",
+            ))
+        })
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("coverage analysis initialization timed out 3 times"));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bootstrap_times_out_on_the_third_notification_without_sending_init_again() {
+    let (_, _, dir) = fixture();
+    let mut stage = timeout_stage();
+    stage.enabled = true;
+    stage.output = dir.clone();
+    let (commands, requests) = std::sync::mpsc::channel();
+    let (outcomes, receiver) = std::sync::mpsc::channel();
+    stage.worker = Some(crate::agents::AgentClient::from_channels(
+        commands, receiver,
+    ));
+    for _ in 0..3 {
+        outcomes
+            .send(super::Outcome::InitTimedOut(init_timeout()))
+            .unwrap();
+    }
+    let error = stage.wait_initialized(&mut || Ok(())).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("synthesis initialization timed out 3 times"));
+    assert_eq!(stage.init_timeouts, 3);
+    assert!(requests.try_recv().is_err(), "must not send another init");
+    stage.shutdown();
+    fs::remove_dir_all(dir).unwrap();
+}

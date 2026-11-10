@@ -596,4 +596,6 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(
+        "Historical runner: execute its archived source; use benchmark_parallel_rsc.py for v3"
+    )

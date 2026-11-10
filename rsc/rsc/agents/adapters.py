@@ -253,14 +253,9 @@ class CodexAdapter(Adapter):
             "-c",
             f'{prefix}.default_tools_approval_mode="approve"',
         ]
-        for tool in (
-            "read_batches",
-            "query_model",
-            "get_changes",
-            "list_batches",
-            "search_source",
-            "list_findings",
-        ):
+        from rsc.workflow.tools import READ
+
+        for tool in sorted(READ):
             argv += ["-c", f"{prefix}.tools.{tool}.output_token_limit=31024"]
         if context.resume:
             session = self.session(profile, context)

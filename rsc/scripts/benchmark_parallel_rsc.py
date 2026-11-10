@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Three bounded, sequential FTP trials against one frozen source snapshot.
+"""Bounded single/parallel Parser comparison against one frozen source snapshot.
 
 Ordinary tests never invoke this paid-agent runner. Results distinguish execution,
 structural audit, timing and the separate manual semantic assessment.
@@ -135,7 +135,7 @@ def codex_usage(root):
 
 def summarize(root, returncode, timed_out, elapsed):
     from rsc.workflow.audit import audit_run
-    from rsc.workflow.metrics import parallel_metrics
+    from rsc.workflow.metrics import result_metrics
     from rsc.workflow.state import Workflow
 
     report = {
@@ -143,44 +143,33 @@ def summarize(root, returncode, timed_out, elapsed):
         "exit_code": returncode,
         "timed_out": timed_out,
         "process_elapsed_seconds": elapsed,
-        "semantic_audit": "not_run",
-        "performance_acceptance": "failed",
+        "semantic_review": False,
+        "complete": False,
     }
     if not (root / "workflow.sqlite").exists():
         return {**report, "outcome": "initialization_failed"}
     w = Workflow(root, readonly=True)
     try:
-        events = [
-            json.loads(row[0]) for row in w.db.execute("SELECT body FROM events ORDER BY seq")
-        ]
-        report["metrics"] = parallel_metrics(w.store, events)
-        report["phase"] = w.data["phase"]
-        report["assignments"] = [
-            {k: a[k] for k in ("name", "worker", "phase", "status", "attempt")}
-            for a in w.store.assignments()
-        ]
-        report["complete"] = False
-        if w.data["phase"] == "published":
-            report["semantic_audit"] = "pending"
+        events = [json.loads(r[0]) for r in w.db.execute("SELECT body FROM events ORDER BY seq")]
+        report.update(
+            phase=w.data["phase"],
+            parse_workers=w.data["parse_workers"],
+            max_feedback_rounds=w.data.get("max_feedback_rounds", 2),
+            metrics=result_metrics(w.store, events),
+        )
+        outcome = (
+            "timeout" if timed_out else "execution_failed" if returncode else "incomplete_workflow"
+        )
+        if w.data["phase"] == "published" and not timed_out and not returncode:
             try:
                 report["audit"] = audit_run(root)
-                report["complete"] = report["audit"]["complete"]
-            except (ValueError, OSError) as error:
+                report["complete"] = True
+                outcome = "published"
+            except ValueError as error:
                 report["audit"] = {"verified": False, "error": str(error)}
-        if timed_out:
-            outcome = "timeout"
-        elif returncode:
-            outcome = "execution_failed"
-        elif report["phase"] != "published":
-            outcome = "incomplete_workflow"
-        elif not report["audit"]["verified"]:
-            outcome = "audit_failed"
-        else:
-            outcome = "published" if report["complete"] else "partial"
+                outcome = "audit_failed"
         report["outcome"] = outcome
-        report["under_20_minutes"] = outcome == "published" and elapsed < 1200
-        if report["under_20_minutes"]:
-            report["performance_acceptance"] = "pending_semantic_audit"
+        report["under_20_minutes"] = report["complete"] and elapsed < 1200
         if (root / "supervisor.json").exists():
             try:
                 report["codex"] = codex_usage(root)
@@ -194,9 +183,14 @@ def summarize(root, returncode, timed_out, elapsed):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--runs", type=int, choices=[1, 2, 3], default=3)
+    parser.add_argument("--parse-workers", type=int, nargs="+", default=[1, 3])
+    parser.add_argument("--max-feedback-rounds", type=int, default=2)
     parser.add_argument("--timeout", type=int, default=2400)
     args = parser.parse_args()
+    if any(n < 1 for n in args.parse_workers):
+        parser.error("worker counts must be positive")
+    if args.max_feedback_rounds < 1:
+        parser.error("--max-feedback-rounds must be positive")
     if not 1 <= args.timeout <= 2400:
         parser.error("diagnostic timeout must be within 1..2400 seconds")
     out = args.out.resolve()
@@ -212,9 +206,9 @@ def main():
     from rsc.agents.adapters import CodexAdapter
 
     executable = CodexAdapter.executable({"executable": "codex", "envs": []})
-    config = out / "config.toml"
-    config.write_text(
-        "[workflow]\nparse_workers=3\nreview_workers=3\nmax_review_rounds=5\n"
+    config_text = (
+        "[workflow]\nparse_workers=WORKERS\nmerge_workers=3\n"
+        f"max_feedback_rounds={args.max_feedback_rounds}\n"
         "batch_target_tokens=8000\nbatch_max_tokens=12000\n\n[agents]\n"
         'default_profile="luna-high"\n\n[agents.profiles.luna-high]\nprovider="codex"\n'
         f'executable={json.dumps(executable)}\nmodel="gpt-6-luna"\neffort="high"\nargs=[]\nenvs=[]\n'
@@ -228,16 +222,19 @@ def main():
             "rfc_order": ["rfc959.html", "rfc3659.html"],
             "model": "gpt-6-luna",
             "effort": "high",
-            "parse_workers": 3,
-            "review_workers": 3,
-            "runs": args.runs,
+            "parse_workers": args.parse_workers,
+            "merge_workers": 3,
+            "max_feedback_rounds": args.max_feedback_rounds,
+            "runs": len(args.parse_workers),
             "deadline_seconds": args.timeout,
             "target_seconds": 1200,
-            "semantic_audit": "manual inspection against semantic-checklist.md required",
+            "semantic_audit": "not performed by this runner; inspect RFC semantics separately",
         },
     )
     results = []
-    for number in range(1, args.runs + 1):
+    for number, workers in enumerate(args.parse_workers, 1):
+        config = out / f"config-{workers}.toml"
+        config.write_text(config_text.replace("WORKERS", str(workers)))
         root = out / f"ftp-{time.strftime('%m%d%H%M%S', time.gmtime())}-r{number}"
         root.mkdir()
         command = [
@@ -283,7 +280,7 @@ def main():
         results.append(result)
         write(out / "results.json", results)
         print(f"run {number} finished: {result['outcome']} in {elapsed:.1f}s", flush=True)
-    return 0
+    return 0 if all(result["complete"] for result in results) else 1
 
 
 if __name__ == "__main__":

@@ -1,122 +1,70 @@
-"""Phase timings from persisted assignments, with explicitly labelled older audit data."""
+"""Persisted phase timings; worker occupancy is not model inference utilization."""
 
 import json
 import time
 from collections import Counter
 
-from .merge import conflicts
-from .store import dumps
 
-
-def parallel_metrics(store, events):
-    """Wall-clock phases and claimed-worker occupancy, not inferred model API usage."""
-    data, assignments = store.settings(), store.assignments()
-    attempts = [
-        (name, json.loads(body))
-        for name, body in store.db.execute("SELECT assignment, body FROM attempts ORDER BY rowid")
-    ]
-    phases = []
-    groups = [("preprocess", 0), *dict.fromkeys((a["phase"], a["round"]) for a in assignments)]
-    for phase, round_ in groups:
-        workers = [a for a in assignments if (a["phase"], a["round"]) == (phase, round_)]
-        names = {a["name"] for a in workers}
-        lives = [(name, body) for name, body in attempts if name in names]
-        calls = [e for e in events if (e["phase"], e["round"]) == (phase, round_)]
-        ends = [
-            e["time"]
-            for e in calls
-            if e["role"] == "coordinator" and e["tool"] == "advance_phase" and e["status"] == "ok"
+def result_metrics(store, events):
+    data = store.settings()
+    transitions = [e for e in events if e["kind"] == "phase"]
+    intervals, start, phase, round_ = [], data["started_at"], "preprocess", 0
+    for e in transitions:
+        intervals.append((phase, round_, start, e["time"]))
+        start, phase, round_ = e["time"], e["phase"], e["round"]
+    if phase not in {"published", "failed"}:
+        intervals.append((phase, round_, start, time.time()))
+    rows = []
+    attempts = [dict(r) for r in store.db.execute("SELECT * FROM attempts")]
+    for phase, round_, start, end in intervals:
+        calls = [
+            e
+            for e in events
+            if e["kind"] == "call" and e.get("phase") == phase and e.get("round", 0) == round_
         ]
-        start = min((body["created_at"] for _, body in lives), default=data["started_at"])
-        end = max(ends) if ends else None
-        elapsed = max(0, (end or time.time()) - start)
-        agents = [e for e in calls if e["origin"] == "agent" and e["tool"] != "tools/list"]
-        seen, queries, repeated, repeated_queries = set(), set(), 0, 0
-        for e in agents:
-            for item in e.get("delivery", {}).get("delivered_ids", []):
-                key = dumps([e["tool"], item])
+        seen, repeated, delivered = set(), 0, 0
+        for call in calls:
+            for item in call.get("delivery", {}).get("items", []):
+                key = (call["worker"], call["tool"], str(item))
                 repeated += key in seen
+                delivered += 1
                 seen.add(key)
-            if e["tool"] == "query_model" and "request" in e:
-                key = dumps([e["worker"], e.get("delivery", {}).get("revision"), e["request"]])
-                repeated_queries += key in queries
-                queries.add(key)
-        occupancy = {}
-        for a in workers:
-            seconds = sum(
-                max(
-                    0,
-                    body.get("submitted_at", body.get("finished_at", end or time.time()))
-                    - body["claimed_at"],
-                )
-                for name, body in lives
-                if name == a["name"] and "claimed_at" in body
-            )
-            occupancy[a["worker"]] = {
-                "claimed_seconds": seconds,
-                "phase_fraction": seconds / elapsed if elapsed else 0,
-            }
-        conclusions = (
-            [
-                json.loads(r[0])
-                for r in store.db.execute(
-                    "SELECT body FROM conclusions WHERE revision=?", (round_,)
-                )
-            ]
-            if phase == "review"
-            else []
-        )
-        initial_conflicts = 0
-        if phase == "merge":
-            for a in workers:
-                seed = json.loads(
-                    store.db.execute(
-                        "SELECT body FROM history WHERE draft=? AND revision=0", (a["draft"],)
-                    ).fetchone()[0]
-                )
-                initial_conflicts += len(conflicts(seed["initial_records"], seed["checks"]))
-        phases.append(
+        busy = 0
+        for attempt in attempts:
+            body = json.loads(attempt["body"])
+            begin = body.get("running_at")
+            if begin is not None:
+                finish = body.get("submitted_at", body.get("failed_at", end))
+                busy += max(0, min(end, finish) - max(start, begin))
+        rows.append(
             {
                 "phase": phase,
-                "initial_conflicts": initial_conflicts,
                 "round": round_,
                 "started_at": start,
                 "finished_at": end,
-                "elapsed_seconds": elapsed,
-                "workers": occupancy,
+                "elapsed_seconds": end - start,
+                "calls": dict(Counter(e["tool"] for e in calls if e["origin"] == "agent")),
+                "rejected": dict(
+                    Counter(
+                        e["tool"]
+                        for e in calls
+                        if e["origin"] == "agent" and e["status"] == "rejected"
+                    )
+                ),
                 "calls_by_origin": dict(Counter(e["origin"] for e in calls)),
-                "catalog_sizes": sorted({e["catalog_size"] for e in calls if "catalog_size" in e}),
-                "catalog_requests": sum(e["tool"] == "tools/list" for e in calls),
-                "agent_calls_by_tool": dict(Counter(e["tool"] for e in agents)),
-                "agent_rejected_by_tool": dict(
-                    Counter(e["tool"] for e in agents if e["status"] == "rejected")
-                ),
-                "agent_argument_errors": sum(
-                    e.get("error", "").startswith("invalid arguments:") for e in agents
-                ),
-                "agent_tool_seconds": sum(e["elapsed_ms"] for e in agents) / 1000,
-                "source_deliveries": sum(
-                    len(e.get("delivery", {}).get("delivered_ids", []))
-                    for e in agents
-                    if e["tool"] == "read_batches"
-                ),
-                "delivered_tokens": sum(e.get("delivery", {}).get("tokens", 0) for e in agents),
+                "tool_elapsed_seconds": sum(e["elapsed_ms"] for e in calls) / 1000,
+                "delivered_tokens": sum(e.get("delivery", {}).get("tokens", 0) for e in calls),
+                "delivered_items": delivered,
                 "repeated_delivered_items": repeated,
-                "repeated_queries": repeated_queries,
-                "batch_reports": sum(
-                    e.get("batch_reports", 0) for e in agents if e["status"] == "ok"
-                ),
-                "fresh_conclusions": sum(not c.get("carried_from") for c in conclusions),
-                "carried_conclusions": sum(bool(c.get("carried_from")) for c in conclusions),
+                "worker_occupancy_seconds": busy,
             }
         )
     return {
         "elapsed_seconds": data.get("finished_at", time.time()) - data["started_at"],
-        "phases": phases,
-        "token_usage": None,
-        "token_usage_note": (
-            "MCP delivered_tokens measure tool payloads, not model API token usage."
-        ),
+        "phases": rows,
+        "retries": sum(a["attempt"] > 1 for a in attempts),
+        "correction_rounds": data["round"],
+        "semantic_review": False,
     }
 
 

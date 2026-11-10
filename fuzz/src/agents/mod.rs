@@ -15,7 +15,7 @@ pub(crate) use worker::{
     AgentClient, AgentCommand, AgentInit, AgentOutcome, AgentTask, SessionInit, WorkerConfig,
 };
 
-pub(crate) const INIT_TIMEOUT_ATTEMPTS: u32 = 3;
+pub(crate) const INIT_TIMEOUT_LIMIT: u32 = 3;
 
 /// Build a readable HC terminal name scoped to the directory containing the
 /// campaign configuration.

@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 from rsc.workflow.source_format import encode_source_batch
 from rsc.workflow.sources import digest
-from scripts.benchmark_ftp_runtime import audit_source_deliveries
+from scripts.archive.benchmark_ftp_runtime import audit_source_deliveries
 
 
 def fixture_data():

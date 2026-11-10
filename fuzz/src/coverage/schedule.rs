@@ -686,21 +686,28 @@ impl CoverageAnalysisStage {
         }
     }
 
+    fn consume_init_timeout(&mut self, failure: AgentFailure) -> Result<(), Error> {
+        self.init_timeouts += 1;
+        self.log_event(
+            "analysis_init_timeout",
+            json!({"count": self.init_timeouts, "reason": failure.reason}),
+        );
+        if self.init_timeouts >= crate::agents::INIT_TIMEOUT_LIMIT {
+            return Err(Error::unknown(format!(
+                "coverage analysis initialization timed out {} times: {}",
+                self.init_timeouts, failure.reason
+            )));
+        }
+        Ok(())
+    }
+
     fn consume_failure(&mut self, failure: AgentFailure) -> Result<(), Error> {
         match self.phase {
             Phase::Initializing => {
-                self.init_started = false;
-                self.init_timeouts += 1;
-                self.log_event(
-                    "analysis_init_failed",
-                    json!({"attempt": self.init_timeouts, "reason": failure.reason}),
-                );
-                if self.init_timeouts >= crate::agents::INIT_TIMEOUT_ATTEMPTS {
-                    return Err(Error::unknown(format!(
-                        "coverage analysis initialization timed out {} times: {}",
-                        self.init_timeouts, failure.reason
-                    )));
-                }
+                return Err(Error::unknown(format!(
+                    "coverage analysis initialization failed: {}",
+                    failure.reason
+                )));
             }
             Phase::Running => {
                 let inflight = self.inflight.take();
@@ -716,6 +723,57 @@ impl CoverageAnalysisStage {
             Phase::Idle => {
                 self.log_event("analysis_worker_failed", json!({"reason": failure.reason}));
             }
+        }
+        Ok(())
+    }
+
+    /// Also polled during seedless bootstrap so analysis failures stop the campaign.
+    pub(crate) fn poll_agent(&mut self) -> Result<(), Error> {
+        if !self.enabled {
+            return Ok(());
+        }
+        while let Some(outcome) = self
+            .worker
+            .as_mut()
+            .and_then(|worker| worker.recv_timeout(Duration::from_millis(1)))
+        {
+            match outcome {
+                AgentOutcome::InitTimedOut(failure) => self.consume_init_timeout(failure)?,
+                AgentOutcome::Failed(failure) => self.consume_failure(failure)?,
+                AgentOutcome::Artifact {
+                    request, result, ..
+                } => self.accept_artifact(request, result),
+                AgentOutcome::Ready((), fact) => {
+                    self.initialized = true;
+                    self.init_started = false;
+                    self.init_timeouts = 0;
+                    self.phase = Phase::Idle;
+                    if self.pending.is_none() {
+                        if let Some(snapshot) = self.skipped_snapshot.take() {
+                            self.pending = Some(snapshot);
+                            self.log_event(
+                                "analysis_snapshot_requeued",
+                                json!({"snapshot": snapshot}),
+                            );
+                        }
+                    }
+                    self.session_state = AgentSession {
+                        phase: SessionPhase::Ready,
+                        transition: "ready".into(),
+                        terminal: fact.terminal.clone(),
+                        hc_state: fact.state.clone(),
+                        hc_status: fact.status.clone(),
+                        hc_error: fact.error.clone(),
+                    };
+                    self.log_event("analysis_initialized", json!({"terminal": fact.terminal}));
+                }
+                AgentOutcome::Launched(fact) => {
+                    self.log_event("analysis_launched", json!({"terminal": fact.terminal}));
+                }
+            }
+        }
+        if !self.initialized && !self.init_started {
+            self.initialize()?;
         }
         Ok(())
     }
@@ -762,48 +820,7 @@ where
         if let Ok(progress) = state.metadata::<super::SourceCoverageProgress>() {
             self.note_snapshot(progress.snapshot)?;
         }
-        while let Some(outcome) = self
-            .worker
-            .as_mut()
-            .and_then(|worker| worker.recv_timeout(Duration::from_millis(1)))
-        {
-            match outcome {
-                AgentOutcome::Failed(failure) => self.consume_failure(failure)?,
-                AgentOutcome::Artifact {
-                    request, result, ..
-                } => self.accept_artifact(request, result),
-                AgentOutcome::Ready((), fact) => {
-                    self.initialized = true;
-                    self.init_started = false;
-                    self.init_timeouts = 0;
-                    self.phase = Phase::Idle;
-                    if self.pending.is_none() {
-                        if let Some(snapshot) = self.skipped_snapshot.take() {
-                            self.pending = Some(snapshot);
-                            self.log_event(
-                                "analysis_snapshot_requeued",
-                                json!({"snapshot": snapshot}),
-                            );
-                        }
-                    }
-                    self.session_state = AgentSession {
-                        phase: SessionPhase::Ready,
-                        transition: "ready".into(),
-                        terminal: fact.terminal.clone(),
-                        hc_state: fact.state.clone(),
-                        hc_status: fact.status.clone(),
-                        hc_error: fact.error.clone(),
-                    };
-                    self.log_event("analysis_initialized", json!({"terminal": fact.terminal}));
-                }
-                AgentOutcome::Launched(fact) => {
-                    self.log_event("analysis_launched", json!({"terminal": fact.terminal}));
-                }
-            }
-        }
-        if !self.initialized && !self.init_started {
-            self.initialize()?;
-        }
+        self.poll_agent()?;
         if self.initialized && self.inflight.is_none() {
             self.dispatch()?;
         }
@@ -973,6 +990,68 @@ fn render_task(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::TerminalFact;
+
+    #[test]
+    fn init_timeout_count_is_per_stage_and_only_the_third_is_fatal() {
+        let campaign: Campaign = toml::from_str(
+            r#"
+[target]
+binary = "b"
+workdir = "w"
+port = 0
+[timeouts]
+connect_ms = 1
+io_ms = 1
+case_ms = 1
+exit_grace_ms = 1
+[campaign]
+seeds = "s"
+corpus = "co"
+crashes = "cr"
+python = "python"
+pythonpath = "pp"
+"#,
+        )
+        .unwrap();
+        let mut first = CoverageAnalysisStage::disabled(&campaign, ProposalMailbox::default());
+        let mut second = CoverageAnalysisStage::disabled(&campaign, ProposalMailbox::default());
+        for stage in [&mut first, &mut second] {
+            stage.enabled = true;
+            stage.init_started = true;
+            stage.phase = Phase::Initializing;
+        }
+        let (commands, requests) = std::sync::mpsc::channel();
+        let (outcomes, receiver) = std::sync::mpsc::channel();
+        first.worker = Some(Client::from_channels(commands, receiver));
+        for count in 1..=3 {
+            outcomes
+                .send(AgentOutcome::InitTimedOut(AgentFailure::new(
+                    "ready.json was not published before the deadline".into(),
+                    TerminalFact::default(),
+                )))
+                .unwrap();
+            let result = first.poll_agent();
+            assert_eq!(result.is_err(), count == 3);
+            assert_eq!(first.init_timeouts, count);
+            assert_eq!(second.init_timeouts, 0);
+            assert!(first.init_started);
+            assert!(!first.initialized);
+            assert!(requests.try_recv().is_err(), "must not send another init");
+            if let Err(error) = result {
+                assert!(error
+                    .to_string()
+                    .contains("initialization timed out 3 times"));
+            }
+        }
+        second
+            .consume_init_timeout(AgentFailure::new(
+                "ready.json was not published".into(),
+                TerminalFact::default(),
+            ))
+            .unwrap();
+        assert_eq!(second.init_timeouts, 1);
+    }
 
     #[test]
     fn snapshot_sut_logs_are_required_and_absolute() {

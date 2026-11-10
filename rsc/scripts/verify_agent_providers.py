@@ -18,6 +18,9 @@ import time
 import urllib.request
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from rsc.workflow.audit import audit_run
 from rsc.workflow.state import Workflow
 from scripts.benchmark_parallel_rsc import cleanup as cleanup_task
@@ -126,7 +129,7 @@ Both messages contain a token field. No other messages are specified.
     }
     (root / "pi-config").mkdir(exist_ok=True)
     results = {}
-    for name, parser_profile, reviewer_profile in [
+    for name, parser_profile, merge_profile in [
         ("pipi", "pi-deepseek-flash", "pi-deepseek-flash"),
         ("codex", "codex-luna-max", "codex-luna-max"),
         ("mixed", "codex-luna-max", "pi-deepseek-flash"),
@@ -134,7 +137,7 @@ Both messages contain a token field. No other messages are specified.
         task = root / name
         if task.exists():
             raise RuntimeError("smoke requires unused task directories")
-        print(f"Starting {name}: {parser_profile} / {reviewer_profile}", flush=True)
+        print(f"Starting {name}: {parser_profile} / {merge_profile}", flush=True)
         started = time.monotonic()
         with (
             (root / f"{name}.stdout.log").open("w") as out,
@@ -156,8 +159,8 @@ Both messages contain a token field. No other messages are specified.
                     str(source),
                     "--parser-profile",
                     parser_profile,
-                    "--reviewer-profile",
-                    reviewer_profile,
+                    "--merge-profile",
+                    merge_profile,
                 ],
                 env=environment,
                 stdout=out,

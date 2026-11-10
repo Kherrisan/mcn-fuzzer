@@ -48,6 +48,7 @@ pub(crate) enum AgentCommand<I, T> {
 #[derive(Debug)]
 pub(crate) enum AgentOutcome<R, A> {
     Launched(TerminalFact),
+    InitTimedOut(AgentFailure),
     Ready(R, TerminalFact),
     Artifact {
         request: String,
@@ -87,6 +88,7 @@ impl<I: AgentInit, T: AgentTask> AgentClient<I, T> {
                     initial_terminal,
                     commands: command_rx,
                     outcomes: outcome_tx,
+                    stopping: false,
                 }
                 .run();
             })?;
@@ -144,6 +146,7 @@ struct Worker<I: AgentInit, T: AgentTask> {
     initial_terminal: String,
     commands: mpsc::Receiver<AgentCommand<I, T>>,
     outcomes: mpsc::Sender<Outcome<I, T>>,
+    stopping: bool,
 }
 
 impl<I: AgentInit, T: AgentTask> Worker<I, T> {
@@ -170,7 +173,7 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
                 }
                 AgentCommand::Stop => break,
             };
-            if self.outcomes.send(outcome).is_err() {
+            if self.outcomes.send(outcome).is_err() || self.stopping {
                 break;
             }
         }
@@ -221,7 +224,7 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
         if launch.codex {
             // CLI 0.166.0 has no --name. `/rename <name>` calls thread/name/set.
             // A missing plain-text marker still continues into the prompt.
-            // A dead terminal is an init timeout so synthesis restarts the attempt.
+            // A dead terminal is an initialization failure.
             let ui_deadline =
                 std::time::Instant::now() + self.config.init_timeout.min(Duration::from_secs(15));
             if let Err(reason) = self.wait_for_screen(
@@ -233,7 +236,7 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
                 if codex_composer_lost(&reason) {
                     return self.failure(
                         format!(
-                            "timed out waiting for the Codex composer to accept input on {}: {reason}",
+                            "Codex composer unavailable on {}: {reason}",
                             self.config.terminal
                         ),
                         client,
@@ -243,7 +246,7 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
             if let Some(reason) = self.codex_terminal_closed(client) {
                 return self.failure(
                     format!(
-                        "timed out waiting for the Codex composer to accept input on {}: {reason}",
+                        "Codex composer unavailable on {}: {reason}",
                         self.config.terminal
                     ),
                     client,
@@ -253,7 +256,7 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
             if let Err(error) = client.send(&self.config.terminal, &rename) {
                 return self.failure(
                     format!(
-                        "timed out waiting for the Codex composer to accept input on {}: {}",
+                        "Codex composer unavailable on {}: {}",
                         self.config.terminal, error.message
                     ),
                     client,
@@ -264,8 +267,18 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
             return self.failure(error.message, client);
         }
         let ready_path = context.output_dir().join("ready.json");
-        let deadline = std::time::Instant::now() + self.config.init_timeout;
+        let mut deadline = std::time::Instant::now() + self.config.init_timeout;
         loop {
+            match self.commands.try_recv() {
+                Ok(AgentCommand::Stop) | Err(mpsc::TryRecvError::Disconnected) => {
+                    self.stopping = true;
+                    return self.failure("agent initialization stopped".into(), client);
+                }
+                Ok(_) => {
+                    return self.failure("unexpected command during initialization".into(), client)
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
             if ready_path.is_file() {
                 break;
             }
@@ -292,13 +305,23 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
                 _ => {}
             }
             if std::time::Instant::now() >= deadline {
-                return self.failure(
+                let failure = AgentFailure::new(
                     format!(
                         "{} was not published before the deadline",
                         ready_path.display()
                     ),
-                    client,
+                    self.observe(client),
                 );
+                // Keep the same terminal and handshake alive. Each stage owns
+                // its timeout count and decides when the campaign must fail.
+                if self
+                    .outcomes
+                    .send(AgentOutcome::InitTimedOut(failure))
+                    .is_err()
+                {
+                    return self.failure("agent initialization stopped".into(), client);
+                }
+                deadline = std::time::Instant::now() + self.config.init_timeout;
             }
             thread::sleep(Duration::from_millis(100));
         }
@@ -576,6 +599,88 @@ mod tests {
         drop(next);
         drop(core);
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn init_timeouts_keep_the_terminal_alive_until_ready_or_shutdown() {
+        for recover in [true, false] {
+            let directory = std::env::temp_dir().join(format!(
+                "mcn-init-timeouts-{}-{recover}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&directory);
+            fs::create_dir_all(&directory).unwrap();
+            let socket = directory.join("hc.sock");
+            let core = MockCore::spawn(socket.clone()).unwrap();
+            let mut client = AgentClient::<SessionInit, Request>::spawn(WorkerConfig {
+                thread_name: "shared-worker-test",
+                socket: socket.clone(),
+                terminal: "timeout-test".into(),
+                init_timeout: Duration::from_millis(100),
+                task_timeout: Duration::from_secs(2),
+                secrets: vec![],
+            })
+            .unwrap();
+            client
+                .send(AgentCommand::Init {
+                    context: SessionInit {
+                        output_dir: directory.clone(),
+                        session: "timeout-session".into(),
+                    },
+                    prompt: format!(
+                        "OUTPUT_DIR={}\nSESSION=timeout-session\nWRITE ready.json\nHOLD=1",
+                        directory.display()
+                    ),
+                    launch: CommandLine {
+                        argv: vec!["/bin/true".into()],
+                        env: vec![],
+                        cwd: directory.clone(),
+                        codex: false,
+                    },
+                })
+                .unwrap();
+            assert!(matches!(
+                client.recv_timeout(Duration::from_secs(3)),
+                Some(AgentOutcome::Launched(_))
+            ));
+            for _ in 0..if recover { 2 } else { 3 } {
+                assert!(matches!(
+                    client.recv_timeout(Duration::from_secs(3)),
+                    Some(AgentOutcome::InitTimedOut(_))
+                ));
+            }
+            if recover {
+                fs::write(
+                    directory.join("ready.json"),
+                    r#"{"status":"ready","session":"timeout-session"}"#,
+                )
+                .unwrap();
+                assert!(matches!(
+                    client.recv_timeout(Duration::from_secs(3)),
+                    Some(AgentOutcome::Ready((), _))
+                ));
+            }
+            let calls = fs::read_to_string(socket.with_extension("calls")).unwrap();
+            assert_eq!(
+                calls.lines().filter(|line| *line == "terminal.run").count(),
+                1
+            );
+            assert_eq!(
+                calls
+                    .lines()
+                    .filter(|line| *line == "terminal.send")
+                    .count(),
+                1
+            );
+            assert!(!calls.lines().any(|line| line == "terminal.kill"));
+            drop(client);
+            // The single-connection mock can answer only after the worker exits.
+            drop(HcClient::connect(&socket, Duration::from_secs(3)).unwrap());
+            let calls = fs::read_to_string(socket.with_extension("calls")).unwrap();
+            assert!(calls.lines().any(|line| line == "terminal.kill"));
+            drop(core);
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]

@@ -1,0 +1,772 @@
+[
+  {
+    "parse_workers": 1,
+    "outcome": "execution_failed",
+    "phase": "failed",
+    "process_elapsed_seconds": 1898.7638697437942,
+    "metrics": {
+      "elapsed_seconds": 1897.7380757331848,
+      "phases": [
+        {
+          "phase": "preprocess",
+          "round": 0,
+          "started_at": 1794303619.7218425,
+          "finished_at": 1794303620.674414,
+          "elapsed_seconds": 0.9525713920593262,
+          "calls": {},
+          "rejected": {},
+          "calls_by_origin": {
+            "health": 1,
+            "supervisor": 2
+          },
+          "tool_elapsed_seconds": 0.5814250987023115,
+          "delivered_tokens": 0,
+          "delivered_items": 0,
+          "repeated_delivered_items": 0,
+          "worker_occupancy_seconds": 0
+        },
+        {
+          "phase": "parse",
+          "round": 0,
+          "started_at": 1794303620.674414,
+          "finished_at": 1794304448.754846,
+          "elapsed_seconds": 828.08043217659,
+          "calls": {
+            "read_source_batches": 32,
+            "submit_parse_result": 34
+          },
+          "rejected": {
+            "submit_parse_result": 5,
+            "read_source_batches": 1
+          },
+          "calls_by_origin": {
+            "supervisor": 805,
+            "agent": 66
+          },
+          "tool_elapsed_seconds": 2.0514091346412897,
+          "delivered_tokens": 133577,
+          "delivered_items": 31,
+          "repeated_delivered_items": 3,
+          "worker_occupancy_seconds": 806.9304599761963
+        },
+        {
+          "phase": "cluster",
+          "round": 0,
+          "started_at": 1794304448.754846,
+          "finished_at": 1794304522.449214,
+          "elapsed_seconds": 73.6943678855896,
+          "calls": {
+            "query_model": 7,
+            "submit_clustering_result": 1
+          },
+          "rejected": {},
+          "calls_by_origin": {
+            "supervisor": 69,
+            "agent": 8
+          },
+          "tool_elapsed_seconds": 3.2842511013150215,
+          "delivered_tokens": 49807,
+          "delivered_items": 464,
+          "repeated_delivered_items": 256,
+          "worker_occupancy_seconds": 62.75002861022949
+        },
+        {
+          "phase": "merge",
+          "round": 0,
+          "started_at": 1794304522.449214,
+          "finished_at": 1794305150.5643885,
+          "elapsed_seconds": 628.1151745319366,
+          "calls": {
+            "query_model": 269,
+            "read_source_batches": 43,
+            "submit_merge_result": 127,
+            "search_source": 1
+          },
+          "rejected": {
+            "read_source_batches": 6,
+            "submit_merge_result": 3
+          },
+          "calls_by_origin": {
+            "supervisor": 574,
+            "agent": 440
+          },
+          "tool_elapsed_seconds": 13.238852560520172,
+          "delivered_tokens": 395498,
+          "delivered_items": 978,
+          "repeated_delivered_items": 164,
+          "worker_occupancy_seconds": 1753.082401752472
+        },
+        {
+          "phase": "cluster",
+          "round": 1,
+          "started_at": 1794305150.5643885,
+          "finished_at": 1794305208.3526852,
+          "elapsed_seconds": 57.788296699523926,
+          "calls": {
+            "query_model": 2,
+            "submit_clustering_result": 1
+          },
+          "rejected": {},
+          "calls_by_origin": {
+            "supervisor": 52,
+            "agent": 3
+          },
+          "tool_elapsed_seconds": 1.0389932747930288,
+          "delivered_tokens": 7074,
+          "delivered_items": 256,
+          "repeated_delivered_items": 128,
+          "worker_occupancy_seconds": 8.683990478515625
+        },
+        {
+          "phase": "merge",
+          "round": 1,
+          "started_at": 1794305208.3526852,
+          "finished_at": 1794305247.1229908,
+          "elapsed_seconds": 38.77030563354492,
+          "calls": {
+            "query_model": 6,
+            "submit_merge_result": 2
+          },
+          "rejected": {},
+          "calls_by_origin": {
+            "supervisor": 33,
+            "agent": 8
+          },
+          "tool_elapsed_seconds": 0.6954316608607769,
+          "delivered_tokens": 4694,
+          "delivered_items": 89,
+          "repeated_delivered_items": 0,
+          "worker_occupancy_seconds": 28.94995427131653
+        },
+        {
+          "phase": "review",
+          "round": 1,
+          "started_at": 1794305247.1229908,
+          "finished_at": 1794305247.2613015,
+          "elapsed_seconds": 0.13831067085266113,
+          "calls": {},
+          "rejected": {},
+          "calls_by_origin": {},
+          "tool_elapsed_seconds": 0.0,
+          "delivered_tokens": 0,
+          "delivered_items": 0,
+          "repeated_delivered_items": 0,
+          "worker_occupancy_seconds": 0
+        },
+        {
+          "phase": "merge",
+          "round": 2,
+          "started_at": 1794305247.2613015,
+          "finished_at": 1794305517.3196468,
+          "elapsed_seconds": 270.0583453178406,
+          "calls": {
+            "query_model": 64,
+            "read_source_batches": 4,
+            "submit_merge_result": 26
+          },
+          "rejected": {
+            "query_model": 1,
+            "submit_merge_result": 2,
+            "read_source_batches": 1
+          },
+          "calls_by_origin": {
+            "supervisor": 251,
+            "agent": 94
+          },
+          "tool_elapsed_seconds": 5.281590409576893,
+          "delivered_tokens": 63264,
+          "delivered_items": 309,
+          "repeated_delivered_items": 17,
+          "worker_occupancy_seconds": 694.0372688770294
+        },
+        {
+          "phase": "review",
+          "round": 2,
+          "started_at": 1794305517.3196468,
+          "finished_at": 1794305517.4599974,
+          "elapsed_seconds": 0.1403505802154541,
+          "calls": {},
+          "rejected": {},
+          "calls_by_origin": {},
+          "tool_elapsed_seconds": 0.0,
+          "delivered_tokens": 0,
+          "delivered_items": 0,
+          "repeated_delivered_items": 0,
+          "worker_occupancy_seconds": 0
+        }
+      ],
+      "retries": 0,
+      "correction_rounds": 2,
+      "semantic_review": false
+    },
+    "final_errors": [
+      {
+        "description": "field 'pathname' is not carried by user-PI sends RNTO command",
+        "groups": [
+          "g119",
+          "g87"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i120",
+          "i94",
+          "i63"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'absolute created directory pathname when code is 257' is not carried by server-PI sends FTP reply",
+        "groups": [
+          "g103",
+          "g2",
+          "g3"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "prior_field"
+        ],
+        "records": [
+          "i151",
+          "i17",
+          "i9"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'pathname' is not carried by user-PI sends CWD command",
+        "groups": [
+          "g103",
+          "g70"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i151",
+          "i79",
+          "i48"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'modification time for the requested pathname when code is 213' is not carried by server-PI sends FTP reply",
+        "groups": [
+          "g2",
+          "g3"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i154",
+          "i17",
+          "i9"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'exact transfer size in octets for the requested pathname when code is 213' is not carried by server-PI sends FTP reply",
+        "groups": [
+          "g2",
+          "g3"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i161",
+          "i17",
+          "i9"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'exact transfer size in octets for the requested pathname when code is 213' is not carried by server-PI sends FTP reply",
+        "groups": [
+          "g117",
+          "g2",
+          "g3"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "prior_field"
+        ],
+        "records": [
+          "i162",
+          "i17",
+          "i9"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'restart marker: numeric octet offset in Stream; sender-defined marker in Block or Compressed' is not carried by user-PI sends REST command",
+        "groups": [
+          "g117",
+          "g85"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i162",
+          "i92",
+          "i61"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'pathname with MLST-compatible handling of embedded spaces, CR, and NUL; arbitrary character sets when MLST support is implemented' is not carried by user-PI sends STOR command",
+        "groups": [
+          "g113",
+          "g80"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i163",
+          "i88",
+          "i57"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'optional pathname; omitted means current directory' is not carried by user-PI sends MLST command",
+        "groups": [
+          "g3",
+          "g33",
+          "g36"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "prior_field"
+        ],
+        "records": [
+          "i182",
+          "i177",
+          "i174"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'MLST fact lines and associated pathname when replying with code 250' is not carried by server-PI sends FTP reply",
+        "groups": [
+          "g2",
+          "g3"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i182",
+          "i17",
+          "i9"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'MLST fact lines and associated pathname when replying with code 250' is not carried by server-PI sends FTP reply",
+        "groups": [
+          "g2",
+          "g27",
+          "g3"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "prior_field"
+        ],
+        "records": [
+          "i185",
+          "i17",
+          "i9"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'entry pathname (MLST may return the requested name or a TVFS fully qualified name; MLSD names are normally unqualified within the listed directory)' is not carried by server-DTP sends MLSx entries",
+        "groups": [
+          "g103",
+          "g35",
+          "g38"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "prior_field"
+        ],
+        "records": [
+          "i195",
+          "i179",
+          "i176"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'pathname' is not carried by user-PI sends CWD command",
+        "groups": [
+          "g103",
+          "g70"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i195",
+          "i79",
+          "i48"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'fact names' is not carried by user-PI sends OPTS MLST command",
+        "groups": [
+          "g41",
+          "g44"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i201",
+          "i200",
+          "i199"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'MLST OPTS response-message listing facts selected by the server' is not carried by server-PI sends FTP reply",
+        "groups": [
+          "g2",
+          "g3"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "prior_field"
+        ],
+        "records": [
+          "i203",
+          "i17",
+          "i9"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'MLST fact lines and associated pathname when replying with code 250' is not carried by server-PI sends FTP reply",
+        "groups": [
+          "g2",
+          "g3"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i203",
+          "i17",
+          "i9"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'MLST OPTS response-message listing facts selected by the server' is not carried by server-PI sends FTP reply",
+        "groups": [
+          "g2",
+          "g3",
+          "g38"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "prior_field"
+        ],
+        "records": [
+          "i204",
+          "i17",
+          "i9"
+        ],
+        "type": "structure"
+      },
+      {
+        "description": "field 'returned facts' is not carried by server-DTP sends MLSx entries",
+        "groups": [
+          "g35",
+          "g38"
+        ],
+        "path": [
+          "field_relations",
+          0,
+          "dependent_field"
+        ],
+        "records": [
+          "i204",
+          "i179",
+          "i176"
+        ],
+        "type": "structure"
+      }
+    ],
+    "native_token_usage": {
+      "input_tokens": 60498490,
+      "cached_input_tokens": 59495168,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 171593,
+      "reasoning_output_tokens": 92151,
+      "total_tokens": 60670083
+    },
+    "native_truncated_outputs": 0
+  },
+  {
+    "parse_workers": 3,
+    "outcome": "execution_failed",
+    "phase": "failed",
+    "process_elapsed_seconds": 1394.3598162643611,
+    "metrics": {
+      "elapsed_seconds": 1393.1344363689423,
+      "phases": [
+        {
+          "phase": "preprocess",
+          "round": 0,
+          "started_at": 1794305518.6815836,
+          "finished_at": 1794305519.6273572,
+          "elapsed_seconds": 0.9457736015319824,
+          "calls": {},
+          "rejected": {},
+          "calls_by_origin": {
+            "health": 1,
+            "supervisor": 2
+          },
+          "tool_elapsed_seconds": 0.5740646570920944,
+          "delivered_tokens": 0,
+          "delivered_items": 0,
+          "repeated_delivered_items": 0,
+          "worker_occupancy_seconds": 0
+        },
+        {
+          "phase": "parse",
+          "round": 0,
+          "started_at": 1794305519.6273572,
+          "finished_at": 1794305802.4393067,
+          "elapsed_seconds": 282.81194949150085,
+          "calls": {
+            "read_source_batches": 32,
+            "query_model": 2,
+            "submit_parse_result": 30
+          },
+          "rejected": {
+            "read_source_batches": 3,
+            "submit_parse_result": 1
+          },
+          "calls_by_origin": {
+            "supervisor": 247,
+            "agent": 64
+          },
+          "tool_elapsed_seconds": 1.5208906307816505,
+          "delivered_tokens": 98616,
+          "delivered_items": 29,
+          "repeated_delivered_items": 0,
+          "worker_occupancy_seconds": 585.7003972530365
+        },
+        {
+          "phase": "cluster",
+          "round": 0,
+          "started_at": 1794305802.4393067,
+          "finished_at": 1794305931.8239832,
+          "elapsed_seconds": 129.38467645645142,
+          "calls": {
+            "query_model": 7,
+            "submit_clustering_result": 1
+          },
+          "rejected": {},
+          "calls_by_origin": {
+            "supervisor": 123,
+            "agent": 8
+          },
+          "tool_elapsed_seconds": 2.967567391693592,
+          "delivered_tokens": 48419,
+          "delivered_items": 344,
+          "repeated_delivered_items": 110,
+          "worker_occupancy_seconds": 119.33912491798401
+        },
+        {
+          "phase": "merge",
+          "round": 0,
+          "started_at": 1794305931.8239832,
+          "finished_at": 1794306281.0833042,
+          "elapsed_seconds": 349.25932097435,
+          "calls": {
+            "query_model": 135,
+            "read_source_batches": 40,
+            "submit_merge_result": 63,
+            "search_source": 1
+          },
+          "rejected": {
+            "read_source_batches": 10
+          },
+          "calls_by_origin": {
+            "supervisor": 310,
+            "agent": 239
+          },
+          "tool_elapsed_seconds": 8.28160059824586,
+          "delivered_tokens": 315848,
+          "delivered_items": 714,
+          "repeated_delivered_items": 95,
+          "worker_occupancy_seconds": 905.8649623394012
+        },
+        {
+          "phase": "cluster",
+          "round": 1,
+          "started_at": 1794306281.0833042,
+          "finished_at": 1794306312.493723,
+          "elapsed_seconds": 31.41041874885559,
+          "calls": {
+            "submit_clustering_result": 1
+          },
+          "rejected": {},
+          "calls_by_origin": {
+            "supervisor": 26,
+            "agent": 1
+          },
+          "tool_elapsed_seconds": 0.05654321424663067,
+          "delivered_tokens": 0,
+          "delivered_items": 0,
+          "repeated_delivered_items": 0,
+          "worker_occupancy_seconds": 0.009598970413208008
+        },
+        {
+          "phase": "merge",
+          "round": 1,
+          "started_at": 1794306312.493723,
+          "finished_at": 1794306487.0542052,
+          "elapsed_seconds": 174.56048226356506,
+          "calls": {
+            "query_model": 68,
+            "search_source": 2,
+            "submit_merge_result": 32,
+            "read_source_batches": 6
+          },
+          "rejected": {
+            "submit_merge_result": 1
+          },
+          "calls_by_origin": {
+            "supervisor": 158,
+            "agent": 108
+          },
+          "tool_elapsed_seconds": 3.887416861951351,
+          "delivered_tokens": 61457,
+          "delivered_items": 359,
+          "repeated_delivered_items": 10,
+          "worker_occupancy_seconds": 446.8817539215088
+        },
+        {
+          "phase": "review",
+          "round": 1,
+          "started_at": 1794306487.0542052,
+          "finished_at": 1794306487.1993332,
+          "elapsed_seconds": 0.1451280117034912,
+          "calls": {},
+          "rejected": {},
+          "calls_by_origin": {},
+          "tool_elapsed_seconds": 0.0,
+          "delivered_tokens": 0,
+          "delivered_items": 0,
+          "repeated_delivered_items": 0,
+          "worker_occupancy_seconds": 0
+        },
+        {
+          "phase": "cluster",
+          "round": 2,
+          "started_at": 1794306487.1993332,
+          "finished_at": 1794306648.0361533,
+          "elapsed_seconds": 160.83682012557983,
+          "calls": {
+            "query_model": 3,
+            "submit_clustering_result": 1
+          },
+          "rejected": {
+            "query_model": 1
+          },
+          "calls_by_origin": {
+            "supervisor": 153,
+            "agent": 4
+          },
+          "tool_elapsed_seconds": 1.206975830718875,
+          "delivered_tokens": 10668,
+          "delivered_items": 138,
+          "repeated_delivered_items": 28,
+          "worker_occupancy_seconds": 115.7950849533081
+        },
+        {
+          "phase": "merge",
+          "round": 2,
+          "started_at": 1794306648.0361533,
+          "finished_at": 1794306911.8161013,
+          "elapsed_seconds": 263.7799479961395,
+          "calls": {
+            "query_model": 79,
+            "submit_merge_result": 33,
+            "read_source_batches": 1
+          },
+          "rejected": {},
+          "calls_by_origin": {
+            "supervisor": 246,
+            "agent": 113
+          },
+          "tool_elapsed_seconds": 6.918149825185537,
+          "delivered_tokens": 92673,
+          "delivered_items": 602,
+          "repeated_delivered_items": 54,
+          "worker_occupancy_seconds": 691.3134710788727
+        }
+      ],
+      "retries": 0,
+      "correction_rounds": 2,
+      "semantic_review": false
+    },
+    "final_errors": [
+      {
+        "description": "reconsider groups: {\"g96\":\"This group clusters distinct parties. Merge i2 with i65 as Server-PI, and i5 with i68 as Server-A-PI in the third-party flow; keep i36 Server-FTP separate because the RFC defines that process as including PI and DTP, rather than as the direct control-connection role.\",\"g98\":\"i45 is the RFC959 FTP data connection used by MLSD, not a separate transport channel: RFC3659 says it opens the data connection per RFC959 and applies TYPE L 8, MODE S, STRU F only for this command. Merge it with i10/i73 so endpoints remain server-DTP and user-DTP with the source-defined direction; retain the MLSD parameter settings and lifecycle on its steps.\",\"g99\":\"i15 and i80 are the same FTP reply send operation after party and channel normalization. i27 is a different peer: Server A PI replies to User-PI on the control connection to Server A. Keep i27 separate and reference that server-A-specific channel.\"}",
+        "groups": [
+          "g96",
+          "g98",
+          "g99"
+        ],
+        "type": "clustering"
+      }
+    ],
+    "native_token_usage": {
+      "input_tokens": 49203816,
+      "cached_input_tokens": 48105216,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 157414,
+      "reasoning_output_tokens": 87910,
+      "total_tokens": 49361230
+    },
+    "native_truncated_outputs": 0
+  }
+]

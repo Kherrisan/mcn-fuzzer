@@ -171,7 +171,7 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
     if campaign.generator_synthesis.enabled && !seed_files {
         if !mutation.has_queue(&session.state) {
             let mut bootstrap_rand = libafl_bolts::rands::StdRand::with_seed(0x5052_4f54);
-            let ready = synthesis.bootstrap_first(&mut bootstrap_rand)?;
+            let ready = synthesis.bootstrap_first(&mut bootstrap_rand, || analysis.poll_agent())?;
             mutation.enqueue(&mut session.state, ready.request, ready.input, ready.origin)?;
         }
     } else {

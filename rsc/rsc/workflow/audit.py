@@ -1,8 +1,6 @@
-"""Recheck a published task against source receipts, revisions and independent reviews.
+"""Audit current immutable submissions; retain separate historical read-only checks.
 
-This proves delivery and structural workflow invariants, not semantic completeness.
-Older tasks recorded fixed 50-item page offsets; accept those only after verifying
-every offset and the actual payload size, and label that evidence in the report.
+Audits establish structural workflow invariants, not semantic completeness.
 """
 
 from __future__ import annotations
@@ -63,10 +61,30 @@ def audit_run(root):
         version = db.execute("PRAGMA user_version").fetchone()[0]
     finally:
         db.close()
-    if version:
-        from .audit_parallel import audit_run as audit_parallel
+    if version == 3:
+        from .audit_results import audit_run as audit_results
 
-        return audit_parallel(root)
+        return audit_results(root)
+    if version:
+        # Historic v2 execution stays in its immutable package, outside the new runtime.
+        import os
+        import subprocess
+        import sys
+
+        source = Path(root).resolve().parent / "source"
+        if not (source / "rsc/workflow/audit_parallel.py").is_file():
+            raise WorkflowError("historical v2 audit requires its archived source package")
+        result = subprocess.run(
+            [sys.executable, "-m", "rsc.cli", "audit", "--task-dir", str(Path(root).resolve())],
+            cwd=source,
+            env={**os.environ, "PYTHONPATH": str(source)},
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode:
+            raise WorkflowError(result.stderr.strip())
+        return json.loads(result.stdout)
     workflow = Workflow(root)
     try:
         return _audit(workflow)

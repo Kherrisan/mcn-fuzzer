@@ -282,6 +282,14 @@ fn mock_loop(
             };
             let id = value.get("id").cloned().unwrap_or(Value::from(0));
             let method = value.get("method").and_then(Value::as_str).unwrap_or("");
+            #[cfg(test)]
+            if let Ok(mut record) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(sends.with_extension("calls"))
+            {
+                let _ = writeln!(record, "{method}");
+            }
             let params = value.get("params").cloned().unwrap_or(Value::Null);
             let result = match method {
                 "hello" => json!({"protocol": 1}),

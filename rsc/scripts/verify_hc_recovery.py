@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Opt-in paid HC recovery check against the current parallel workflow.
 
-Run in a fresh --out directory. Interrupt one claimed Parser after its first model
-write, then let the normal coordinator fence and replace its attempt. No extra
+Run in a fresh --out directory. Interrupt one running Parser after its first batch
+submission, then let the normal coordinator fence and replace its attempt. No extra
 model agent is created.
 """
 
@@ -18,11 +18,14 @@ import sys
 import time
 from pathlib import Path
 
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from rsc.workflow.audit import audit_run
 from scripts.benchmark_parallel_rsc import cleanup
 
 
-def interrupt_claimed_parser(root):
+def interrupt_running_parser(root):
     """Return saved progress only after HC confirms this owned terminal's death."""
     path = root / "supervisor.json"
     if not path.exists() or not (root / "workflow.sqlite").exists():
@@ -34,16 +37,16 @@ def interrupt_claimed_parser(root):
     db = sqlite3.connect((root / "workflow.sqlite").as_uri() + "?mode=ro", uri=True)
     try:
         row = db.execute(
-            "SELECT name, attempt, status, draft FROM assignments WHERE name=? AND phase='parse'",
+            "SELECT name, attempt, status, worker FROM assignments WHERE name=? AND phase='parse'",
             (saved["assignment"],),
         ).fetchone()
-        if not row or row[2] != "claimed" or row[1] != saved["attempt"]:
+        if not row or row[2] != "running" or row[1] != saved["attempt"]:
             return None
-        revision = db.execute("SELECT revision FROM drafts WHERE name=?", (row[3],)).fetchone()[0]
+        revision = db.execute("SELECT count(*) FROM items WHERE owner=?", (row[3],)).fetchone()[0]
         if revision == 0:
             return None  # Exercise recovery of actual progress, not just an empty claim.
         reports = db.execute(
-            "SELECT count(*) FROM reports WHERE assignment=?", (row[0],)
+            "SELECT count(*) FROM submissions WHERE assignment=?", (row[0],)
         ).fetchone()[0]
     finally:
         db.close()
@@ -71,7 +74,7 @@ def interrupt_claimed_parser(root):
     hc("wait", saved["address"], "--timeout", "5")
     if hc("get", saved["address"])["state"] != "finished":
         raise RuntimeError("owned worker has not confirmed termination")
-    return {**saved, "draft_revision": revision, "completed_reports": reports}
+    return {**saved, "item_count": revision, "completed_batches": reports}
 
 
 def main():
@@ -115,12 +118,12 @@ def main():
                 if time.monotonic() - started >= args.timeout:
                     raise RuntimeError("recovery trial reached its diagnostic deadline")
                 if interrupted is None:
-                    interrupted = interrupt_claimed_parser(root)
+                    interrupted = interrupt_running_parser(root)
                 time.sleep(0.2)
             if child.returncode:
                 raise RuntimeError("workflow failed; inspect recovery.log")
             if interrupted is None:
-                raise RuntimeError("no claimed Parser was interrupted; recovery is unverified")
+                raise RuntimeError("no running Parser was interrupted; recovery is unverified")
         finally:
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGTERM)
@@ -141,18 +144,12 @@ def main():
             raise RuntimeError("expected exactly one fenced replacement of the same assignment")
         if json.loads(attempts[0][2])["terminal"]["name"] != interrupted["name"]:
             raise RuntimeError("replacement terminal evidence differs")
-        history = db.execute(
-            "SELECT count(*) FROM history WHERE draft=? AND revision<=?",
-            (interrupted["assignment"], interrupted["draft_revision"]),
-        ).fetchone()[0]
-        if history != interrupted["draft_revision"] + 1:
-            raise RuntimeError("replacement lost the original draft history")
         retained = db.execute(
-            "SELECT count(*) FROM reports WHERE assignment=? AND attempt=?",
+            "SELECT count(*) FROM submissions WHERE assignment=? AND attempt=?",
             (interrupted["assignment"], interrupted["attempt"]),
         ).fetchone()[0]
-        if retained < interrupted["completed_reports"]:
-            raise RuntimeError("replacement lost completed source reports")
+        if retained < interrupted["completed_batches"]:
+            raise RuntimeError("replacement lost completed batch submissions")
     finally:
         db.close()
     report.update(

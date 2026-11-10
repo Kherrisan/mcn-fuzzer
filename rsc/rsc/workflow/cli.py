@@ -39,11 +39,6 @@ def register(sub):
                 p.add_argument("--protocol")
                 p.add_argument("--config")
                 selection_arguments(p)
-                p.add_argument(
-                    "--max-review-rounds",
-                    type=positive_int,
-                    help="maximum reviews including the first; overrides config (default: 5)",
-                )
                 p.add_argument("--hc", default="hc")
                 p.add_argument(
                     "--retry-worker",
@@ -80,8 +75,6 @@ def run_task(args, root, socket):
         config_path = json.loads(config_record.read_text()).get("config_path")
     config = load_workflow_config(config_path)
     options = config.get("workflow", {})
-    if args.max_review_rounds is not None:
-        options["max_review_rounds"] = args.max_review_rounds
     if not (root / "workflow.sqlite").exists():
         if not args.rfc or not args.protocol:
             raise WorkflowError("new task requires --rfc and --protocol")
@@ -92,9 +85,9 @@ def run_task(args, root, socket):
             args.protocol,
             target_tokens=options.get("batch_target_tokens", 8000),
             max_tokens=options.get("batch_max_tokens", 12000),
-            max_review_rounds=options.get("max_review_rounds", 5),
             parse_workers=options["parse_workers"],
-            review_workers=options["review_workers"],
+            merge_workers=options["merge_workers"],
+            max_feedback_rounds=options["max_feedback_rounds"],
         )
         task.db.close()
         private_json(
@@ -108,14 +101,6 @@ def run_task(args, root, socket):
         except ValueError:
             task.db.close()
             raise
-        if (
-            args.max_review_rounds is not None
-            and args.max_review_rounds != task.data["max_review_rounds"]
-        ):
-            task.db.close()
-            raise WorkflowError(
-                "cannot change the review limit of an existing task; use a new task directory"
-            )
         if args.protocol and args.protocol != task.data["protocol"]:
             raise WorkflowError("cannot change the protocol of an existing task")
         if args.rfc and [str(Path(p).resolve()) for p in args.rfc] != task.data["sources"]:
@@ -123,9 +108,9 @@ def run_task(args, root, socket):
         config["workflow"] = {
             "batch_target_tokens": task.data["target_tokens"],
             "batch_max_tokens": task.data["max_tokens"],
-            "max_review_rounds": task.data["max_review_rounds"],
             "parse_workers": task.data["parse_workers"],
-            "review_workers": task.data["review_workers"],
+            "merge_workers": task.data["merge_workers"],
+            "max_feedback_rounds": task.data.get("max_feedback_rounds", 2),
         }
         if task.data["phase"] == "published":
             task.export()

@@ -8,14 +8,12 @@ from .files import private_json
 
 
 def selection_arguments(parser):
-    for name in ("profile", "parser-profile", "reviewer-profile"):
+    for name in ("profile", "parser-profile", "merge-profile"):
         parser.add_argument(f"--{name}", help="select a named agent profile")
 
 
 def selection(args):
-    return {
-        key: getattr(args, key, None) for key in ("profile", "parser_profile", "reviewer_profile")
-    }
+    return {key: getattr(args, key, None) for key in ("profile", "parser_profile", "merge_profile")}
 
 
 def bind_profiles(root, config, *, existing, args):

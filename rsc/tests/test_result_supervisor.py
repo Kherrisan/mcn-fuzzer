@@ -6,10 +6,9 @@ import time
 import uuid
 from pathlib import Path
 
-import pytest
-import test_parallel_workflow as helpers
+import test_result_workflow as helpers
 
-from rsc.workflow.supervisor import HcObservationTimeout, Supervisor
+from rsc.workflow.supervisor import Supervisor
 
 run = helpers.run
 
@@ -86,7 +85,7 @@ def supervisor(w):
                 "args": [],
             },
         }
-        for role in ("parser", "reviewer")
+        for role in ("parser", "merge")
     }
     s.config = {"workflow": {"batch_max_tokens": 12000}, "resolved_agents": s.roles}
     s.retry_worker, s.wait_index = None, 0
@@ -97,78 +96,48 @@ def supervisor(w):
     return s
 
 
-def test_serial_ready_and_same_thread_name_then_fair_dispatch(run):
+def test_serial_initialization_fair_dispatch_and_no_claim_tool(run):
     s = supervisor(run)
+    # Fixture already recorded sends; create fake live assignments for this dispatcher.
+    run.db.execute("UPDATE assignments SET status='pending'")
     assert s.step()
     calls = s.hc_call.calls
     launches = [i for i, c in enumerate(calls) if c[0] == "run"]
     renames = [i for i, c in enumerate(calls) if c[0] == "send" and c[2].startswith("/rename")]
     sends = [i for i, c in enumerate(calls) if c[0] == "send" and not c[2].startswith("/rename")]
     assert launches[0] < renames[0] < launches[1] < renames[1] < sends[0] < sends[1]
-    assert calls[-1][0] == "wait" and all(c[0] != "wait" for c in calls[sends[0] : sends[-1]])
     assert all(a["status"] == "sent" for a in run.store.assignments())
-    contexts = [s.context(a) for a in run.store.assignments()]
-    assert len({c.directory for c in contexts}) == len({c.namespace for c in contexts}) == 2
-    for context in contexts:
-        launch = json.loads((context.directory / "launch.json").read_text())
-        assert "check_for_update_on_startup=false" in launch["argv"]
-        assert (
-            json.loads((context.directory / "session.json").read_text())["name"]
-            == context.terminal_name
-        )
-    previous = len(s.hc_call.calls)
+    assert "submit_parse_result" in calls[sends[0]][2]
+    assert "claim_assignment" not in calls[sends[0]][2]
     assert s.step()
-    assert not any(c[0] in {"run", "send"} for c in s.hc_call.calls[previous:])
+    assert len(
+        [c for c in s.hc_call.calls if c[0] == "send" and not c[2].startswith("/rename")]
+    ) == len(sends)
 
 
-def test_observation_timeout_does_not_fence_or_resend(run):
+def test_confirmed_death_replaces_only_owned_attempt(run):
     s = supervisor(run)
+    run.db.execute("UPDATE assignments SET status='pending'")
     s.step()
-    observe = s.observe
-
-    def transient(worker):
-        if worker == "parser-1":
-            raise HcObservationTimeout("observation expired")
-        return observe(worker)
-
-    s.observe = transient
-    previous = len(s.hc_call.calls)
-    assert s.step()
-    assert all(a["attempt"] == 1 for a in run.store.assignments())
-    assert not any(c[0] in {"kill", "run", "send"} for c in s.hc_call.calls[previous:])
-    assert s.hc_call.calls[-1][0] == "wait"
-
-
-def test_confirmed_exit_retries_and_resumes_only_that_worker(run):
-    s = supervisor(run)
+    saved = s.state["terminals"]["parser-1"]
+    s.hc_call.terminals[saved["address"]]["state"] = "finished"
     s.step()
-    failed = s.state["terminals"]["parser-1"]["address"]
-    s.hc_call.terminals[failed]["state"] = "finished"
-    s.step()
-    a = run.store.assignment("parse-0/parser-1")
+    a = run.store.assignment(saved["assignment"])
     assert a["attempt"] == 2 and a["status"] == "pending"
-    s.step()
-    spec = json.loads((run.root / "agents/parser-1/launch.json").read_text())
-    assert "resume" in spec["argv"]
-    assert run.store.assignment("parse-0/parser-2")["attempt"] == 1
+    assert run.store.assignments()[1]["attempt"] == 1
 
 
-def test_recovery_after_lost_launch_response_reuses_terminal(run):
+def test_cluster_restores_parser_native_session_and_does_not_redispatch_parse(run):
     s = supervisor(run)
-    a = run.store.assignments()[0]
-    context = s.context(a)
-    s.hc_call("run", "--name", context.terminal_name)
-    s.state["launching"] = {"name": context.terminal_name, "assignment": a["name"], "attempt": 1}
-    s.recover_launch(run.store.assignments())
-    assert s.state["terminals"][a["worker"]]["address"] == "t1"
-    assert len([c for c in s.hc_call.calls if c[0] == "run"]) == 1
-
-
-def test_cleanup_rejects_changed_terminal_identity(run):
-    s = supervisor(run)
+    run.db.execute("UPDATE assignments SET status='pending'")
     s.step()
-    address = s.state["terminals"]["parser-1"]["address"]
-    s.hc_call.terminals[address]["name"] = "someone-else"
-    with pytest.raises(ValueError, match="another terminal"):
-        s.retire("parser-1")
-    assert s.hc_call.terminals[address]["state"] == "live"
+    original_thread = s.state["sessions"]["parser-1"]["id"]
+    helpers.parsed(run)
+    # The real supervisor owns send intent; the extraction helper recorded it for unit calls.
+    run.db.execute("UPDATE assignments SET status='pending' WHERE phase='cluster'")
+    s.step()
+    assert s.state["sessions"]["parser-1"]["id"] == original_thread
+    sent = [c for c in s.hc_call.calls if c[0] == "send" and not c[2].startswith("/rename")]
+    assert len(sent) == 3
+    assert "submit_clustering_result" in sent[-1][2]
+    assert "parser-2" not in s.state["terminals"]

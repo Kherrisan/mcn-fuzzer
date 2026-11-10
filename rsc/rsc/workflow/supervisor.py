@@ -258,23 +258,20 @@ class Supervisor:
         self.save()
 
     def step(self):
-        status = self.status()
+        status = self.workflow_call("tick")
         if status["phase"] == "published":
             return False
-        if status["phase"] == "preprocess":
-            self.workflow_call("prepare_sources")
-            self.workflow_call("advance_phase")
-            return True
+        if status["phase"] == "failed":
+            raise WorkflowError("deterministic review failed: " + json.dumps(status.get("errors")))
         assignments = [
             a
             for a in status["assignments"]
             if a["phase"] == status["phase"] and a["round"] == status["round"]
         ]
-        if all(a["status"] == "submitted" for a in assignments):
-            for worker in list(self.state["terminals"]):
+        active_names = {a["name"] for a in assignments if a["status"] != "submitted"}
+        for worker, saved in list(self.state["terminals"].items()):
+            if saved["assignment"] not in active_names:
                 self.retire(worker)
-            self.workflow_call("advance_phase")
-            return True
         self.recover_launch(assignments)
         active = [a for a in assignments if a["status"] != "submitted"]
         for a in active:
@@ -328,13 +325,17 @@ class Supervisor:
                 self.hc_call(
                     "send",
                     saved["address"],
-                    assignment_instructions(a) + "\nMCP namespace: " + self.context(a).namespace,
+                    assignment_instructions(a)
+                    + "\nSource catalog: "
+                    + json.dumps(status["source_catalog"])
+                    + "\nMCP namespace: "
+                    + self.context(a).namespace,
                 )
                 self.event("assignment_sent", **a, terminal=saved["address"])
             elif self.observed(info) in {"idle", "done"} and info.get("turn", 0) > saved.get(
                 "send_turn", 0
             ):
-                # A turn ended, but the authoritative assignment did not submit.
+                # A turn ended, but no complete result was persisted.
                 # Never infer success from the final terminal text.
                 fresh = next(x for x in self.status()["assignments"] if x["name"] == a["name"])
                 if fresh["status"] != "submitted":
