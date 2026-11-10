@@ -80,11 +80,15 @@ def codex_usage(root):
     workers, total = {}, {}
     try:
         for worker, session in state["sessions"].items():
-            rows = db.execute(
+            query = (
                 "SELECT id, name, rollout_path, model, reasoning_effort FROM threads "
-                "WHERE name=? AND cwd=?",
-                (session["name"], str(root)),
-            ).fetchall()
+                "WHERE name=? AND cwd=?"
+            )
+            arguments = [session["name"], str(root)]
+            if session.get("id"):
+                query += " AND id=?"
+                arguments.append(session["id"])
+            rows = db.execute(query, arguments).fetchall()
             if len(rows) != 1:
                 workers[worker] = {"available": False, "matching_threads": len(rows)}
                 continue
@@ -139,7 +143,8 @@ def summarize(root, returncode, timed_out, elapsed):
         "exit_code": returncode,
         "timed_out": timed_out,
         "process_elapsed_seconds": elapsed,
-        "semantic_audit": "pending",
+        "semantic_audit": "not_run",
+        "performance_acceptance": "failed",
     }
     if not (root / "workflow.sqlite").exists():
         return {**report, "outcome": "initialization_failed"}
@@ -156,21 +161,26 @@ def summarize(root, returncode, timed_out, elapsed):
         ]
         report["complete"] = False
         if w.data["phase"] == "published":
+            report["semantic_audit"] = "pending"
             try:
                 report["audit"] = audit_run(root)
                 report["complete"] = report["audit"]["complete"]
             except (ValueError, OSError) as error:
                 report["audit"] = {"verified": False, "error": str(error)}
-        report["outcome"] = (
-            "timeout"
-            if timed_out
-            else "execution_failed"
-            if returncode
-            else "partial"
-            if not report["complete"]
-            else "published"
-        )
-        report["under_20_minutes"] = bool(report["complete"] and not returncode and elapsed < 1200)
+        if timed_out:
+            outcome = "timeout"
+        elif returncode:
+            outcome = "execution_failed"
+        elif report["phase"] != "published":
+            outcome = "incomplete_workflow"
+        elif not report["audit"]["verified"]:
+            outcome = "audit_failed"
+        else:
+            outcome = "published" if report["complete"] else "partial"
+        report["outcome"] = outcome
+        report["under_20_minutes"] = outcome == "published" and elapsed < 1200
+        if report["under_20_minutes"]:
+            report["performance_acceptance"] = "pending_semantic_audit"
         if (root / "supervisor.json").exists():
             try:
                 report["codex"] = codex_usage(root)

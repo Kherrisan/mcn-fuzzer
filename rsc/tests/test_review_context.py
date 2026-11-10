@@ -1,5 +1,6 @@
 """Declared cross-range relationships contribute independent source/model context."""
 
+import copy
 import json
 
 import pytest
@@ -179,3 +180,162 @@ def test_unbound_relationship_expands_review_instead_of_claiming_independence(re
             for context in a["contexts"].values():
                 assert len(context["records"]) == 3 and len(context["batches"]) == 3
             assert "PARSER_PRIVATE_EXPLANATION" not in json.dumps(a)
+
+
+def test_obligation_and_resolution_provenance_survive_successive_fix_merges_and_restart(
+    relationship,
+):
+    w = relationship
+    prepare(w)
+    b1, b2, b3 = [b["batch_id"] for b in w.batches]
+    evidence = [{"batch_id": b2, "block_id": w.batches[1]["segments"][0]["block_id"]}]
+    h.call(
+        w,
+        "parser-1",
+        "apply_changes",
+        expected_revision=0,
+        operation_id="integrate",
+        changes=[
+            {
+                "op": "resolve",
+                "name": "obligation-1",
+                "decision": "Verified remote state",
+                "evidence": evidence,
+            }
+        ],
+    )
+    h.call(w, "parser-1", "advance_phase")
+    h.advance(w)
+    original_reports = list(w.db.execute("SELECT body FROM reports WHERE phase='parse'"))
+    original_reports = [row[0] for row in original_reports]
+    resolutions = {}
+    try:
+        for round_, operation, message in ((1, "rename", "HELLO"), (2, "delete", "GREETING")):
+            h.claim(w, "reviewer-1")
+            sources = h.read(w, "reviewer-1")
+            h.call(w, "reviewer-1", "query_model")
+            # Accept the previous Fix against the current snapshot before creating a new finding.
+            if round_ == 2:
+                previous = next(iter(resolutions))
+                h.call(
+                    w,
+                    "reviewer-1",
+                    "review_resolutions",
+                    revision=round_,
+                    reviews=[
+                        {
+                            "name": previous,
+                            "accepted": True,
+                            "reason": "Verified rename",
+                            "evidence": evidence,
+                        }
+                    ],
+                )
+            ref = {"kind": "messages", "target": {"name": message}}
+            name = h.call(
+                w,
+                "reviewer-1",
+                "submit_findings",
+                revision=round_,
+                findings=[
+                    {
+                        "name": f"greeting-{round_}",
+                        "requirement": "Compare remote state",
+                        "description": "Greeting needs clarification",
+                        "objects": [ref],
+                        "evidence": [sources[b1]["batch"]["segments"][0]["citation"]],
+                        "acceptance": "Clarify greeting against the source",
+                    }
+                ],
+            )["names"][0]
+            for worker in ("reviewer-1", "reviewer-2", "reviewer-3"):
+                h.report_review(w, worker, finding=name if worker == "reviewer-1" else None)
+                h.call(w, worker, "advance_phase")
+            h.advance(w)
+            h.claim(w, "parser-1")
+            h.read(w, "parser-1")
+            h.call(
+                w,
+                "parser-1",
+                "apply_changes",
+                expected_revision=0,
+                operation_id="clarify",
+                changes=[
+                    {
+                        "op": "patch",
+                        **ref,
+                        "value": {
+                            "associated_fields": [{"name": "token"}, {"name": f"context{round_}"}]
+                        },
+                        "evidence": evidence,
+                    }
+                ],
+            )
+            h.call(
+                w,
+                "parser-1",
+                "submit_resolutions",
+                revision=1,
+                resolutions=[
+                    {
+                        "name": name,
+                        "status": "fixed",
+                        "description": "Clarified",
+                        "objects": [ref],
+                        "evidence": evidence,
+                    }
+                ],
+            )
+            resolutions[name] = copy.deepcopy(w.findings()[name]["resolution"])
+            h.call(w, "parser-1", "advance_phase")
+            h.advance(w)
+            h.claim(w, "parser-1")
+            h.read(w, "parser-1")
+            scoped = {"scope": f"fix-{round_}/parser-1", **ref}
+            change = (
+                {"op": "rename", "source": scoped, "name": "GREETING", "evidence": evidence}
+                if operation == "rename"
+                else {"op": "delete", **scoped, "reason": "Superseded greeting"}
+            )
+            args = {"expected_revision": 0, "operation_id": "integrate", "changes": [change]}
+            applied = h.call(w, "parser-1", "apply_changes", **args)
+            # Resume an interrupted merge and replay its acknowledged operation atomically.
+            w.db.close()
+            w = Workflow(w.root)
+            assert h.call(w, "parser-1", "apply_changes", **args) == applied
+            h.call(w, "parser-1", "advance_phase")
+            h.advance(w)
+            assignment = w.store.assignment(f"review-{round_ + 1}/reviewer-1")
+            context = assignment["contexts"][b1]
+            assert context["batches"] == [b1, b2] and b3 not in context["batches"]
+            model = w.snapshot(round_ + 1)
+            assert {model[key]["value"]["name"] for key in context["records"]} == (
+                {"client", "GREETING"} if operation == "rename" else {"client"}
+            )
+            assert w.findings()[name]["resolution"] == resolutions[name]
+            assert [
+                row[0] for row in w.db.execute("SELECT body FROM reports WHERE phase='parse'")
+            ] == original_reports
+        for worker in ("reviewer-1", "reviewer-2", "reviewer-3"):
+            h.report_review(w, worker)
+            if worker == "reviewer-1":
+                h.call(
+                    w,
+                    worker,
+                    "review_resolutions",
+                    revision=3,
+                    reviews=[
+                        {
+                            "name": name,
+                            "accepted": True,
+                            "reason": "Verified deletion",
+                            "evidence": evidence,
+                        }
+                    ],
+                )
+            h.call(w, worker, "advance_phase")
+        h.advance(w)
+        assert audit_run(w.root)["complete"]
+        assert all(w.findings()[key]["resolution"] == value for key, value in resolutions.items())
+    finally:
+        w.db.close()

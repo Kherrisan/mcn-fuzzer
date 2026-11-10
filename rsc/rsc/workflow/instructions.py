@@ -92,6 +92,9 @@ Use query_model(batch_ids=[...]) plus the full name index and focused queries to
 unsupported assertions, state/lifecycle errors and cross-range inconsistencies. Parser reasoning
 is not evidence. Finish each source window before starting another general review pass.
 Report actual requirements, compared objects, pass/finding results and any absence-query scopes.
+Each requirements item has exactly requirement, objects, result and findings; source receipts
+belong to the outer batch report. Read query_model(kind=...,filters=...) through its last page
+before recording that exact query scope. Batch/check filters and the index cannot prove absence.
 Submit source-backed findings with requirement, discrepancy, affected objects and acceptance
 criteria. Read the complete query scope before asserting absence. Use returned finding names.
 Complete all assigned cross-range checks; report each owned object and its associated sources.

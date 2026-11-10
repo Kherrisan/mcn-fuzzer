@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Opt-in paid HC recovery check against the current parallel workflow.
 
-Run in a fresh --out directory. Interrupt one claimed Parser process, then let the
-normal coordinator fence and replace its attempt. No extra model agent is created.
+Run in a fresh --out directory. Interrupt one claimed Parser after its first model
+write, then let the normal coordinator fence and replace its attempt. No extra
+model agent is created.
 """
 
 from __future__ import annotations
@@ -33,12 +34,14 @@ def interrupt_claimed_parser(root):
     db = sqlite3.connect((root / "workflow.sqlite").as_uri() + "?mode=ro", uri=True)
     try:
         row = db.execute(
-            "SELECT name, attempt, status, draft FROM assignments WHERE name=?",
+            "SELECT name, attempt, status, draft FROM assignments WHERE name=? AND phase='parse'",
             (saved["assignment"],),
         ).fetchone()
         if not row or row[2] != "claimed" or row[1] != saved["attempt"]:
             return None
         revision = db.execute("SELECT revision FROM drafts WHERE name=?", (row[3],)).fetchone()[0]
+        if revision == 0:
+            return None  # Exercise recovery of actual progress, not just an empty claim.
         reports = db.execute(
             "SELECT count(*) FROM reports WHERE assignment=?", (row[0],)
         ).fetchone()[0]
@@ -144,6 +147,12 @@ def main():
         ).fetchone()[0]
         if history != interrupted["draft_revision"] + 1:
             raise RuntimeError("replacement lost the original draft history")
+        retained = db.execute(
+            "SELECT count(*) FROM reports WHERE assignment=? AND attempt=?",
+            (interrupted["assignment"], interrupted["attempt"]),
+        ).fetchone()[0]
+        if retained < interrupted["completed_reports"]:
+            raise RuntimeError("replacement lost completed source reports")
     finally:
         db.close()
     report.update(

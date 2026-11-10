@@ -171,10 +171,16 @@ def invalidated(before, after, conclusions):
     return invalid
 
 
-def fix_groups(findings, workers):
+def fix_groups(findings, workers, records):
     groups = []
     for name, finding in findings.items():
-        scope = {dumps([r["kind"], r["target"]]) for r in finding["objects"]}
+        scope = set()
+        for ref in finding["objects"]:
+            try:
+                ref = object_ref(records[select(records, ref["kind"], ref["target"])])
+            except ValueError:
+                pass  # Missing-object findings retain their requested, prospective target.
+            scope.add(dumps([ref["kind"], ref["target"]]))
         overlaps = [g for g in groups if not scope or g["unbounded"] or g["scope"] & scope]
         item = {"findings": [name], "scope": scope, "unbounded": not scope}
         for group in overlaps:

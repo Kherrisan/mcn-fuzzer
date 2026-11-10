@@ -300,7 +300,10 @@ class Workflow:
                             "name": f"patch-conflict-{len(checks) + 1}",
                             "type": "patch_conflict",
                             "description": "Overlapping Fix patches need a decision",
-                            "writes": writes,
+                            "writes": [
+                                {"scope": scope, "before": before, "after": after}
+                                for scope, (before, after) in writes
+                            ],
                             "status": "open",
                         }
                     )
@@ -585,7 +588,7 @@ class Workflow:
             if pending and round_ < data["max_review_rounds"]:
                 base = self.snapshot()
                 assignments = []
-                for i, names in enumerate(fix_groups(pending, data["parse_workers"]), 1):
+                for i, names in enumerate(fix_groups(pending, data["parse_workers"], base), 1):
                     name = f"fix-{round_}/parser-{i}"
                     batches = {e["batch_id"] for n in names for e in pending[n]["evidence"]}
                     assignments.append(
@@ -1076,82 +1079,108 @@ class Worker:
 
     def complete_batch(self, revision, reports):
         self.version(revision)
-        source_reports, conclusions = [], []
-        for item in reports:
-            report = copy.deepcopy(item["report"])
-            objects = compared_objects(report, self.records)
-            if self.a["phase"] == "parse":
-                report["objects"] = [object_ref(self.records[key]) for key in sorted(objects)]
-            name = item.get("batch_id") or item["check_name"]
-            if "batch_id" in item:
-                if name not in self.a["batches"]:
-                    raise WorkflowError("cannot complete another worker's batch")
-                self.s.receipt(self.who, name, item["receipt"])
-                required, required_sources = (
-                    required_context(self.a, name, self.records)
-                    if self.a["phase"] == "review"
-                    else (set(), [name])
-                )
-                source_reports.append({"batch": name, "receipt": item["receipt"], "report": report})
-            else:
-                check = next((c for c in self.a["checks"] if c["name"] == name), None)
-                if self.a["phase"] != "review" or check is None:
-                    raise WorkflowError("unknown assigned cross-range check")
-                required = set(check["records"])
-                required_sources = check["batches"]
-                if not set(check["owned"]) <= set(objects):
-                    raise WorkflowError(
-                        "cross-range report must account for every owned model record"
-                    )
-            if self.a["phase"] == "review":
-                for batch in required_sources:
-                    self.s.receipt(self.who, batch, f"{self.a['name']}/{self.a['attempt']}/{batch}")
-                required |= closure(self.records, objects)
-                if not required <= self.delivered("model"):
-                    raise WorkflowError(
-                        "read the complete associated model context before reporting"
-                    )
-                if not report.get("requirements"):
-                    raise WorkflowError("review reports require actual source/model comparisons")
-                findings = self.w.findings()
-                for requirement in report["requirements"]:
-                    self.resolve_objects(requirement["objects"])
-                    if requirement["result"] == "finding" and not requirement["findings"]:
-                        raise WorkflowError("a discrepancy requires submitted findings")
-                    for finding in requirement["findings"]:
-                        if (
-                            finding not in findings
-                            or findings[finding]["reviewer"] != self.who.worker
-                        ):
-                            raise WorkflowError("unknown independently submitted finding")
-                        for query in findings[finding].get("queries", []):
-                            if query not in report.setdefault("queries", []):
-                                report["queries"].append(query)
-                for query in report.get("queries", []):
-                    if dumps(query) not in self.delivered("query"):
-                        raise WorkflowError(
-                            "read the complete model query scope before asserting absence"
-                        )
-                conclusions.append(
-                    (
-                        f"{self.a['name']}/{name}",
-                        {
-                            "assignment": self.a["name"],
-                            "attempt": self.a["attempt"],
-                            "batch": item.get("batch_id"),
-                            "check": item.get("check_name"),
-                            "records": sorted(set(objects) | required),
-                            "source_batches": required_sources,
-                            "queries": report.get("queries", []),
-                            "report": report,
-                        },
-                    )
-                )
-            else:
-                for obligation in report.get("obligations", []):
-                    obligation["evidence"] = self.expand(obligation["evidence"])
+        source_reports, conclusions, errors = [], [], []
+        for index, item in enumerate(reports):
+            try:
+                source, conclusion = self.prepare_report(item)
+                if source is not None:
+                    source_reports.append(source)
+                if conclusion is not None:
+                    conclusions.append(conclusion)
+            except ValueError as error:
+                name = item.get("batch_id") or item["check_name"]
+                errors.append(f"reports[{index}] ({name}): {error}")
+        if errors:
+            raise WorkflowError("; ".join(errors))
         self.s.complete(self.who, source_reports, revision, conclusions=conclusions)
         return self.status()
+
+    def prepare_report(self, item):
+        """Validate one report without writes; commit the complete array only after all pass."""
+        report = copy.deepcopy(item["report"])
+        objects = compared_objects(report, self.records)
+        if self.a["phase"] == "parse":
+            report["objects"] = [object_ref(self.records[key]) for key in sorted(objects)]
+        name = item.get("batch_id") or item["check_name"]
+        source, errors = None, []
+        if "batch_id" in item:
+            if name not in self.a["batches"]:
+                raise WorkflowError("cannot complete another worker's batch")
+            self.s.receipt(self.who, name, item["receipt"])
+            required, required_sources = (
+                required_context(self.a, name, self.records)
+                if self.a["phase"] == "review"
+                else (set(), [name])
+            )
+            source = {"batch": name, "receipt": item["receipt"], "report": report}
+            model_query = {"batch_ids": [name]}
+        else:
+            check = next((c for c in self.a["checks"] if c["name"] == name), None)
+            if self.a["phase"] != "review" or check is None:
+                raise WorkflowError("unknown assigned cross-range check")
+            required, required_sources = set(check["records"]), check["batches"]
+            model_query = {"check_name": name}
+            missing = set(check["owned"]) - objects
+            if missing:
+                errors.append(
+                    "cross-range report must account for every owned model record; "
+                    f"{len(missing)} missing; query_model({dumps(model_query)}) marks owned rows"
+                )
+        if self.a["phase"] != "review":
+            for obligation in report.get("obligations", []):
+                obligation["evidence"] = self.expand(obligation["evidence"])
+            return source, None
+        for batch in required_sources:
+            try:
+                self.s.receipt(self.who, batch, f"{self.a['name']}/{self.a['attempt']}/{batch}")
+            except ValueError as error:
+                errors.append(f"{batch}: {error}; read_batches(batch_ids=[{dumps(batch)}])")
+        required |= closure(self.records, objects)
+        missing = required - self.delivered("model")
+        if missing:
+            errors.append(
+                "read the complete associated model context before reporting; "
+                f"{len(missing)} records undelivered; query_model({dumps(model_query)}) "
+                "and the report's compared objects; follow every next_cursor"
+            )
+        if not report.get("requirements"):
+            errors.append("review reports require actual source/model comparisons")
+        findings = self.w.findings()
+        for index, requirement in enumerate(report.get("requirements", [])):
+            if requirement["result"] == "finding" and not requirement["findings"]:
+                errors.append(f"requirements[{index}]: a discrepancy requires submitted findings")
+            for finding in requirement["findings"]:
+                if finding not in findings or findings[finding]["reviewer"] != self.who.worker:
+                    errors.append(
+                        f"requirements[{index}]: unknown independently submitted finding {finding}"
+                    )
+                    continue
+                for query in findings[finding].get("queries", []):
+                    if query not in report.setdefault("queries", []):
+                        report["queries"].append(query)
+        delivered_queries = self.delivered("query")
+        for index, query in enumerate(report.get("queries", [])):
+            if dumps(query) not in delivered_queries:
+                errors.append(
+                    f"queries[{index}]: read the complete model query scope before asserting "
+                    f"absence; query_model({dumps(query)}) without batch_ids/check_name/scope; "
+                    "follow every next_cursor"
+                )
+        if errors:
+            raise WorkflowError("; ".join(errors))
+        return source, (
+            f"{self.a['name']}/{name}",
+            {
+                "assignment": self.a["name"],
+                "attempt": self.a["attempt"],
+                "batch": item.get("batch_id"),
+                "check": item.get("check_name"),
+                "records": sorted(objects | required),
+                "source_batches": required_sources,
+                "queries": report.get("queries", []),
+                "report": report,
+            },
+        )
 
     def get_changes(self, from_revision, cursor=0, max_tokens=None, revision=None):
         self.version(revision, cursor)

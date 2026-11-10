@@ -136,6 +136,8 @@ CONTRACTS = {
         "lists merge decisions still needed. reports exposes immutable extraction reports "
         "with current name associations, only during merge. index omits definitions and does not "
         "count as full model delivery. Batch filtering includes the reference closure. "
+        "Absence-query proof requires every page of a kind/filters query without "
+        "batch_ids, check_name or scope. "
         "Continue sealed pages with both revision and view_revision from the first page.",
         {
             "view": {"enum": ["current", "sealed", "index", "conflicts", "reports"]},
@@ -279,6 +281,8 @@ def schema(name):
             ]
         )
         contract["properties"]["changes"] = array({"oneOf": variants}, 1)
+    elif name == "complete_batch":
+        description += "\nReport shape (only these fields): " + shape(REPORT, {})
     return {"name": name, "description": description, "inputSchema": contract}
 
 
@@ -349,6 +353,28 @@ def validate_arguments(name, arguments):
             messages.extend(
                 f"changes[{i}]{e.json_path.removeprefix('$')}: {e.message}"
                 for e in Draft202012Validator(check).iter_errors(row)
+            )
+    elif (
+        name == "complete_batch"
+        and isinstance(arguments, dict)
+        and isinstance(arguments.get("reports"), list)
+    ):
+        variants = contract["properties"]["reports"]["items"]["oneOf"]
+        base = deepcopy(contract)
+        base["properties"]["reports"]["items"] = OBJECT
+        messages = [
+            f"{e.json_path}: {e.message}" for e in Draft202012Validator(base).iter_errors(arguments)
+        ]
+        for i, row in enumerate(arguments["reports"]):
+            if not isinstance(row, dict):
+                continue
+            if ("batch_id" in row) == ("check_name" in row):
+                messages.append(f"reports[{i}]: use exactly one of batch_id or check_name")
+                continue
+            branch = variants[0 if "batch_id" in row else 1]
+            messages.extend(
+                f"reports[{i}]{e.json_path.removeprefix('$')}: {e.message}"
+                for e in Draft202012Validator(branch).iter_errors(row)
             )
     else:
         messages = [

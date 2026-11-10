@@ -19,7 +19,7 @@ The benchmark's `semantic_audit=pending` is not an accepted semantic result.
 | Abort outcomes | RFC 959 ABOR and transfer-error descriptions | Completed transfer and transfer-in-progress outcomes remain distinct, including the source-prescribed reply sequence and data cleanup; this is not represented as only a generic command/reply. |
 | Third-party transfer | RFC 959 third-party/control/data connection description | Two server PI/DTP roles distinguished, user controls setup, direct data connection represented with correct endpoint derivation and direction. |
 | Message and field scope | Cross-check extracted definitions with source text | Actual exchanged units rather than grammar/category labels; relevant cross-message fields retained without invented wire detail or arbitrary command/mode Cartesian products. |
-| Repair quality | `review.json`, `changes.json`, `coverage.json` and source evidence | Each submitted resolution independently reviewed; no open or rejected finding hidden by publication at review limit. Unresolved source ambiguity is explicit and evidence-backed. |
+| Fix quality | `review.json`, `changes.json`, `coverage.json` and source evidence | Each submitted resolution independently reviewed; no open or rejected finding hidden by publication at review limit. Unresolved source ambiguity is explicit and evidence-backed. |
 
 Record a per-run assessment containing the source sections checked, supporting model names,
 accepted alternatives/unresolved interpretations and any failures. A structural keyword match

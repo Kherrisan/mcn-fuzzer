@@ -1,6 +1,12 @@
 """Dispatch recovery and phase handoffs use worker identity and durable claims."""
 
 import json
+import os
+import shutil
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Barrier
 
 import pytest
 import test_parallel_workflow as h
@@ -8,7 +14,7 @@ from test_parallel_supervisor import supervisor
 
 from rsc.workflow import WorkflowError
 from rsc.workflow.audit import audit_run
-from rsc.workflow.supervisor import HcObservationTimeout
+from rsc.workflow.supervisor import HcObservationTimeout, Supervisor
 
 run = h.run
 
@@ -130,3 +136,37 @@ def test_audit_verifies_claims_against_saved_hc_send_intents_and_sessions(run):
     )
     with pytest.raises(WorkflowError, match="send intent"):
         audit_run(run.root)
+
+
+def test_concurrent_campaigns_cannot_both_claim_one_truncated_hc_namespace(tmp_path, monkeypatch):
+    prefix = "race-" + uuid.uuid4().hex[:19]
+    runtime = Path("/tmp") / f"rsc-{os.getuid()}-{prefix}"
+    roots = [tmp_path / name for name in ("one", "two")]
+    for root in roots:
+        root.mkdir()
+        (root / "coordinator.token").write_text("test-only")
+    monkeypatch.setattr(Supervisor, "status", lambda self: {"name": prefix + self.root.name})
+    barrier = Barrier(2)
+
+    def start(root):
+        barrier.wait(timeout=5)
+        try:
+            return Supervisor(root, root / "service.sock", {"resolved_agents": {}})
+        except WorkflowError as error:
+            return error
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(start, roots))
+        winners = [result for result in results if isinstance(result, Supervisor)]
+        assert len(winners) == 1
+        assert json.loads((runtime / "owner.json").read_text())["root"] == str(winners[0].root)
+        assert sum((root / "supervisor.json").exists() for root in roots) == 1
+        loser = next(root for root in roots if root != winners[0].root)
+        # Once the short initialization lock is released, durable ownership still fences it.
+        with pytest.raises(WorkflowError, match="belongs to another campaign"):
+            Supervisor(loser, loser / "service.sock", {"resolved_agents": {}})
+    finally:
+        if runtime.exists():
+            assert json.loads((runtime / "owner.json").read_text())["root"] in map(str, roots)
+            shutil.rmtree(runtime)

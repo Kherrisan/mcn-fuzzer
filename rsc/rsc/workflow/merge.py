@@ -3,7 +3,9 @@
 import json
 from copy import deepcopy
 
-from .model import reference_errors, validate_record
+from rsc.protocol.references import reference_issues
+
+from .model import validate_record
 from .mutations import plan_changes, record_key, target
 from .store import dumps
 
@@ -136,6 +138,29 @@ def automatic(candidates):
 
 def conflicts(candidates, checks=()):
     result, names = [], {}
+    bindings = {
+        (key, tuple(json.loads(path))): targets
+        for key, record in candidates.items()
+        for path, targets in record["links"].items()
+    }
+    reverse = {key: set() for key in candidates}
+    for (owner, _), targets in bindings.items():
+        for key in targets:
+            reverse[key].add(owner)
+
+    def context(keys):
+        affected, pending = set(keys), list(keys)
+        while pending:
+            for key in reverse[pending.pop()] - affected:
+                affected.add(key)
+                pending.append(key)
+        evidence = {dumps(e): e for key in keys for e in candidates[key]["evidence"]}
+        return {
+            "affected_records": [ref(candidates[k]) for k in sorted(affected)],
+            "evidence": list(evidence.values()),
+            "status": "open",
+        }
+
     for key, record in candidates.items():
         name = record["value"].get("name")
         if name is not None:
@@ -151,7 +176,8 @@ def conflicts(candidates, checks=()):
                         "kind": kind,
                         "name": name,
                         "candidates": [ref(candidates[k]) for k in targets],
-                        "evidence": record["evidence"],
+                        "definitions": [display(candidates[k]) for k in targets],
+                        **context([key, *targets]),
                     }
                 )
     for (kind, name), keys in names.items():
@@ -175,9 +201,23 @@ def conflicts(candidates, checks=()):
                     "differences": sorted(
                         f for f in fields if len({dumps(r["value"].get(f)) for r in records}) > 1
                     ),
+                    **context(keys),
                 }
             )
-    result.extend({"type": "structure", "description": e} for e in reference_errors(candidates))
+    # Name/reference conflicts already have scoped candidate detail above. The same
+    # validator supplies role/field issues using those bindings, without choosing a
+    # last-arriving global definition or repeating each global name ambiguity.
+    for issue in reference_issues(candidates, bindings):
+        if issue["type"] == "structure":
+            keys = issue["records"]
+            result.append(
+                {
+                    **issue,
+                    "record": ref(candidates[keys[0]]),
+                    "records": [display(candidates[k]) for k in keys],
+                    **context(keys),
+                }
+            )
     result.extend(check for check in checks if check.get("status") != "resolved")
     return result
 

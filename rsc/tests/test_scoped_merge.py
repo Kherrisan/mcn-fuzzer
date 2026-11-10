@@ -260,3 +260,111 @@ def test_free_text_requires_explicit_source_supported_confirmation():
         checks,
     )
     assert not merge.conflicts(resolved, checks)
+
+
+def test_structural_conflicts_expose_location_sources_and_affected_records():
+    values = draft()
+    connect = next(r for r in values.values() if r["value"].get("name") == "connect")
+    connect["value"]["party_name"] = "server"
+    connect["evidence"] = [{"batch_id": "b2", "block_id": "connection"}]
+    candidates = merge.combine([("parser-1", values)])
+    conflicts = merge.conflicts(candidates)
+    issue = next(c for c in conflicts if c["type"] == "structure")
+    assert issue["record"] == reference("parser-1", "steps", "connect")
+    assert issue["path"] == ["party_name"] and issue["status"] == "open"
+    assert "initiator_party_name" in issue["description"]
+    assert {r["value"]["name"] for r in issue["records"]} == {
+        "connect",
+        "control",
+        "client",
+        "server",
+    }
+    assert {e["batch_id"] for e in issue["evidence"]} == {"b1", "b2"}
+    assert any(r["kind"] == "step_dependencies" for r in issue["affected_records"])
+    assert all("scope" in r and "_key" not in r for r in issue["records"])
+
+
+def test_local_channel_roles_never_use_another_same_named_candidate():
+    first, second = draft("primary", "A"), draft("secondary", "B")
+    channel = next(r["value"] for r in second.values() if r["kind"] == "channels")
+    channel.update(initiator_party_name="server", acceptor_party_name="client")
+    connect = next(r["value"] for r in second.values() if r["value"].get("name") == "connectB")
+    connect["party_name"] = "server"
+    for drafts in (
+        [("parser-1", first), ("parser-2", second)],
+        [("parser-2", second), ("parser-1", first)],
+    ):
+        candidates = merge.combine(drafts)
+        conflicts = merge.conflicts(candidates)
+        assert conflicts and {c["type"] for c in conflicts} == {"same_name"}
+        channel_issue = next(c for c in conflicts if c["kind"] == "channels")
+        assert {"initiator_party_name", "acceptor_party_name"} <= set(channel_issue["differences"])
+        assert {
+            r["target"]["name"] for r in channel_issue["affected_records"] if r["kind"] == "steps"
+        } == {"connectA", "connectB", "closeA", "closeB"}
+
+
+def test_field_carrier_conflict_includes_dependency_step_message_and_exact_field_location():
+    values = draft()
+    message = record("messages", {"name": "HELLO", "associated_fields": [{"name": "token"}]})
+    send = record(
+        "steps",
+        {
+            "name": "hello",
+            "action": "send",
+            "channel_name": "control",
+            "sender_name": "client",
+            "receiver_name": "server",
+            "message_name": "HELLO",
+            "condition": "",
+        },
+    )
+    dependency = record(
+        "step_dependencies",
+        {
+            "prior_step": "hello",
+            "dependent_step": "hello",
+            "condition": "next occurrence",
+            "field_relations": [{"prior_field": "missing", "dependent_field": "token"}],
+        },
+    )
+    for value in (message, send, dependency):
+        values[record_key(value)] = value
+    candidates = merge.combine([("parser-1", values)])
+    issue = next(c for c in merge.conflicts(candidates) if c["type"] == "structure")
+    assert issue["path"] == ["field_relations", 0, "prior_field"]
+    assert issue["record"]["kind"] == "step_dependencies"
+    assert {r["kind"] for r in issue["records"]} == {"step_dependencies", "steps", "messages"}
+    assert "missing" in issue["description"] and issue["evidence"] == EVIDENCE
+    with pytest.raises(ValueError, match="unresolved merge conflicts"):
+        merge.final_records(candidates)
+
+
+def test_ambiguous_foreign_references_keep_candidates_and_context_until_resolved():
+    first, second = draft("primary"), draft("secondary")
+    foreign = record(
+        "channels",
+        {
+            "name": "foreign",
+            "description": "foreign transport",
+            "transport": "TCP",
+            "connection": "connection_oriented",
+            "endpoint_party_names": ["client", "server"],
+            "initiator_party_name": "client",
+            "acceptor_party_name": "server",
+            "endpoint_sources": [],
+        },
+    )
+    candidates = merge.combine(
+        [
+            ("parser-1", first),
+            ("parser-2", second),
+            ("parser-3", {record_key(foreign): foreign}),
+        ]
+    )
+    ambiguous = [c for c in merge.conflicts(candidates) if c["type"] == "ambiguous_reference"]
+    assert ambiguous and all(c["record"]["scope"] == "parser-3" for c in ambiguous)
+    for issue in ambiguous:
+        assert {r["scope"] for r in issue["candidates"]} == {"parser-1", "parser-2"}
+        assert len(issue["definitions"]) == 2 and issue["evidence"] == EVIDENCE
+        assert issue["status"] == "open" and issue["record"] in issue["affected_records"]

@@ -676,8 +676,13 @@ class Store:
                     continue
                 if batch in done:
                     raise StoreError("batch already completed in a previous attempt")
-                if not remaining or batch != remaining.pop(0):
-                    raise StoreError("complete batches in assigned source order")
+                if not remaining or batch != remaining[0]:
+                    raise StoreError(
+                        "complete batches in assigned source order; "
+                        f"expected {remaining[0] if remaining else 'no remaining batch'}, "
+                        f"got {batch}"
+                    )
+                remaining.pop(0)
                 self.db.execute(
                     "INSERT INTO reports VALUES (?, ?, ?, ?, ?, ?)",
                     (

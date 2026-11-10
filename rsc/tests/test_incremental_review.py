@@ -126,5 +126,24 @@ def test_unknown_fix_scope_stays_unbounded_after_absorbing_a_named_scope():
         "one": {"objects": [{"kind": "messages", "target": {"name": "ONE"}}]},
         "two": {"objects": [{"kind": "messages", "target": {"name": "TWO"}}]},
     }
-    groups = fix_groups(findings, 3)
+    groups = fix_groups(findings, 3, {})
     assert len(groups) == 1 and set(groups[0]) == set(findings)
+
+
+def test_fix_groups_resolve_equivalent_selectors_before_assigning_parallel_writers():
+    records = model(
+        record("channels", {"name": "control", "transport": "TCP"}),
+        record("channels", {"name": "data", "transport": "UDP"}),
+    )
+    findings = {
+        "by_name": {"objects": [{"kind": "channels", "target": {"name": "control"}}]},
+        "by_transport": {"objects": [{"kind": "channels", "target": {"transport": "TCP"}}]},
+        "independent": {"objects": [{"kind": "channels", "target": {"name": "data"}}]},
+    }
+    original = deepcopy(findings)
+    groups = fix_groups(findings, 3, records)
+    assert {frozenset(group) for group in groups} == {
+        frozenset({"by_name", "by_transport"}),
+        frozenset({"independent"}),
+    }
+    assert findings == original
