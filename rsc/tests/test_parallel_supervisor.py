@@ -1,6 +1,10 @@
 """Exercise the new dispatcher against durable assignments without launching models."""
 
 import json
+import sqlite3
+import time
+import uuid
+from pathlib import Path
 
 import pytest
 import test_parallel_workflow as helpers
@@ -11,8 +15,15 @@ run = helpers.run
 
 
 class FakeHc:
-    def __init__(self):
+    def __init__(self, root):
         self.calls, self.terminals = [], {}
+        self.root = root
+        self.database = root / "codex-test-home/state_5.sqlite"
+        self.database.parent.mkdir(exist_ok=True)
+        with sqlite3.connect(self.database) as db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, name, cwd, created_at)"
+            )
 
     def __call__(self, *args, **kwargs):
         self.calls.append(args)
@@ -20,6 +31,14 @@ class FakeHc:
         if command == "run":
             name = args[args.index("--name") + 1]
             address = f"t{len(self.terminals) + 1}"
+            launch = json.loads(Path(args[-1]).read_text()) if "--" in args else {}
+            argv = launch.get("argv", [])
+            thread = argv[argv.index("resume") + 1] if "resume" in argv else str(uuid.uuid4())
+            with sqlite3.connect(self.database) as db:
+                db.execute(
+                    "INSERT OR IGNORE INTO threads VALUES (?,?,?,?)",
+                    (thread, name, str(self.root), int(time.time())),
+                )
             self.terminals[address] = {
                 "address": address,
                 "name": name,
@@ -27,6 +46,7 @@ class FakeHc:
                 "status": {"state": "idle"},
                 "turn": 0,
                 "renamed": False,
+                "thread": thread,
             }
             return self.terminals[address].copy()
         if command == "get":
@@ -62,7 +82,7 @@ def supervisor(w):
                 "executable": "/bin/true",
                 "model": "gpt-6-luna",
                 "effort": "high",
-                "envs": [],
+                "envs": [["CODEX_HOME", str(w.root / "codex-test-home")]],
                 "args": [],
             },
         }
@@ -70,7 +90,7 @@ def supervisor(w):
     }
     s.config = {"workflow": {"batch_max_tokens": 12000}, "resolved_agents": s.roles}
     s.retry_worker, s.wait_index = None, 0
-    s.hc_call = FakeHc()
+    s.hc_call = FakeHc(w.root)
     s.workflow_call = lambda name, arguments=None: w.call(
         helpers.who(w, "coordinator"), name, arguments or {}, origin="supervisor"
     )

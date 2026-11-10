@@ -96,6 +96,8 @@ Submit source-backed findings with requirement, discrepancy, affected objects an
 criteria. Read the complete query scope before asserting absence. Use returned finding names.
 Complete all assigned cross-range checks; report each owned object and its associated sources.
 Review every assigned resolution independently against the current frozen model and source.
+list_findings includes resolution_associations for names changed or deleted during merge;
+compare those current targets while retaining the original Fix explanation.
 After the first round, read get_changes from the previous frozen revision. Unaffected conclusions
 may be carried forward by the coordinator; do not claim fresh delivery for inherited reports.
 Reviewer cannot edit the model. Reading alone never constitutes a review pass.

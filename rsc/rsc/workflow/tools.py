@@ -150,7 +150,7 @@ CONTRACTS = {
         [],
     ),
     "get_changes": (
-        "Read complete before/after images since a model or local draft revision.",
+        "Read before/after records and merge decisions since a model or local draft revision.",
         {"from_revision": INTEGER, **PAGING},
         ["from_revision"],
     ),
@@ -186,7 +186,8 @@ CONTRACTS = {
         ["revision", "reports"],
     ),
     "list_findings": (
-        "Read assigned findings, resolutions and independent acceptance history.",
+        "Read assigned findings, resolutions and independent acceptance history. Review views "
+        "include resolution_associations mapping original Fix objects to current names/deletions.",
         PAGING,
         [],
     ),

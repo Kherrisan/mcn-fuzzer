@@ -14,6 +14,7 @@ from rsc.agents import ADAPTERS, AgentContext, check_profiles
 from rsc.agents.files import private_json
 
 from .instructions import assignment_instructions
+from .locking import exclusive
 from .server import request
 from .state import WorkflowError
 
@@ -45,11 +46,12 @@ class Supervisor:
         runtime = Path("/tmp") / f"rsc-{os.getuid()}-{slug}"
         runtime.mkdir(mode=0o700, exist_ok=True)
         owner = runtime / "owner.json"
-        if owner.exists() and json.loads(owner.read_text())["root"] != str(self.root):
-            raise WorkflowError(
-                "HC runtime name belongs to another campaign; use a unique directory name"
-            )
-        private_json(owner, {"root": str(self.root)})
+        with exclusive(runtime / "namespace.lock"):
+            if owner.exists() and json.loads(owner.read_text())["root"] != str(self.root):
+                raise WorkflowError(
+                    "HC runtime name belongs to another campaign; use a unique directory name"
+                )
+            private_json(owner, {"root": str(self.root)})
         self.env = {
             **os.environ,
             "HC_SESSION": f"rsc-{slug}",
@@ -106,6 +108,7 @@ class Supervisor:
             self.config["workflow"]["batch_max_tokens"],
             worker=a["worker"],
             resume=a["worker"] in self.state["sessions"],
+            session_id=self.state["sessions"].get(a["worker"], {}).get("id"),
         )
 
     @staticmethod
@@ -151,7 +154,12 @@ class Supervisor:
         ADAPTERS[profile["provider"]].prepare(profile, context).write(launch)
         # Persist launch intent; recovery looks up its unique name before starting
         # anything new when the run response was lost.
-        intent = {"name": context.terminal_name, "assignment": a["name"], "attempt": a["attempt"]}
+        intent = {
+            "name": context.terminal_name,
+            "assignment": a["name"],
+            "attempt": a["attempt"],
+            "started_at": time.time(),
+        }
         self.state["launching"] = intent
         self.save()
         value = self.hc_call(
@@ -187,6 +195,7 @@ class Supervisor:
         context = self.context(a)
         saved = self.state["terminals"][a["worker"]]
         adapter = ADAPTERS[self.roles[a["role"]]["profile"]["provider"]]
+        profile = self.roles[a["role"]]["profile"]
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             info = self.observe(a["worker"])
@@ -207,11 +216,12 @@ class Supervisor:
                             )
                         self.wait_once(saved["address"])
                         continue
+                session = adapter.session(profile, context, started_at=saved.get("started_at"))
+                if session is None:
+                    self.wait_once(saved["address"])
+                    continue
                 saved["ready"] = True
-                self.state["sessions"][a["worker"]] = {
-                    "name": context.terminal_name,
-                    "provider": self.roles[a["role"]]["profile"]["provider"],
-                }
+                self.state["sessions"][a["worker"]] = session
                 private_json(
                     context.directory / "session.json", self.state["sessions"][a["worker"]]
                 )

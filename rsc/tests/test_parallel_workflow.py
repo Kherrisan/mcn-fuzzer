@@ -178,6 +178,86 @@ def test_thirteen_tools_coordinator_privileges_and_no_legacy_entrypoints(run):
         )
 
 
+def test_decision_only_merge_revision_remains_visible_and_auditable(run):
+    for a in run.store.assignments():
+        claim(run, a["worker"])
+        sources = read(run, a["worker"])
+        evidence = [sources[a["batches"][0]]["batch"]["segments"][0]["citation"]]
+        call(
+            run,
+            a["worker"],
+            "apply_changes",
+            expected_revision=0,
+            operation_id="role",
+            changes=[
+                {
+                    "op": "add",
+                    "kind": "parties",
+                    "value": {"name": "client", "description": "sender"},
+                    "evidence": evidence,
+                }
+            ],
+        )
+        call(
+            run,
+            a["worker"],
+            "complete_batch",
+            revision=1,
+            reports=[
+                {
+                    "batch_id": b,
+                    "receipt": sources[b]["receipt"],
+                    "report": {
+                        "summary": "Extracted sender; compare the shared role",
+                        "objects": [CLIENT],
+                        "obligations": [
+                            {
+                                "description": "Check shared sender",
+                                "objects": [CLIENT],
+                                "evidence": evidence,
+                            }
+                        ],
+                    },
+                }
+                for b in a["batches"]
+            ],
+        )
+        call(run, a["worker"], "advance_phase")
+    advance(run)
+    claim(run, "parser-1")
+    read(run, "parser-1")
+    conflicts = call(run, "parser-1", "query_model", view="conflicts")["items"]
+    changes = [
+        {
+            "op": "resolve",
+            "name": c["name"],
+            "decision": "Same source-defined role",
+            "evidence": c["evidence"],
+        }
+        for c in conflicts
+    ]
+    call(
+        run,
+        "parser-1",
+        "apply_changes",
+        expected_revision=0,
+        operation_id="decisions",
+        changes=changes,
+    )
+    diff = call(run, "parser-1", "get_changes", from_revision=0)["items"]
+    assert len(diff) == len(changes)
+    assert [row["decision"] for row in diff] == changes
+    assert all(row["revision"] == 1 for row in diff)
+    call(run, "parser-1", "advance_phase")
+    advance(run)
+    for a in run.store.assignments():
+        if a["phase"] == "review":
+            report_review(run, a["worker"])
+            call(run, a["worker"], "advance_phase")
+    advance(run)
+    assert audit_run(run.root)["verified"]
+
+
 def test_reports_cannot_replace_model_delivery_or_independent_comparison(run):
     merged(run)
     status = claim(run, "reviewer-1")
@@ -448,6 +528,7 @@ def test_missing_message_can_be_fixed_but_only_reviewer_accepts(run):
         "DELETE FROM receipts WHERE assignment LIKE 'review-%'",
         "DELETE FROM deliveries WHERE family='model'",
         "DELETE FROM conclusions",
+        "INSERT INTO conclusions SELECT name||'-orphan', revision, body FROM conclusions LIMIT 1",
         "UPDATE assignments SET body=json_set(body,'$.checks',json('[]')) WHERE phase='review'",
         "UPDATE snapshots SET body=json_set(body,'$.name_map',json('[]'))",
         'UPDATE reports SET body=json_set(body,\'$.objects\',json(\'[{"kind":"parties",'
@@ -465,3 +546,60 @@ def test_parallel_audit_rejects_missing_or_changed_evidence(run, sql):
     run.db.execute(sql)
     with pytest.raises(ValueError):
         audit_run(run.root)
+
+
+def test_audit_checks_absence_findings_even_when_no_report_repeats_them(run):
+    run.db.execute("UPDATE workflow SET body=json_set(body,'$.max_review_rounds',1)")
+    merged(run)
+    claim(run, "reviewer-1")
+    sources = read(run, "reviewer-1")
+    citation = next(iter(sources.values()))["batch"]["segments"][0]["citation"]
+    call(run, "reviewer-1", "query_model", kind="messages", filters={"name": "HELLO"})
+    call(
+        run,
+        "reviewer-1",
+        "submit_findings",
+        revision=1,
+        findings=[
+            {
+                "name": "missing-hello",
+                "requirement": "Client sends HELLO",
+                "description": "HELLO definition is missing",
+                "acceptance": "Represent HELLO",
+                "objects": [{"kind": "messages", "target": {"name": "HELLO"}}],
+                "evidence": [citation],
+            }
+        ],
+    )
+    for a in run.store.assignments():
+        if a["phase"] == "review":
+            report_review(run, a["worker"])
+            call(run, a["worker"], "advance_phase")
+    advance(run)
+    assert not audit_run(run.root)["complete"]
+    run.db.execute("DELETE FROM deliveries WHERE family='query-page'")
+    with pytest.raises(WorkflowError, match="negative-query"):
+        audit_run(run.root)
+
+
+def test_schema_errors_include_current_revision_and_all_independent_row_positions(run):
+    claim(run, "parser-1")
+    with pytest.raises(WorkflowError) as error:
+        call(
+            run,
+            "parser-1",
+            "apply_changes",
+            expected_revision=0,
+            operation_id="invalid",
+            changes=[
+                {"op": "add", "kind": "parties", "value": {"name": "one"}, "evidence": ["e1"]},
+                {
+                    "op": "add",
+                    "kind": "messages",
+                    "value": {"name": "two", "associated_fields": ["invalid-string-field"]},
+                    "evidence": ["e1"],
+                },
+            ],
+        )
+    assert all(text in str(error.value) for text in ("changes[0]", "changes[1]", "revision=0"))
+    assert run.store.draft("parse-0/parser-1")[1] == {}

@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -36,6 +37,7 @@ class AgentContext:
     batch_max_tokens: int = 12000
     worker: str | None = None
     resume: bool = False
+    session_id: str | None = None
 
     @property
     def directory(self):
@@ -89,6 +91,9 @@ class Adapter:
     def ready(self, context):
         return True
 
+    def session(self, profile, context, *, started_at=None):
+        return {"name": context.terminal_name, "provider": profile["provider"]}
+
     def validate(self, profile):
         for arg in profile["args"]:
             if arg.split("=", 1)[0] in self.reserved:
@@ -135,6 +140,45 @@ class Adapter:
 class CodexAdapter(Adapter):
     required_flags = ("--no-daemon", "--model", "--config")
     reserved = Adapter.reserved | {"--remote", "--profile", "-p"}
+
+    def session(self, profile, context, *, started_at=None):
+        """Read this campaign's native session identity; never choose by name alone."""
+        env = {**os.environ, **dict(profile["envs"])}
+        state_home = Path(
+            env.get("CODEX_HOME", str(Path(env.get("HOME", str(Path.home()))) / ".codex"))
+        )
+        state_home = state_home.expanduser()
+        if not state_home.is_absolute():
+            state_home = context.root / state_home
+        databases = sorted(
+            (p for p in state_home.glob("state_*.sqlite") if p.stem[6:].isdigit()),
+            key=lambda p: int(p.stem[6:]),
+        )
+        if not databases:
+            return None
+        query, args = (
+            "SELECT id FROM threads WHERE name=? AND cwd=?",
+            [context.terminal_name, str(context.root)],
+        )
+        if context.session_id:
+            query += " AND id=?"
+            args.append(context.session_id)
+        elif not context.resume and started_at is not None:
+            query += " AND created_at>=?"
+            args.append(int(started_at))
+        try:
+            db = sqlite3.connect(databases[-1].resolve().as_uri() + "?mode=ro", uri=True)
+            try:
+                rows = db.execute(query, args).fetchall()
+            finally:
+                db.close()
+        except sqlite3.Error as error:
+            raise ConfigError(f"cannot read Codex session identity: {error}") from error
+        if len(rows) > 1:
+            raise ConfigError(
+                "ambiguous Codex sessions for this campaign; refusing name-based resume"
+            )
+        return {**super().session(profile, context), "id": rows[0][0]} if rows else None
 
     @staticmethod
     def executable(profile):
@@ -219,7 +263,10 @@ class CodexAdapter(Adapter):
         ):
             argv += ["-c", f"{prefix}.tools.{tool}.output_token_limit=31024"]
         if context.resume:
-            argv += ["resume", context.terminal_name]
+            session = self.session(profile, context)
+            if session is None:
+                raise ConfigError("saved Codex session is unavailable for this campaign")
+            argv += ["resume", session["id"]]
         return LaunchSpec(argv + profile["args"], dict(profile["envs"]), str(context.root))
 
 

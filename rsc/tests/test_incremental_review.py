@@ -90,6 +90,36 @@ def test_origin_bookkeeping_alone_does_not_force_review():
     assert not invalidated(model(message), model(after), {"report": conclusion(message)})
 
 
+def test_field_inventory_changes_recheck_untyped_remote_conditions():
+    message = record("messages", {"name": "HELLO", "associated_fields": [{"name": "token"}]})
+    after = deepcopy(message)
+    after["value"]["associated_fields"] = [{"name": "nonce"}]
+    reports = {"direct": conclusion(message), "remote_prose": conclusion()}
+    assert invalidated(model(message), model(after), reports) == set(reports)
+    assert invalidated(model(message), {}, reports) == set(reports)
+
+
+def test_new_relationship_invalidates_its_previously_unconnected_endpoints():
+    start = record(
+        "steps",
+        {"name": "start", "action": "connect", "channel_name": "control", "party_name": "client"},
+    )
+    stop = record(
+        "steps",
+        {"name": "stop", "action": "close", "channel_name": "control", "party_name": "client"},
+    )
+    edge = record(
+        "step_dependencies",
+        {"prior_step": "start", "dependent_step": "stop", "field_relations": [], "condition": ""},
+    )
+    # Empty ordering conditions add no unknown prose; invalidate through the relation itself.
+    before = model(start, stop)
+    after = model(start, stop, edge)
+    reports = {"start": conclusion(start), "stop": conclusion(stop), "remote": conclusion()}
+    assert invalidated(before, after, reports) == {"start", "stop"}
+    assert invalidated(after, before, reports) == {"start", "stop"}
+
+
 def test_unknown_fix_scope_stays_unbounded_after_absorbing_a_named_scope():
     findings = {
         "unspecified": {"objects": []},

@@ -30,6 +30,7 @@ def cleanup(root):
     if saved.get("cleanup_complete"):
         return
     environment = {**os.environ, **saved["hc_env"]}
+    environment.pop("HC_TERMINAL_ID", None)
     owner = Path(environment["XDG_RUNTIME_DIR"]) / "owner.json"
     if json.loads(owner.read_text())["root"] != str(root):
         raise RuntimeError("diagnostic HC namespace belongs to another root")
@@ -46,7 +47,8 @@ def cleanup(root):
             return {"state": "missing"}
         if p.returncode:
             raise RuntimeError(p.stderr.strip())
-        return json.loads(p.stdout)
+        value = json.loads(p.stdout)
+        return value.get("result", value)
 
     for worker, terminal in saved["terminals"].items():
         info = hc("get", terminal["address"])

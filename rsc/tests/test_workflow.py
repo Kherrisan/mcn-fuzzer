@@ -254,6 +254,106 @@ def test_three_reviews_preserve_rejections_and_unchanged_conclusions(run):
     assert not report["complete"] and [r["carried"] for r in report["reviews"]] == [0, 3, 3]
 
 
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize("operation", ["rename", "delete"])
+def test_resolution_tracks_merge_rename_or_deletion_without_rewriting_fix(run, changed, operation):
+    h.merged(run)
+    name, citation = finding(run)
+    h.advance(run)
+    h.claim(run, "parser-1")
+    h.read(run, "parser-1")
+    changes = [
+        {
+            "op": "add",
+            "kind": "parties",
+            "value": {"name": "peer", "description": "receiver"},
+            "evidence": [citation],
+        }
+    ]
+    if changed:
+        changes.append(
+            {
+                "op": "patch",
+                **h.CLIENT,
+                "value": {"description": "request sender"},
+                "evidence": [citation],
+            }
+        )
+    h.call(
+        run, "parser-1", "apply_changes", expected_revision=0, operation_id="fix", changes=changes
+    )
+    h.call(
+        run,
+        "parser-1",
+        "submit_resolutions",
+        revision=1,
+        resolutions=[
+            {
+                "name": name,
+                "status": "fixed",
+                "description": "Clarified role",
+                "objects": [h.CLIENT],
+                "evidence": [citation],
+            }
+        ],
+    )
+    original = copy.deepcopy(run.findings()[name]["resolution"])
+    h.call(run, "parser-1", "advance_phase")
+    h.advance(run)
+    h.claim(run, "parser-1")
+    h.read(run, "parser-1")
+    scope = "fix-1/parser-1" if changed else "base"
+    change = (
+        {
+            "op": "rename",
+            "source": {"scope": scope, **h.CLIENT},
+            "name": "user",
+            "evidence": [citation],
+        }
+        if operation == "rename"
+        else {"op": "delete", "scope": scope, **h.CLIENT, "reason": "Superseded role"}
+    )
+    h.call(
+        run,
+        "parser-1",
+        "apply_changes",
+        expected_revision=0,
+        operation_id="merge",
+        changes=[change],
+    )
+    h.call(run, "parser-1", "advance_phase")
+    h.advance(run)
+    for a in run.store.assignments():
+        if a["phase"] != "review" or a["round"] != 2:
+            continue
+        h.report_review(run, a["worker"])
+        if a["worker"] == "reviewer-1":
+            view = h.call(run, "reviewer-1", "list_findings")["items"][0]
+            associations = view["resolution_associations"]
+            assert associations[0]["source"] == {"scope": "fix-1/parser-1", **h.CLIENT}
+            assert associations[0]["final"] == (
+                {"kind": "parties", "target": {"name": "user"}} if operation == "rename" else None
+            )
+            h.call(
+                run,
+                "reviewer-1",
+                "review_resolutions",
+                revision=2,
+                reviews=[
+                    {
+                        "name": name,
+                        "accepted": True,
+                        "reason": "Checked final role",
+                        "evidence": [citation],
+                    }
+                ],
+            )
+        h.call(run, a["worker"], "advance_phase")
+    h.advance(run)
+    assert run.findings()[name]["resolution"] == original
+    assert audit_run(run.root)["complete"]
+
+
 def test_failed_tools_are_audited_and_export_cannot_bypass_review(run):
     with pytest.raises(WorkflowError):
         h.call(

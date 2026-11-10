@@ -2,10 +2,16 @@
 
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
+import test_parallel_workflow as h
+from test_parallel_supervisor import supervisor
 
 from scripts.benchmark_parallel_rsc import cleanup, codex_usage
+from scripts.verify_hc_recovery import interrupt_claimed_parser
+
+run = h.run
 
 
 def test_codex_usage_filters_campaign_and_named_session_and_uses_final_counters(
@@ -66,3 +72,34 @@ def test_diagnostic_cleanup_refuses_another_campaign_namespace(tmp_path):
     (root / "supervisor.json").write_text(json.dumps({"hc_env": {"XDG_RUNTIME_DIR": str(runtime)}}))
     with pytest.raises(RuntimeError, match="another root"):
         cleanup(root)
+
+
+@pytest.mark.parametrize("changed_identity", [False, True])
+def test_live_recovery_probe_targets_only_its_claimed_worker(run, monkeypatch, changed_identity):
+    s = supervisor(run)
+    s.state["hc_env"] = {"HC_SESSION": "test-private"}
+    s.step()
+    assert interrupt_claimed_parser(run.root) is None
+    h.claim(run, "parser-1")
+    old = s.state["terminals"]["parser-1"]
+    peer = s.state["terminals"]["parser-2"]
+    if changed_identity:
+        s.hc_call.terminals[old["address"]]["name"] = "another-owner"
+
+    def fake_run(argv, **kwargs):
+        assert kwargs["env"]["HC_SESSION"] == "test-private"
+        assert "HC_TERMINAL_ID" not in kwargs["env"]
+        args = [arg for arg in argv[1:] if arg != "--json"]
+        return SimpleNamespace(stdout=json.dumps(s.hc_call(*args)))
+
+    monkeypatch.setattr("scripts.verify_hc_recovery.subprocess.run", fake_run)
+    if changed_identity:
+        with pytest.raises(RuntimeError, match="changed identity"):
+            interrupt_claimed_parser(run.root)
+        assert s.hc_call.terminals[old["address"]]["state"] == "live"
+    else:
+        result = interrupt_claimed_parser(run.root)
+        assert result["assignment"] == "parse-0/parser-1" and result["draft_revision"] == 0
+        s.step()
+        assert run.store.assignment(result["assignment"])["attempt"] == 2
+    assert s.hc_call.terminals[peer["address"]]["state"] == "live"

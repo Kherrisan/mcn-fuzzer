@@ -1,159 +1,100 @@
-# Persistent MCP extraction pipeline
+# Parallel source extraction and independent review
 
-The current implementation is `rsc.workflow`. Python controls the source set, phase, assignment, model revision and review round. Two independent interactive agent sessions supply extraction and semantic review. The service never asks an LLM to choose which phase may run next.
+One `rsc.workflow` service owns the SQLite state and write connection. The coordinator advances global phases; workers submit only their own assignments. Parse and Review each default to three workers and run in separate phases. Merge reuses one Parser. Setting both worker counts to 1 uses the same implementation.
 
-## State and gates
+## Source ownership and phases
 
-| Phase | Actor | Gate and next action |
-|---|---|---|
-| preprocess | parser | All inputs parsed; immutable snapshots match; chapter batches cover all nonempty text exactly once and fit token limits. Advance to parse. |
-| parse | parser | Every batch read and reported; all model records have evidence; schema, IDs, references and channel roles valid. Freeze a revision and start review 1. |
-| review | reviewer | Every assigned batch read/reported; complete model and required diff pages delivered; submitted resolutions decided. Publish, or assign repair if open findings remain and rounds permit. |
-| repair | parser | All open findings have source-based resolutions; updated model passes hard gates. Freeze the revision and increment the round for review. |
-| published | neither | Read-only; source/model changes require a new task. |
+The caller's document order, chapters and original text positions determine the source batch list. Batches preserve chapters where possible; oversized chapters split at contiguous subsections/paragraphs and oversized paragraphs at Unicode boundaries. Every nonempty source range occurs exactly once. Batch budgets include delivery metadata; scheduling weights use raw source tokens.
 
-First review covers every source batch. Later review covers batches cited by changes and resolutions, retains the initial full-source review, and reads the current model and complete diff. Findings retain their history even when rejected, superseded or still unresolved. Parser resolutions never close a finding by themselves.
+Each role receives `min(workers, batches)` nonempty contiguous ranges. Code first minimizes the maximum range weight M, then permits at most 110% of M to minimize chapter cuts, document cuts and finally cut-index order. Assignments are fixed, without work stealing or an extra source-task layer. Workers process their batches in order. Supplementary reads never transfer reporting ownership.
 
-At the configured round limit (default 5, including the first review), a completed review with remaining semantic findings can publish a partial model. `rsc run --max-review-rounds N` overrides the config when creating a task. Resuming retains the persisted limit. Hard gate failures and unfinished reviews cannot be converted into partial success. `review_limit_reached` is recorded separately from `meta.complete`.
+| Phase | Work and submission gate |
+| --- | --- |
+| Preprocess | Coordinator freezes sources and verifies coverage/token bounds before creating assignments. No agent calls or receipts. |
+| Parse | Private drafts; each assigned batch needs full delivery and an extraction report. Local schema/evidence are mandatory; foreign forward references may wait for Merge. |
+| Merge | Deterministic assembly of sealed inputs, then one Parser resolves scoped conflicts and cross-range obligations. Names, references, roles, schema, evidence and report associations must pass before freezing. |
+| Review | Every source batch and model record has an independent owner. Reviewers compare requirements and model contexts, finish cross-range checks and decide assigned resolutions. |
+| Fix | Findings with overlapping known objects are grouped; independent groups produce private patches from the same frozen base. Every finding needs a resolution at the final local revision. |
+| Published | Complete or explicitly partial protocol and audit artifacts; no further agent work. |
 
-## MCP tools
+Worker `advance_phase` returns `stop_turn`; only the coordinator advances globally after all submissions and gates pass. The default five-review limit counts the initial Review; transport retries do not consume rounds. At the limit, remaining semantic findings produce explicit unresolved entries. Missing reports, unreviewed resolutions or engineering/schema/reference failures cannot be waived.
 
-The authenticated connection determines the role. A successful assignment claim is required before task tools. Phase and role checks execute server-side for every call, independently of the client's cached tool catalog.
+## Scoped names and merge
 
-| Tool | Purpose |
-|---|---|
-| `workflow_status()` | Phase, round, revision, assignment, currently allowed tools and gate blockers. |
-| `claim_assignment(dispatch_id)` | Idempotently claim the exact current assignment. |
-| `check_gate()` | Report blockers without advancing. |
-| `advance_phase()` | Revalidate and submit this phase; server chooses the destination. |
-| `prepare_sources()` | Parse selected inputs and freeze chapter batches. |
-| `list_batches(filter, cursor)` | Paginated source batches and pending work. |
-| `read_batch(batch_id)` | Complete source text plus assignment-bound receipt. |
-| `read_batches(batch_ids, max_tokens, format)` | Complete source windows in source order, including nonadjacent IDs; lossless compact or records format. Only delivered batches receive receipts. |
-| `search_source(query, filters, cursor)` | Supplementary source retrieval; does not satisfy batch-read requirements. |
-| `query_model(kind, filters, record_ids, batch_ids, detail, cursor)` | Definitions, internal IDs and source evidence. Reviewer must read every unfiltered detail page; source filters do not satisfy that gate. |
-| `apply_changes(expected_revision, operation_id, changes)` | Atomic parser-only add/update/patch/delete operations; legacy arrays or compact tables. Internal record IDs are server-assigned; steps are referenced by immutable names. |
-| `complete_batch(batch_id, receipt_id, report)` or `(batches)` | Report parsing work or explicitly justify finding no information; atomic report arrays can arrive out of order. |
-| `list_findings(filters, cursor)` | Findings, resolutions and decisions. |
-| `get_changes(from_revision, to_revision, cursor)` | Complete revision diff and delivery tracking. |
-| `submit_findings(reviewed_revision, findings)` | Reviewer-only source-backed findings. |
-| `complete_review_batch(batch_id, receipt_id, report)` or `(batches)` | Source/model review reports, including explicit no-findings results; same atomic array support. |
-| `submit_resolutions(expected_revision, resolutions)` | Parser's applied/not_applicable/unresolved explanations. |
-| `review_resolutions(reviewed_revision, decisions)` | Reviewer acceptance/rejection with reasons. |
+Candidates retain `scope + kind + local name`, with an assignment scope such as `parse-0/parser-2`. Scope is absent from final protocol names. References prefer their own draft's definitions. Missing or ambiguous foreign references remain conflicts. Only exactly equal definitions with identical unique bindings deduplicate automatically, retaining evidence and origins; deduplication repeats after upstream references unify.
 
-Evidence entries can be short citations copied from source segments (for example `"e42"`)
-or legacy `{batch_id, block_id}` objects. Citations identify exact pairs even when different
-documents reuse block names. The server expands citations before validation and persists
-canonical objects only; a citation does not replace a current-assignment reading receipt.
-Changes contain `op`, `kind` for additions, an existing-record selector for edits, `value` and
-`evidence` for additions/updates, and a `reason` for deletion. Ambiguities can be stored as
-source-backed `kind=unresolved` records. The final protocol schema remains unchanged.
+The conflict view includes same-name differences, missing/ambiguous references, structural violations, overlapping Fix writes and reported obligations. It does not claim to detect all synonyms or natural-language contradictions. The merge Parser consults relevant original sources; independent Review still checks the result.
 
-Named bulk mutations use `changes={groups:[{op,kind,defaults,rows}]}`, where each row is
-`{value:{...},evidence:["e42"]}`. Optional `defaults` contains shared value fields only;
-each row's value overrides those fields. Expanded values pass the same complete validation.
-Keep send and network-action variants in separate groups. Named rows avoid positional errors.
+Merge-only `rename` and `merge` atomically update definitions, typed references, dependency endpoints, qualified field relations and origin mappings. Potential prose references become explicit checks, never blind replacements. `resolve` records an evidence-backed decision for a registered check/obligation; it cannot waive structural conflicts. Original extraction reports stay sealed. Their association view follows final names or explicit deletion provenance. Fix patches reuse the same mechanism; original resolutions retain current-name/deletion associations for acceptance.
 
-Legacy compact mutations use `changes={evidence:[{batch_id,block_id}],groups:[{op,kind,columns,rows}]}`.
-Each row maps column names to value fields. `@evidence` contains indexes into the evidence
-dictionary, `@record_id` selects an existing record, and `@reason` explains deletion. Cells
-retain their native JSON types, including nested arrays, objects and null. Expanded changes
-and compact changes share schema/evidence validation, atomicity and idempotence; the tool
-description includes exact nested value shapes for clients that hide JSON Schema references.
-Mutation results return names/record IDs and incremental draft-reference errors. Draft forward
-references are allowed, but all final reference gates remain mandatory.
-`@evidence` also accepts source citation strings directly; the evidence dictionary can then
-be omitted. Ownership and receipt failures across mutation rows are reported together before
-any record is changed. Source bodies retain all original text and metadata.
+## The 13 agent tools
 
-Edits select exactly one record with `kind` and `target:{name:"exact name"}`, or a legacy
-`record_id`. Dependencies can select by `prior_step`, `dependent_step` and, when needed,
-`condition`. Targets match existing value fields exactly against the transaction's starting
-snapshot; missing/ambiguous targets fail atomically. Cached bindings preserve operation retries
-after rename/deletion, including retries of older ID-based operations. There is no fuzzy matching.
+Credentials bind worker, role, assignment and attempt. Before claim, the phase catalog offers only `claim_assignment`. Its response includes revision, batches, pending reports/checks/findings and `allowed_tools`.
 
-`update` replaces the entire value. `patch` takes a selector, a nonempty partial `value`,
-and current-source `evidence`. It shallow-merges fields with the existing record, replaces
-whole arrays, and retains original evidence plus new evidence without duplicates. The merged
-record passes the same complete schema, immutable-step-name, size and final-reference checks.
-New evidence must have a current-dispatch receipt. Both formats support patch; compact patch
-groups include `@record_id`, `@evidence`, and only the value columns being changed.
+| Tool | Contract |
+| --- | --- |
+| `claim_assignment(name, attempt)` | Claim exactly the dispatched assignment; safe repeated claim. |
+| `advance_phase()` | Validate and seal this assignment; end the turn on success. |
+| `list_batches(assigned_only, cursor, revision, max_tokens)` | Source locations, ownership and progress; no receipt. |
+| `read_batches(batch_ids, max_tokens)` | Complete batches with attempt-bound receipts; follow `remaining`. A one-element list reads one batch. |
+| `search_source(query, batch_ids, cursor, revision, max_tokens)` | Supplementary context; snippets do not replace complete reading. |
+| `query_model(view, kind, filters, batch_ids, scope, check_name, cursor, revision, view_revision, max_tokens)` | Current draft/frozen model, sealed drafts, name index, merge conflicts or report associations. |
+| `get_changes(from_revision, cursor, revision, max_tokens)` | Draft changes and merge decisions, or frozen before/after records. |
+| `apply_changes(expected_revision, operation_id, changes)` | Atomic named mutation array with exact selectors; only Parser drafts are writable. |
+| `complete_batch(revision, reports)` | Ordered extraction/review reports or assigned cross-range conclusions. |
+| `list_findings(cursor, revision, max_tokens)` | Findings, resolutions, independent decisions and current resolution associations. |
+| `submit_findings(revision, findings)` | Source-backed discrepancies and acceptance criteria; returns qualified finding names. |
+| `submit_resolutions(revision, resolutions)` | Fix proposals: `fixed`, `not_applicable` or source-supported `unresolved`; never self-acceptance. |
+| `review_resolutions(revision, reviews)` | Independent acceptance/rejection against current source/model context. |
 
-Batch report arrays contain `{batch_id,receipt_id,report}` entries. Reports are persisted in
-source order; every required batch still needs its own complete source delivery and report.
-Each report needs a source-specific summary; `record_ids` and `finding_ids` are optional and
-validated when supplied.
+Optional paging arguments can be omitted. Pages default to 8,000 tokens and at most 50 items, with requested budgets up to 30,000. Continue `next_cursor` at the same revision. Sealed pages additionally return `view_revision`, pinning the sealed-draft list while other workers finish. Index pages do not prove full model delivery. The Merge-only reports view keeps Parser reasoning separate from reviewer evidence.
 
-Receipts remain usable across model revisions within the same dispatch. Filtered model queries
-and supplementary source reads never replace required full-review coverage. Phase-transition
-results expose `stop_turn`; successful advancement always ends the current agent turn.
+Catalog changes generate MCP notifications. Cached clients may use `--catalog role`; all calls still check phase permissions. Coordinator operations `prepare_sources`, `workflow_status`, `record_send`, `replace_attempt` and global advancement have a separate credential and no agent schemas. Removed `read_batch`, `check_gate` and `complete_review_batch` entry points cannot execute.
 
-Parser instructions read all assigned sources in bounded complete windows before constructing
-the canonical model. Each window is printed separately and cached with its receipt; callers
-follow `read_batches.remaining`, since unreported batches are not necessarily unread batches.
-The complete canonical inventory of parties, actual message types and channels is committed
-before declaring reusable steps and constructing dependencies coherently against all cached
-sources. Related groups may use separate RPCs. Every source needs its actual extraction report;
-unfinished work remains pending, and all original independent-review gates apply. An unconditional ordering edge uses an empty condition; additional state,
-branch and comparison guards remain explicit. Source-required new reconnect/resumption
-lifecycles use distinct channel names and corresponding step references. This changes work order, not the complete-source, schema/reference or independent
-review requirements. Supervisor forwards the actual round: the initial review reads the current snapshot without
-historical diffs, while later rounds still read every model/diff page and resolution. Tool
-discovery prints one exact namespace/name description, and page bodies use separate exec cells.
-Repair reads the union of cited sources and batches independent supported patches/resolutions.
-Named mutation rows expose their metadata fields in the tool schema;
-misplaced fields produce concise per-row errors instead of dumping the whole proposal.
+## Named operations and reports
 
-## HC handoff
+Only one mutation encoding is accepted:
 
-The supervisor starts a private core and parser/reviewer terminals, persists their real IDs and forwards assignments through `hc send`. It uses `hc wait` rather than polling screens. Only the MCP claim acknowledges work acceptance; terminal `done` alone cannot advance a gate.
+```json
+{
+  "expected_revision": 0,
+  "operation_id": "define-client",
+  "changes": [{
+    "op": "add", "kind": "parties",
+    "value": {"name": "Client", "description": "Request sender"},
+    "evidence": ["e1"]
+  }]
+}
+```
 
-The first message establishes the role and dispatch ID. Agents finish each turn after advancing their phase. A review requiring repair causes a message to the original parser terminal; submitting repair causes a message to the original reviewer. Both processes remain available throughout the normal loop.
+Use actual returned citations, or exact `{batch_id, block_id}` pairs with complete delivery in this attempt. `update` replaces a whole value; `patch` supplies nonempty changed fields, replaces arrays in full and preserves evidence. `delete` needs an exact target and reason. Targets use value fields, usually `{name: ...}`; dependencies use exact endpoints/condition/field relationships. Missing/ambiguous selectors fail.
 
-A send intent is saved before delivery. An uncertain send, an exited/blocked agent, or an idle agent with an uncompleted claimed assignment pauses scheduling for inspection. On restart, the supervisor consults persisted IDs, claims and phase before sending anything. It never replaces another HC session or infers task success from screen text.
+Merge edits also specify scope. `rename` uses `source:{scope,kind,target}`, `name` and evidence; `merge` uses `sources:[...]`, final `value` and evidence. `resolve` uses a registered check's `name`, `decision` and evidence. Ordinary Parse and Fix cannot use these operations.
 
-## Migration
+Independently checkable row errors are collected and the whole mutation rolls back. An operation ID binds identical arguments to one assignment attempt. Compact columns, evidence indexes, grouped defaults and old record IDs are not accepted; historical decoders remain audit-only.
 
-The provider-driven compile pipeline, per-block extraction agents, linking/completion passes and their SDK dependencies have been removed. Use `rsc run`; `rsc compile` emits migration guidance. Parsing, indexing, protocol schema validation, statistics, and hand-annotated fixtures remain useful independently.
+Source reports are `reports:[{batch_id,receipt,report}]`. Parse reports contain `summary`, `objects:[{kind,target}]` and optional `obligations:[{description,objects,evidence}]`. They describe completed extraction, not future work. Cross-range Review uses `{check_name,report}`. Review reports include actual `requirements:[{requirement,objects,result,findings}]` and optional absence `queries:[{kind,filters}]`. Every owned model record must be compared. A receipt alone creates no pass; unfinished extraction is not source ambiguity.
 
-## Batch navigation and full delivery
+## Independent review and reuse
 
-`list_batches(detail=true)` returns only the current dispatch's already-issued receipts.
-It never issues receipts, counts as reading, or completes reports. After completing reports
-with a pending filter, restart at cursor zero because the filtered collection has changed.
+Reviewers can read any source/model region and use the global name index to detect omissions. Assigned contexts contain source-associated objects and reference closure. Cross-range checks own every model record exactly once. Findings preserve requirement, discrepancy, objects, evidence and acceptance criterion. Missing-object claims need complete delivery of the searched scope, including empty results.
 
-`read_batches(include_evidence=false)` retains every original named source field and short
-citation, omitting only the redundant derived evidence object. The default retains that object;
-receipts and canonical block ownership are unchanged. The server selects complete batches
-within the requested budget and returns the remaining IDs for subsequent reads.
+Conclusions retain source/model dependencies and negative query scopes. Changes invalidate affected records and reverse references, related source reports and relevant absence queries. Uncertain prose changes expand review conservatively. Carried conclusions preserve their predecessor and original delivery proof, without fresh fabricated receipts; new ownership/context must still fit that proof. Resolutions always require independent acceptance, even if all other reports carry forward.
 
-Instructions request named model records and cache every complete page before filtering.
-Source filters and indexes help navigate records but do not satisfy the full-model review gate.
-First review reads all original sources and the frozen model; later reviews also read the full
-diff, affected sources and resolutions. Reports describe actual source/model comparisons.
+## Persistence and recovery
 
-## Connection-role consistency
+Storage version 2 separates assignments, attempts, local records/history, frozen snapshots, receipts/reports, conclusions and findings. Short transactions exclude reasoning, HC calls and page serialization. Revision and attempt checks fence writes; another worker does not invalidate a local revision.
 
-For connection-oriented channels with known roles, `connect.party_name` must match
-`initiator_party_name`, and `listen.party_name` must match `acceptor_party_name`. Unknown roles
-remain unknown, and either endpoint may close. Violations appear in draft-reference feedback
-and block phase advancement and publication. Reversed source-supported roles need distinct
-channels and their own steps.
+Workers have private launch settings, rotating credentials and separate MCP namespaces. The supervisor uses `hc` with native Codex/Pi adapters. Initialization/ready checks are serial; dispatch is parallel and waits rotate. HC terminal and Codex thread names match. Phase transitions release processes and preserve named sessions for restoration.
 
-## Deterministic coordinator preprocessing
+Send intent precedes `hc send`; MCP claim acknowledges receipt. Restart consults durable state rather than screen text. An uncertain response is not blindly resent. Confirmed exited/missing terminals permit at most two replacements per assignment, revoking the old attempt first and retaining draft/report progress. New attempts need new source receipts. Observation timeout, blocked status or an unfinished idle turn requires diagnosis and never permits a concurrent replacement.
 
-The supervisor performs the existing claim/prepare/advance tools for a fresh preprocessing
-assignment, after launching its two agents. It journals ownership before RPC. A lost reply can
-resume by inspecting persisted source/phase state; already claimed or uncertain agent
-assignments keep their original ownership. Source, snapshot and batching gates still apply.
-This creates no reading receipts, extracted records or parsing reports. Coordinator-origin
-events are labelled separately from agent calls.
+Resume the same `rsc run --task-dir ...`. Sources, worker counts, profiles and review limits stay fixed. `--retry-worker parser-1` refuses a live process and cannot bypass the retry limit. Task-local locks reject competing services/supervisors. Inspect the private core using `hc_env` in `supervisor.json`; cleanup must target only that campaign.
 
-## Removed experiment options
+## Migration and validation
 
-Source preplanning, overlapping reviewer preparation, source-fact sharing and construction-window
-hints have been removed. The three experiment config keys (`require_source_plans`,
-`prefetch_review_sources`, `share_source_requirements`) and completion arguments `stage` and
-`planned_batch_ids` are no longer accepted. Start a fresh task with the simplified config;
-use each experiment's frozen package to reproduce or resume its old workflow. Historical
-artifacts and their offline delivery-audit support remain available. The MCP tool count is 18.
+New tasks use the current config. Historical singleton databases are not upgraded in place: reproduce/resume using their archived source and original config. `rsc audit` retains historical read-only auditing. New contracts do not execute old tool names/encodings. Current phase vocabulary is Fix/`fix`; historical artifacts retain their original terminology.
+
+Audit reconstructs mutations and frozen merges, ownership, evidence, review conclusions and independent decisions, then compares exported artifacts with authoritative state. This proves delivery/workflow invariants, not semantic completeness. Phase metrics distinguish agent/supervisor/health calls and record payload tokens, repeated deliveries/queries, conflicts, fresh/carried conclusions and claimed-worker time. These do not measure API cost or inference utilization.
+
+Ordinary pytest uses fixtures and simulated HC. Opt-in `scripts/benchmark_parallel_rsc.py --out runs/new-trials` freezes code and FTP RFC inputs, then runs three fresh `gpt-6-luna/high` trials with a 40-minute limit each. The 20-minute target additionally requires complete publication and the FTP semantic checklist. Timeouts, partial models and failed semantic inspection remain failures; there is no unlimited tuning loop.

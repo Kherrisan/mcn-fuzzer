@@ -1,6 +1,6 @@
 # RSC RFC protocol extraction workflow
 
-RSC reads a caller-selected RFC set and publishes a protocol interaction model. A persistent MCP service owns task state and gates; a Python supervisor uses Herdr Core to keep separate parser and reviewer Codex or Pi sessions alive and forward assignments between them.
+RSC reads a caller-selected RFC set and publishes a protocol interaction model. One MCP service owns the SQLite state and gates; a Python supervisor uses Herdr Core (`hc`) to dispatch independent Codex or Pi workers. Parse and Review each default to three workers and run in separate phases.
 
 ## Install and run
 
@@ -15,12 +15,12 @@ python3 -m venv .venv
   --rfc tests/fixtures/profuzzbench-rfc/FTP/rfc959.html \
   --rfc tests/fixtures/profuzzbench-rfc/FTP/rfc3659.html \
   --max-review-rounds 5 \
-  --config config.example.toml
+  --config config.example.toml --profile codex-luna-high
 ```
 
-`tiktoken` downloads its `cl100k_base` data once. For an offline installation, populate its cache beforehand. Default batch target/max sizes are 8,000/12,000 tokens including batch metadata. Inputs are grouped by chapter; oversized blocks are split into exact Unicode text ranges. Every nonempty source range must occur once.
+`tiktoken` downloads its `cl100k_base` data once. For an offline installation, populate its cache beforehand. Default batch target/max sizes are 8,000/12,000 tokens including batch metadata. Inputs are grouped by chapter; oversized blocks are split into exact Unicode text ranges. Every nonempty source range occurs once. Each worker owns a contiguous section of the ordered batch list, balanced by raw source tokens with chapter locality preferred within a 10% tolerance. Supplementary reads do not transfer ownership.
 
-Parser and reviewer default to the named `codex-luna-max` profile (`gpt-6-luna`, `max`). User configuration is TOML, parsed with `tomllib`. JSON configuration and old inline role settings are rejected. Protocol/MCP data and internal task metadata remain JSON.
+Without a profile override, Parser and Reviewer use `codex-luna-max` (`gpt-6-luna`, `max`). The command above explicitly selects `codex-luna-high`, the FTP benchmark profile. Set `workflow.parse_workers` and `workflow.review_workers` to positive integers; `1` uses the same implementation for serial diagnosis. Configuration is TOML; old JSON and inline role settings are rejected.
 
 Profiles live under `[agents.profiles.NAME]`, with `provider`, `executable`, `model`, `effort`, `args`, and `envs`. Optional `agents.parser_profile` and `agents.reviewer_profile` override `agents.default_profile`. For each role: role CLI → common `--profile` → role config → default profile.
 
@@ -35,29 +35,31 @@ Profiles live under `[agents.profiles.NAME]`, with `provider`, `executable`, `mo
 
 Pi requires Node 22.19+ and Pi 1.5.0+ with native MCP and OSC 7501. The acceptance baseline is `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.5.0`. Use `--prefix "$HOME/.local"` if the system prefix is not writable. The packaged extension registers a task/role namespace, restricts tools to RSC, verifies model/thinking selection, and restores complete results that native Pi otherwise truncates at 20 KiB. Restoration failure aborts the turn and leaves a fatal diagnostic that stops scheduling.
 
-Tasks freeze role selections and definitions in `agent-profiles.json` (0600). A plain resume retains its saved selections and validates definitions. A changed profile requires a new task, including on `--retry-role`. Tasks without a profile snapshot cannot restart agents; their existing artifacts remain readable by `stats`, `validate` and `audit`.
+Tasks freeze role selections and definitions in `agent-profiles.json` (0600). A plain resume retains its saved selections and validates definitions. A changed profile requires a new task, including on `--retry-worker`. Tasks without a profile snapshot cannot restart agents; their artifacts remain available for inspection.
 
 The old `rsc compile` pipeline and provider API settings have been removed. Migrate to the `workflow` and `agents` config in the example. `ingest`, `index`, `validate`, `stats` and schema inspection remain available.
 
 ## Workflow and review limits
 
-The server enforces `preprocess → parse → review → repair → review … → published` and binds each assignment to a role. Only the parser may edit the model. Only the reviewer may accept finding resolutions. Sources, batches and max review rounds are fixed for the task.
+The server enforces `preprocess → parse → merge → review → fix → merge → review … → published`. Preprocessing is deterministic coordinator work. Each Parser edits its own draft and reports its assigned batches in order. One existing Parser resolves merge conflicts; the coordinator then freezes the global revision. Reviewers independently compare source requirements and associated model closures. They cannot edit the model. Sources, batches, worker counts and review limits are fixed for the task.
 
-`--max-review-rounds N` sets the maximum number of reviews, counting the first review. It overrides `workflow.max_review_rounds` in the config; the default is **5**, allowing up to four repairs and re-reviews. The limit is fixed when a task is created: a plain resume keeps its saved limit, and an explicitly different CLI value requires a new task directory. Resending a message or retrying a tool does not consume another round. The first review reads the entire source set and complete model. Subsequent reviews inspect the complete current model, revision diff, affected source batches and every submitted resolution.
+`--max-review-rounds N` counts the first Review and overrides the config when creating a task. The default is **5**, allowing up to four Fix rounds. A resume retains the saved limit; an explicitly different limit requires a new directory. A transport retry does not consume a review round. Initial Review assigns every source batch and model record an owner. Later reviews reuse verified unaffected conclusions and recheck invalidated source/model contexts and every submitted resolution. Positive references, source scopes and negative query scopes govern invalidation; uncertain prose changes expand review conservatively.
 
-Every record needs valid source evidence; all parsing batches and assigned review batches need reading receipts and reports. Schema, source hashes, unique step IDs, name references, connection roles and field carriers are hard gates. Reading receipts prove delivery, not semantic correctness.
+Every record needs source evidence; every required batch needs complete delivery and a report. Schemas, source integrity, unique names, structured references, connection roles and field carriers are hard gates. Merge keeps scoped local names and updates references and source-report associations atomically. Reading receipts prove delivery, not semantic correctness. Only an independent Reviewer can accept a Fix resolution.
 
 If all findings are accepted and no genuine unresolved questions remain, publication sets `meta.complete=true`. Otherwise a structurally valid partial model has `meta.complete=false` and explicit `unresolved` entries. At the round limit, the last review must have actually completed and every hard gate must pass; the report marks `review_limit_reached`. Incomplete review, missing sources, invalid references or schema errors cannot produce a published model.
 
 ## Sessions, recovery and inspection
 
-Each task has its own HC session with parser/reviewer terminal IDs recorded in `supervisor.json`. Normal handoffs use `hc send` to the original process, not `codex exec resume`. Agents finish their turn after each phase transition; the supervisor dispatches the next assignment only when the target is available. MCP assignment claims acknowledge delivery. An uncertain send is never blindly repeated.
+Each task has a private HC session. Workers such as `parser-1` and `reviewer-2` have separate credentials, namespaces and `agents/<worker>/` directories. HC terminal and Codex thread names match. Startup and ready checks run serially to avoid shared initialization races, then all ready assignments are dispatched before waiting on one worker. Codex must resolve to a native executable; update checks are disabled. Launchers only execute the prepared command.
 
-Run the same `rsc run --task-dir ...` to reconnect to an existing task and terminals. A blocked, exited or prematurely idle agent stops scheduling with a diagnostic; task data is preserved for inspection. Supervisor restart does not reset the phase or review round. The task's HC environment is isolated under its state/config directories and `/tmp/rsc-hc-<task-id>`. Use those same `HC_SESSION`, `HC_SOCKET`, `XDG_RUNTIME_DIR`, `XDG_STATE_HOME` and `XDG_CONFIG_HOME` values to attach with `hc`. Do not stop another task's or the user's core.
+Agents end their turn after submitting an assignment. The supervisor releases processes between phases and restores the saved named sessions when needed for Merge, Fix or another Review. Send intent is persisted before `hc send`; the MCP claim acknowledges receipt. A lost response never authorizes a duplicate dispatch.
 
-After inspecting a failed agent, `rsc run --task-dir work/ftp --retry-role parser` explicitly replaces the active parser (or use `reviewer` when that role is active). It keeps the same assignment and round and retains the other agent. Repeated normal starts never silently replace an agent or resend an uncertain message. Task-local supervisor/service locks reject competing instances. A service restart removes a stale socket only when ownership matches and connecting is refused; an observation timeout is not evidence of process death. Resuming an already published task finishes any pending cleanup without starting new agents.
+Run the same `rsc run --task-dir ...` to reconnect. Supervisor restart retains assignments, drafts, receipts and rounds. Confirmed process exits permit at most two replacement attempts per assignment; the old attempt is revoked first. A blocked, errored or prematurely idle agent stops scheduling for diagnosis. Observation timeouts preserve the process and never prove death. The private HC environment is saved in `supervisor.json` under `hc_env`; use those exact variables to inspect it. Never stop another task's or the user's core.
 
-The MCP bridge normally exposes tools for the current phase and notifies clients of catalog changes. The supervisor selects `--catalog role` for Codex, which currently caches tool catalogs: this registers all schemas for the authenticated role up front. `workflow_status.allowed_tools` and per-call server checks still enforce the phase; registering a schema never authorizes its execution.
+After diagnosis, `rsc run --task-dir work/ftp --retry-worker parser-1` permits retry only after the recorded terminal is confirmed dead; it refuses a live worker and does not bypass the retry limit. Replacement retains the local draft and completed batch reports; new reads need the replacement attempt's receipts. Task-local service/supervisor locks reject competing instances. A stale socket is removed only after ownership and connection-refusal checks. Resuming a published task completes pending cleanup without starting agents.
+
+The MCP bridge normally exposes phase-specific tools and sends catalog-change notifications. For Codex, `--catalog role` registers the role's tool union for cached clients. Assignment responses include `allowed_tools`; every call still checks phase, worker and attempt. Coordinator-only status and gate operations are absent from agent catalogs.
 
 ## Standalone service and MCP client
 
@@ -70,24 +72,25 @@ workflow = Workflow.create('work/example', ['rfc.txt'], 'Example protocol', max_
 workflow.db.close()
 ```
 
-Then run the service and attach a bridge with a role's credential file:
+Then run the service. A coordinator prepares sources and advances to Parse before worker credentials exist. Attach a bridge with an assigned worker's credential file:
 
 ```sh
 rsc serve --task-dir work/example
 rsc mcp --socket "$PWD/work/example/workflow.sock" \
-  --token-file "$PWD/work/example/parser.token"
+  --token-file "$PWD/work/example/parser-1.token"
 ```
 
-Role tokens are task-local files with mode 0600. Treat task directories as trusted local data: role enforcement applies to MCP calls, not arbitrary filesystem access by another process running as the same OS user. Agents are instructed to use MCP for source reads and all edits.
+Worker and coordinator tokens are task-local files with mode 0600. Worker tokens rotate on reassignment. Treat task directories as trusted local data: MCP permissions do not isolate processes sharing an OS user. Agents use MCP for source reads and all edits.
 
-The 17 tools, phase gates and assignment flow are documented in [pipeline.md](docs/pipeline.md).
+The **13 agent tools**, named mutation format, phase gates and recovery protocol are documented in [pipeline.md](docs/pipeline.md). Older singleton tasks require their archived source package for execution; `rsc audit` retains historical read-only support. New tasks use storage version 2; there is no in-place migration or old-tool execution compatibility.
 
 ## Artifacts and checks
 
 The authoritative state is `workflow.sqlite`: current task/model, change history, findings, review decisions, assignments, and timed tool events. Source snapshots are frozen under `snapshots/`; the service validates them before transitions. Final outputs include:
 
-- `protocol.json`: the existing version 7 protocol model; no internal record IDs or audit metadata added.
-- `sources.json`, `batches.json`, `coverage.json`: provenance and parsing/review records.
+- `protocol.json`: the existing version 8 protocol model; no worker scopes or internal record keys added.
+- `sources.json`, `batches.json`, `coverage.json`: source metadata, fixed source batches and review conclusions, including explicit carried-conclusion provenance.
+- `assignments.json`, `source-reports.json`: worker ownership and immutable extraction reports with final-name/deletion associations.
 - `review.json`, `changes.json`, `report.json`: findings and resolution history, model revisions, completed rounds and publication outcome.
 - `events.jsonl`, `phases.json`: tool calls (including rejected calls), call durations, phase durations and per-tool counts. Older task timings reconstructed from audit events are labelled `first_observed_tool`; new tasks use assignment creation time. These are MCP call counts, not model API request/token/cost measurements.
 - `supervisor.json`, `supervisor-events.jsonl`, service logs and task-specific HC state: process and dispatch diagnostics.
@@ -99,14 +102,20 @@ rsc audit --task-dir work/ftp
 pytest
 ```
 
-`audit` independently reconstructs frozen revisions and verifies publication, source receipts, complete model/diff delivery, review coverage, reviewer decisions and HC handoffs. It reports delivery and workflow evidence; semantic completeness still depends on extraction and independent review. Server tool-call totals include supervisor status checks and do not measure LLM requests or cost. Tool result pages target 8,000 tokens, contain at most 50 items and reject single results above 24,000 tokens; model records are capped at 8,000 tokens so large revisions can be reviewed across pages.
+`audit` replays named mutations and merges from sealed inputs, verifies source receipts, owned model-context delivery, review coverage, independent decisions and exported artifacts. Carried conclusions retain their original proof rather than generating fresh receipts. This verifies workflow evidence, not semantic completeness. Tool calls are grouped by agent, supervisor and health origin. MCP payload tokens are not model API token usage. Pages default to 8,000 tokens and at most 50 items; requested budgets can reach 30,000 tokens. Single records have an 8,000-token limit.
 
-Live HC/Codex acceptance results and their limitations are recorded in [workflow-acceptance.md](docs/workflow-acceptance.md). Ordinary pytest runs do not start paid model sessions. The opt-in `scripts/verify_hc_recovery.py` exercises real agent replacement with a small RFC and a separate task directory.
+Historical HC/Codex acceptance results and their limitations are recorded in [workflow-acceptance.md](docs/workflow-acceptance.md). Ordinary pytest runs do not start paid model sessions. From this directory, the opt-in `PYTHONPATH=. .venv/bin/python scripts/verify_hc_recovery.py --source example.txt --out runs/new-recovery --config config.example.toml` interrupts one claimed Parser, checks its fenced replacement and audits the result. It uses a fresh directory and defaults to a 20-minute diagnostic limit.
 
 ## Adapter acceptance
 
-`agents/<role>/launch.json` and `mcp-launch.json` are private execution settings (0600). They contain explicit profile overrides, never copies of ambient API credentials. Pi logs delivery byte counts/hashes and model checks in `pi-events.jsonl`.
+`agents/<worker>/launch.json` and `mcp-launch.json` are private execution settings (0600). They contain explicit profile overrides, never copies of ambient API credentials. Pi logs delivery byte counts/hashes and model checks in `pi-events.jsonl`.
 
 Ordinary tests never start paid agents. The opt-in `PYTHONPATH=. .venv/bin/python scripts/verify_agent_providers.py --out runs/new-smoke --config config.example.toml` probes DeepSeek tool continuity, then runs Pi/Pi, Codex/Codex and Codex/Pi on a small RFC. It audits artifacts, checks credential persistence, and cleans only its private HC sessions. It reads the key from `DEEPSEEK_API_KEY` or a non-echoing prompt, never a key argument, and does not start FTP extraction.
 
 Provider installation and live matrix results: [agent-profiles-acceptance.md](docs/agent-profiles-acceptance.md).
+
+## Parallel FTP measurement
+
+From this directory, run `.venv/bin/python scripts/benchmark_parallel_rsc.py --out runs/new-parallel-ftp` to freeze the code and RFC 959/3659 inputs, then run three fresh sequential trials with three Parse/Review workers and `gpt-6-luna/high`. This opt-in command starts paid agents; pytest does not. Each trial has a 40-minute diagnostic limit and records phase timings, tool outcomes, merge conflicts, review reuse and available Codex token counts. The 20-minute target requires complete publication and separate [semantic inspection](benchmarks/ftp-runtime-stability/semantic-checklist.md). Timeouts, partial publication and failed semantic inspection are failures; the runner never treats `semantic_audit=pending` as success.
+
+Current evidence and outstanding checks: [parallel acceptance record](benchmarks/parallel-parse-review/README.md).

@@ -43,11 +43,26 @@ def source_context(records, batches):
     )
 
 
-def assign_checks(records, assignments, batches):
+def assign_checks(records, assignments, batches, links=()):
     """Group related model checks per primary reviewer, retaining explicit ownership."""
     positions = {b["batch_id"]: i for i, b in enumerate(batches)}
     owners = {b: a for a in assignments for b in a["batches"]}
     groups = {a["worker"]: [] for a in assignments}
+    extra = {a["worker"]: {"records": set(), "batches": set()} for a in assignments}
+    for a in assignments:
+        a["contexts"] = {}
+    for link in links:
+        keys = closure(records, link["records"])
+        sources = set(link["batches"]) | {
+            e["batch_id"] for key in keys for e in records[key]["evidence"]
+        }
+        owner = owners[min(sources, key=positions.get)]["worker"]
+        extra[owner]["records"].update(keys)
+        extra[owner]["batches"].update(sources)
+        for batch in sources:
+            context = owners[batch]["contexts"].setdefault(batch, {"records": [], "batches": []})
+            context["records"] = sorted(set(context["records"]) | keys)
+            context["batches"] = sorted(set(context["batches"]) | sources, key=positions.get)
     for key, record in sorted(records.items()):
         evidence_batches = {e["batch_id"] for e in record["evidence"]}
         available = evidence_batches & set(owners)
@@ -59,18 +74,16 @@ def assign_checks(records, assignments, batches):
     for a in assignments:
         keys = groups[a["worker"]]
         a["checks"] = []
-        if keys:
+        context = closure(records, keys) | extra[a["worker"]]["records"]
+        if keys or extra[a["worker"]]["batches"]:
             a["checks"] = [
                 {
                     "name": f"cross-range-{a['worker']}",
                     "owned": keys,
-                    "records": sorted(closure(records, keys)),
+                    "records": sorted(context),
                     "batches": sorted(
-                        {
-                            e["batch_id"]
-                            for k in closure(records, keys)
-                            for e in records[k]["evidence"]
-                        },
+                        {e["batch_id"] for k in context for e in records[k]["evidence"]}
+                        | extra[a["worker"]]["batches"],
                         key=positions.get,
                     ),
                 }
@@ -91,6 +104,14 @@ def invalidated(before, after, conclusions):
     for key, targets in adjacency(after).items():
         graph.setdefault(key, set()).update(targets)
     affected = set(changed)
+    # A prerequisite/field relation changes the meaning of its endpoint steps,
+    # even though neither step has a typed back-reference to the relation.
+    affected.update(
+        target
+        for key in changed
+        for target in graph.get(key, ())
+        if any(r and r["kind"] == "step_dependencies" for r in (before.get(key), after.get(key)))
+    )
     source_changes = {
         e["batch_id"]
         for key in changed
@@ -106,8 +127,26 @@ def invalidated(before, after, conclusions):
     prose_fields = {"condition", "description", "endpoint_sources", "object_names"}
     uncertain = any(
         any(
-            (before.get(k, {}).get("value", {}).get(f) != after.get(k, {}).get("value", {}).get(f))
+            (
+                (before.get(k, {}).get("value", {}).get(f) or None)
+                != (after.get(k, {}).get("value", {}).get(f) or None)
+            )
             for f in prose_fields
+        )
+        for k in changed
+    )
+    # Names/field inventories can also occur in remote free-text guards.
+    uncertain |= any(
+        before.get(k)
+        and (
+            (after.get(k) is None and "name" in before[k]["value"])
+            or (
+                after.get(k) is not None
+                and any(
+                    before[k]["value"].get(field) != after[k]["value"].get(field)
+                    for field in ("name", "associated_fields")
+                )
+            )
         )
         for k in changed
     )
@@ -152,7 +191,11 @@ def fix_groups(findings, workers):
 
 def required_context(assignment, item, records):
     if item in assignment["batches"]:
-        return source_context(records, [item]), [item]
+        related = assignment.get("contexts", {}).get(item, {})
+        return (
+            source_context(records, [item]) | set(related.get("records", [])),
+            list(dict.fromkeys([item, *related.get("batches", [])])),
+        )
     check = next(c for c in assignment["checks"] if c["name"] == item)
     return set(check["records"]), check["batches"]
 
@@ -162,6 +205,29 @@ def compared_objects(report, records):
         r for requirement in report.get("requirements", []) for r in requirement["objects"]
     ]
     return {select(records, r["kind"], r["target"]) for r in references}
+
+
+def absence_queries(objects, records, queries):
+    """Select complete searched scopes supporting each missing or ambiguous object."""
+    required = []
+    for obj in objects:
+        try:
+            select(records, obj["kind"], obj["target"])
+        except ValueError:
+            covering = [
+                q
+                for q in queries
+                if q["kind"] == obj["kind"]
+                and all(
+                    k in obj["target"] and obj["target"][k] == v for k, v in q["filters"].items()
+                )
+            ]
+            if not covering:
+                raise ValueError(
+                    "an absence or ambiguity finding requires its complete model query scope"
+                ) from None
+            required.extend(q for q in covering if q not in required)
+    return required
 
 
 def query_delivered(store, assignment, attempt, revision, query, records, delivered):

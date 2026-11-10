@@ -9,12 +9,13 @@ from collections import Counter
 from copy import deepcopy
 from functools import partial
 
+from rsc.agents import AgentContext
 from rsc.protocol.validate import validate_protocol
 
 from . import merge
 from .evidence import expand_evidence, source_citations, validate_evidence
 from .mutations import plan_changes, select
-from .review import closure, source_context
+from .review import absence_queries, closure, query_delivered, source_context
 from .state import Workflow, WorkflowError, delta
 from .store import Identity
 from .tools import validate_arguments
@@ -23,6 +24,71 @@ from .tools import validate_arguments
 def require(condition, message):
     if not condition:
         raise WorkflowError(f"audit failed: {message}")
+
+
+def audit_handoffs(w):
+    path = w.root / "supervisor.json"
+    if not path.exists():
+        return {"verified": False, "reason": "no supervisor artifacts; programmatic workflow"}
+    saved = json.loads(path.read_text())
+    terminals = saved.get("retired", []) + [
+        {**terminal, "worker": worker} for worker, terminal in saved["terminals"].items()
+    ]
+    checked = 0
+    for a in w.store.assignments():
+        for attempt, status, encoded in w.db.execute(
+            "SELECT attempt,status,body FROM attempts WHERE assignment=? ORDER BY attempt",
+            (a["name"],),
+        ):
+            body = json.loads(encoded)
+            if "claimed_at" not in body:
+                proofs = [
+                    json.loads(r[0])
+                    for r in w.db.execute(
+                        "SELECT body FROM conclusions WHERE json_extract(body,'$.assignment')=?",
+                        (a["name"],),
+                    )
+                ]
+                require(
+                    status == "failed"
+                    or (
+                        a["phase"] == "review"
+                        and len(proofs) == len(a["batches"]) + len(a["checks"])
+                        and all(p["attempt"] == 0 and p.get("carried_from") for p in proofs)
+                    ),
+                    "HC assignment completed without a claim or carried conclusions",
+                )
+                continue
+            end = body.get("submitted_at", body.get("finished_at"))
+            require(
+                body["created_at"] <= body.get("send_intent_at", 0) <= body["claimed_at"] <= end,
+                "HC claim lacks prior persisted send intent",
+            )
+            matches = [
+                t for t in terminals if t["assignment"] == a["name"] and t["attempt"] == attempt
+            ]
+            require(len(matches) == 1, "HC assignment has no unique recorded terminal")
+            terminal = matches[0]
+            expected = AgentContext(w.root, "", w.data["name"], a["role"], worker=a["worker"])
+            require(
+                terminal["worker"] == a["worker"]
+                and terminal["name"] == expected.terminal_name
+                and terminal["ready"]
+                and terminal["address"],
+                "HC terminal identity or readiness differs",
+            )
+            session = saved["sessions"][a["worker"]]
+            require(
+                session["name"] == terminal["name"]
+                and json.loads((expected.directory / "session.json").read_text()) == session,
+                "HC terminal and saved agent session names differ",
+            )
+            checked += 1
+    return {
+        "verified": True,
+        "claimed_attempts": checked,
+        "cleanup_complete": saved.get("cleanup_complete", False),
+    }
 
 
 def audit_run(root):
@@ -269,6 +335,23 @@ def _audit(w):
             "finding lacks independent author",
         )
         evidence(f["evidence"], author, f["attempt"])
+        model = w.snapshot(f["revision"])
+        absence_queries(f["objects"], model, f["queries"])
+        delivered = {
+            json.loads(r[0])
+            for r in w.db.execute(
+                "SELECT name FROM deliveries WHERE assignment=? AND attempt=? AND revision=? "
+                "AND family='model'",
+                (author["name"], f["attempt"], f["revision"]),
+            )
+        }
+        for query in f["queries"]:
+            require(
+                query_delivered(
+                    w.store, author["name"], f["attempt"], f["revision"], query, model, delivered
+                ),
+                "finding lacks complete negative-query delivery proof",
+            )
         for decision in f["history"]:
             reviewer, fixer = by_name[decision["assignment"]], by_name[decision["fix_assignment"]]
             require(
@@ -300,8 +383,14 @@ def _audit(w):
             required = source_context(
                 model, [e["batch_id"] for e in f["evidence"] + resolution["evidence"]]
             )
+            associations = w.resolution_associations(decision, decision["revision"])
             required |= closure(
-                model, {select(model, r["kind"], r["target"]) for r in resolution["objects"]}
+                model,
+                {
+                    select(model, a["final"]["kind"], a["final"]["target"])
+                    for a in associations
+                    if a["final"] is not None
+                },
             )
             delivered = {
                 json.loads(r[0])
@@ -323,22 +412,38 @@ def _audit(w):
     )
     model = w.publication_model()
     require(not validate_protocol(model, w.documents), "invalid published protocol")
+    cutoff = json.loads((w.root / "report.json").read_text())["export_event_seq"]
+    events = [
+        (seq, json.loads(body))
+        for seq, body in w.db.execute(
+            "SELECT seq, body FROM events WHERE seq<=? ORDER BY seq", (cutoff,)
+        )
+    ]
+    require(events and events[-1][0] == cutoff, "invalid exported event boundary")
     require(
-        json.loads((w.root / "protocol.json").read_text()) == model,
-        "published model differs from authoritative state",
+        any(
+            e["role"] == "coordinator"
+            and e["tool"] == "advance_phase"
+            and e["status"] == "ok"
+            and e["phase"] == "review"
+            and e["round"] == data["round"]
+            for _, e in events
+        ),
+        "export omits the final publication transition",
     )
-    frozen = json.loads(
-        w.db.execute("SELECT body FROM snapshots WHERE revision=?", (data["revision"],)).fetchone()[
-            0
-        ]
-    )
+    for filename, expected in w.artifacts(events).items():
+        require(
+            json.loads((w.root / filename).read_text()) == expected,
+            f"exported {filename} differs from authoritative state",
+        )
     require(
-        json.loads((w.root / "source-reports.json").read_text())
-        == w.report_associations(frozen["name_map"]),
-        "exported report associations differ",
+        [json.loads(line) for line in (w.root / "events.jsonl").read_text().splitlines()]
+        == [{"seq": seq, **body} for seq, body in events],
+        "exported events differ from the recorded prefix",
     )
     return {
         "verified": True,
+        "handoffs": audit_handoffs(w),
         "name": data["name"],
         "revision": data["revision"],
         "source_batches": len(batches),

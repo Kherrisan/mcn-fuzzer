@@ -12,7 +12,6 @@ import getpass
 import json
 import os
 import signal
-import sqlite3
 import subprocess
 import sys
 import time
@@ -21,6 +20,7 @@ from pathlib import Path
 
 from rsc.workflow.audit import audit_run
 from rsc.workflow.state import Workflow
+from scripts.benchmark_parallel_rsc import cleanup as cleanup_task
 
 
 def api_probe(key):
@@ -81,56 +81,6 @@ def api_probe(key):
             calls += 1
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": "RSC_OK"})
     raise RuntimeError("DeepSeek probe exceeded three requests")
-
-
-def cleanup_task(root):
-    """Even an interrupted test cleans only its own validated terminal names."""
-    path = root / "supervisor.json"
-    if not path.exists():
-        return
-    state = json.loads(path.read_text())
-    if state.get("cleanup_complete"):
-        return
-    db = sqlite3.connect(root / "workflow.sqlite")
-    task = json.loads(db.execute("SELECT body FROM task").fetchone()[0])["task_id"]
-    db.close()
-    runtime = Path("/tmp") / f"rsc-hc-{task}"
-    env = {
-        **os.environ,
-        "HC_SESSION": f"rsc-{task}",
-        "HC_SOCKET": str(runtime / "herdr-core" / f"rsc-{task}.sock"),
-        "XDG_RUNTIME_DIR": str(runtime),
-        "XDG_STATE_HOME": str(root / "hc-state"),
-        "XDG_CONFIG_HOME": str(root / "hc-config"),
-    }
-    env.pop("HC_TERMINAL_ID", None)
-
-    def hc(*args):
-        result = subprocess.run(
-            ["hc", args[0], "--json", *args[1:]],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=35,
-        )
-        if result.returncode == 3:
-            return None
-        if result.returncode:
-            raise RuntimeError(f"test cleanup: HC {args[0]} failed ({result.returncode})")
-        value = json.loads(result.stdout)
-        return value.get("result", value)
-
-    hc("server", "start")
-    for role, terminal in state["terminals"].items():
-        info = hc("get", terminal)
-        if info is None:
-            continue
-        if info["name"] != f"rsc-{role}-{task}":
-            raise RuntimeError("cleanup refused: terminal ownership changed")
-        if info["state"] != "finished":
-            hc("kill", terminal)
-            hc("wait", terminal, "--timeout", "20")
-    hc("server", "stop")
 
 
 def assert_no_key(root, key):

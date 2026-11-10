@@ -7,6 +7,7 @@ import test_parallel_workflow as h
 from test_parallel_supervisor import supervisor
 
 from rsc.workflow import WorkflowError
+from rsc.workflow.audit import audit_run
 from rsc.workflow.supervisor import HcObservationTimeout
 
 run = h.run
@@ -97,6 +98,35 @@ def test_phase_change_releases_processes_and_resumes_the_same_named_conversation
     launch = json.loads((run.root / "agents/parser-1/launch.json").read_text())
     assert launch["argv"][-2:] == [
         "resume",
-        s.context(run.store.assignment("merge-0/parser-1")).terminal_name,
+        s.state["sessions"]["parser-1"]["id"],
     ]
     assert len(s.state["terminals"]) == 1
+
+
+def test_audit_verifies_claims_against_saved_hc_send_intents_and_sessions(run):
+    s = supervisor(run)
+    s.step()
+    for worker in ("parser-1", "parser-2"):
+        h.parse(run, worker)
+    s.step()
+    s.step()
+    h.claim(run, "parser-1")
+    h.call(run, "parser-1", "advance_phase")
+    s.step()
+    s.step()
+    for worker in ("reviewer-1", "reviewer-2"):
+        h.report_review(run, worker)
+        h.call(run, worker, "advance_phase")
+    s.step()
+    s.cleanup()
+    assert audit_run(run.root)["handoffs"] == {
+        "verified": True,
+        "claimed_attempts": 5,
+        "cleanup_complete": True,
+    }
+    run.db.execute(
+        "UPDATE attempts SET body=json_remove(body,'$.send_intent_at') "
+        "WHERE assignment='parse-0/parser-1'"
+    )
+    with pytest.raises(WorkflowError, match="send intent"):
+        audit_run(run.root)

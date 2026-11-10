@@ -247,6 +247,8 @@ class Store:
                 "checks": a.get("checks", []),
                 "findings": a.get("findings", []),
             }
+            if a.get("contexts"):
+                body["contexts"] = a["contexts"]
             rows.append((a, dumps(body)))
         if len({a["worker"] for a, _ in rows}) != len(rows):
             raise StoreError("a worker may have only one active assignment")
