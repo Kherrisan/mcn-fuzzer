@@ -159,9 +159,15 @@ claiming it was verified.
    proposal's requested protocol behavior regardless of SUT feature support.
    Search relevant document sections instead of dumping entire files.
 3. Use proposal.dependencies to check the selected interactions first. Each
-   dependency names concrete instance names and may carry field bindings. Pure
-   order dependencies do not require saving a message; data bindings map to
-   `instance.inputs` at runtime. Use proposal.global_context for constants,
+   dependency names concrete instance names and its `fields` is an array of
+   state keys shared by producer and dependent. Pure order dependencies do not
+   require saving a message; data keys map to `instance.inputs` at runtime.
+   Model field relations can use different source and destination field names:
+   save under the source field name, then use the retrieved value to populate
+   the destination field. Inspect each relevant model or catalog field relation's
+   `derive`: apply the described computation in the dependent handler; an empty
+   or absent `derive` means direct reuse. Dependency `fields` lists state keys,
+   not the computation. Use proposal.global_context for constants,
    environment inputs, and generated values that do not depend on a step. If a
    prerequisite is unclear, query the relevant steps and step_dependencies from
    the model path or CATALOG. Do not dump the complete model into the conversation.
@@ -180,16 +186,22 @@ claiming it was verified.
 
 # Module and entrypoint
 
-Expose a synchronous top-level function with this structure:
+Declare synchronous handlers using the runtime decorators. The runtime builds
+the mapping when it imports the module, calls the optional global initializer
+once per testcase, and dispatches the concrete trace in order:
 
 ~~~python
-from generator_server.context import Ctx, InteractionError
+from generator_server import global_init, step_handler
 
-def generate(ctx: Ctx, step_trace: list[dict]) -> None:
-    try:
-        run_environment_and_trace(ctx, step_trace)
-    finally:
-        ctx.close_all()
+@global_init
+def initialize(ctx, params):
+    # Initialize testcase resources here when needed.
+    pass
+
+@step_handler("exact model step name")
+def handler_example(ctx, params):
+    instance = ctx.step_instance
+    # Implement this step's actual protocol behavior here.
 ~~~
 
 `step_trace` is the ordered list of concrete step instances selected and
@@ -200,26 +212,52 @@ dependency bindings), and `broken_dependencies`. Execute instances in order and
 do not insert, duplicate, reorder, or delete them. Do not inspect mutation
 operations; none are present.
 
-Implement run_environment_and_trace (or replace the call) and every helper in
-generator.py. Submit no stubs, ellipsis, unimplemented branches, or unconditional
+For each distinct model step name in the proposal trace, define a synchronous
+top-level function decorated with `@step_handler("exact model step name")`.
+Its signature is `handler_name(ctx, params)`. The decorator argument is the
+exact model step name, independent of the Python function name. Repeated
+instances of that model step call the same handler. Do not implement a trace
+loop or define generate(); dispatch and cleanup are provided by the runtime.
+Use at most one optional `@global_init` function with signature `(ctx, params)`.
+Both functions receive the same recursively read-only params. During a handler,
+`ctx.step_instance` is the read-only current instance and `ctx.step_name` is
+its concrete instance name; both are `None` during init.
+
+Each handler resolves its instance's fields, loads bound prior values with
+`ctx.load_depending_state(field_name)`, performs the step's send, receive, listen,
+connect, or close action as appropriate for its party, and saves outputs needed
+later with `ctx.save_state(field_name, value)`. Do not
+substitute the latest value or a hard-coded instance name for an `inputs` binding:
+duplicate steps have distinct state. Handlers may
+share helpers and case-local connection state via ctx; create resources inside
+the worker and clean them up in `generate`. Do not perform another trace step's
+message exchange as an implicit substitute for its handler.
+
+Implement every handler and helper in generator.py. The example above only
+illustrates the API; omit the initializer if it has no work. Submit no stubs, ellipsis,
+unimplemented branches, or unconditional
 success paths. The return value is ignored. Do not use async def as the entrypoint,
 require a command-line main(), or construct Ctx yourself inside the generator.
 
-Use `ctx.field(instance, name, default=...)` to resolve a field in the mandated
-order: explicit `fields` value, explicit omission, `inputs` dependency, then
-`ctx.get_global(name)`. Save states needed by later dependencies with
-`ctx.save_state(instance_name, field_name, value)`. Missing states must raise
+Implement field resolution in the generator: use explicit `fields` first, honor
+`omitted_fields`, then resolve `inputs` with `ctx.load_depending_state(name)` and use
+the read-only `params` for shared values when appropriate. Save states needed by
+later dependencies with `ctx.save_state(field_name, value)`.
+`ctx.load_depending_state()` raises on a missing binding or state. If using
+`ctx.load_state()` for the current instance, use a unique sentinel as its
+default to distinguish missing state from a saved `None`. Missing required states must raise
 `InteractionError`; never invent a runtime value. `ctx.states` is retained for
 the whole generator invocation, including after closing or reconnecting; it is
 not a per-connection cache. `params.json` is only the
-initial field-default source used by Rust; it is not passed to this function.
+initial field-default source used by Rust; runtime params contain testcase shared
+values and are passed read-only to the initializer and handlers.
 
 The Python server imports/caches the module BEFORE forking a worker.
 At module scope define constants, functions, classes, and safe imports only.
 Do not open case sockets/files, start threads/processes, run SDK servers, or
 contact the SUT during import. Import SDKs with possible thread/service side
-effects inside generate(). Create case resources there and clean them in finally
-blocks. No resources or state should need to survive worker exit.
+effects inside the initializer or handlers. Create case resources there; the
+runtime closes ctx-managed resources after dispatch. No resources or state should need to survive worker exit.
 
 Only generator.py and params.schema.json are published. Inline mock implementations,
 helpers, and SDK glue in generator.py, or use installed packages. Do not depend
@@ -235,6 +273,11 @@ Read context.py if uncertain. Use these exact signatures; times are in seconds.
 | --- | --- |
 | ctx.host, ctx.port | Actual default SUT endpoint for this case. |
 | ctx.timeout_s, ctx.connect_timeout_s | Default I/O/connection budgets in seconds. |
+| ctx.step_instance | Current read-only step instance; `None` outside a handler. |
+| ctx.step_name | Current concrete step instance name; `None` outside a handler. |
+| ctx.save_state(field, value) | Save a value under the current instance name and field. |
+| ctx.load_depending_state(field) | Load the current instance's `inputs[field]` binding; error on missing binding or state. |
+| ctx.load_state(field, default=None) | Read the current instance's field, returning default when absent. |
 | ctx.connect(host, port, proto="tcp", timeout=None) -> Channel | Independent outbound TCP or UDP channel. Explicit timeout also sets that channel's receive deadline. |
 | ctx.accept(host="127.0.0.1", port=0, proto="tcp", timeout=None) -> Listener | TCP only. Binds/listens immediately and starts an internal accept thread; does not wait for a peer. |
 | listener.host, listener.port | Actual listening endpoint, including a dynamically assigned port. |
@@ -290,7 +333,7 @@ Before triggering SUT interaction, prepare every listener the trace needs.
 Use endpoints already known to the SUT configuration or advertised by actual
 protocol messages/params. A port=0 listener is useful only if its actual port can
 be advertised. The campaign does not signal listener readiness and does not assign
-endpoints. The SUT may already be starting when generate() begins. Startup-time
+endpoints. The SUT may already be starting when dispatch begins. Startup-time
 upstream connections need a known endpoint. Prepare them as early as the worker
 allows and use bounded waits; do not assume the executor guarantees ordering or
 inspect the SUT to decide whether it retries. Record unavoidable runtime timing
@@ -302,7 +345,7 @@ Propagate background exceptions, signal shutdown, close sockets/listeners, and j
 threads with bounded waits. Use bounded service lifetimes and explicit SDK shutdown,
 not an unbounded serve_forever or detached daemon. Cleanup must also run after
 connect failures, EOF, and protocol errors. Keep resource counts and sizes bounded.
-When generate() returns, the worker exits; background work cannot continue.
+When dispatch completes, the worker exits; background work cannot continue.
 When either SUT or generator root exits first, only a short grace period remains
 for the other root before termination.
 
@@ -314,9 +357,9 @@ mutates them without revalidating the schema. Handle changed types/signs/lengths
 list contents; bound local allocations, loops, service counts, and timeouts
 without sanitizing all mutated wire content back to fixed valid values.
 
-- generator.py: complete module obeying `generate(ctx, step_trace)` and the
+- generator.py: complete module with decorated step handlers and the
   interface/lifecycle above. Use only explicit values, dependencies, and
-  global_context; never receive mutation operations.
+  shared params; never receive mutation operations.
 - params.json: root object of initial mutable-field values; keys match
   `mutable_fields`. Values only string, signed 64-bit integer, boolean, or
   recursively nested lists. No nested objects, floats, null, or JSON bytes.
@@ -365,7 +408,7 @@ needed; the common artifact checks are already provided by the script.
 Do not launch the campaign SUT/fuzzer or claim an end-to-end replay without an
 explicit isolated harness. Rust acceptance uses the same static validator. The
 isolated import probe checks module loading and the callable interface without
-calling generate(); imports inside generate, network behavior, protocol semantics
+calling handlers; lazy imports, network behavior, protocol semantics
 and case cleanup are not proved by static checks.
 
 Optional notes/validation fields in result.json may record assumptions, actual

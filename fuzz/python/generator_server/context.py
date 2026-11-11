@@ -16,9 +16,6 @@ from typing import Optional
 from .transport import SocketEndpoint, SocketTransport, Transport, TransportError
 
 
-_MISSING = object()
-
-
 class InteractionError(Exception):
     def __init__(self, status: str, message: str) -> None:
         super().__init__(message)
@@ -79,55 +76,51 @@ class Ctx:
         self._listeners: list[Listener] = []
         self.global_context: dict = {}
         self.states: dict[tuple[str, str], object] = {}
+        self.generator_params: dict = {}
+        self.step_instance = None
 
     def get_global(self, name: str, default=None):
-        """Read a testcase-scoped global_context value."""
+        """Read a testcase-scoped shared parameter."""
         return self.global_context.get(name, default)
 
-    def save_state(self, instance: str, field: str, value) -> None:
-        """Store a state value under the concrete instance that produced it."""
-        if not instance or not field:
-            raise InteractionError("generator", "output instance and field must be non-empty")
-        self.states[(str(instance), str(field))] = value
+    @property
+    def step_name(self):
+        """Name of the current concrete step instance, or None outside a handler."""
+        return None if self.step_instance is None else self.step_instance.get("name")
 
-    def load_state(self, instance: str, field: str, default=None):
-        """Read a saved state; missing values are never fabricated."""
-        return self.states.get((str(instance), str(field)), default)
+    def _state_key(self, field: str):
+        name = self.step_name
+        if not isinstance(name, str) or not name:
+            raise InteractionError("generator", "state access requires a current step instance")
+        if not isinstance(field, str) or not field:
+            raise InteractionError("generator", "state field must be a non-empty string")
+        return (name, field)
 
-    def field(self, instance: dict, name: str, default=_MISSING):
-        """Resolve a step-instance field in the required precedence order.
+    def save_state(self, field: str, value) -> None:
+        """Store a value under the current step instance and field."""
+        self.states[self._state_key(field)] = value
 
-        Explicit Rust values win. An omitted field is final and is not refilled.
-        Otherwise a dependency binding (`inputs`) or global_context is read.
-        """
-        if not isinstance(instance, dict):
-            raise InteractionError("generator", "step instance must be a dict")
-        fields = instance.get("fields") or {}
-        if name in fields:
-            return fields[name]
-        omitted = instance.get("omitted_fields") or []
-        if name in omitted:
-            raise InteractionError(
-                "dependency", f"field {name!r} was omitted for {instance.get('name')}"
-            )
-        inputs = instance.get("inputs") or {}
-        source = inputs.get(name)
-        if source:
-            prior, _, prior_field = str(source).partition(".")
-            if not prior or not prior_field:
-                raise InteractionError("dependency", f"invalid dependency binding {source!r}")
-            if (prior, prior_field) not in self.states:
-                raise InteractionError(
-                    "dependency", f"missing state {source!r} for field {name!r}"
-                )
-            return self.states[(prior, prior_field)]
-        if name in self.global_context:
-            return self.global_context[name]
-        if default is not _MISSING:
-            return default
-        raise InteractionError(
-            "dependency", f"field {name!r} has no explicit, dependency, or global value"
-        )
+    def load_state(self, field: str, default=None):
+        """Read a value saved by the current step instance."""
+        return self.states.get(self._state_key(field), default)
+
+    def load_depending_state(self, field: str):
+        """Read the current instance's input binding from the named prior instance."""
+        if self.step_instance is None:
+            raise InteractionError("dependency", "no current step instance")
+        source = (self.step_instance.get("inputs") or {}).get(field)
+        if not isinstance(source, str):
+            raise InteractionError("dependency", f"field {field!r} has no dependency binding")
+        suffix = f".{field}"
+        if not isinstance(field, str) or not field or not source.endswith(suffix):
+            raise InteractionError("dependency", f"invalid dependency binding {source!r}")
+        prior = source[:-len(suffix)]
+        if not prior:
+            raise InteractionError("dependency", f"invalid dependency binding {source!r}")
+        key = (prior, field)
+        if key not in self.states:
+            raise InteractionError("dependency", f"missing state {source!r} for field {field!r}")
+        return self.states[key]
 
     def _timeout(self, timeout: Optional[float]) -> float:
         if timeout is None:

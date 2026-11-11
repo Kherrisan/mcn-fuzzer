@@ -231,6 +231,12 @@
           "minLength": 1,
           "title": "Dependent Field",
           "type": "string"
+        },
+        "derive": {
+          "default": "",
+          "description": "How the dependent field is computed from the prior field; empty means direct reuse.",
+          "title": "Derive",
+          "type": "string"
         }
       },
       "required": [

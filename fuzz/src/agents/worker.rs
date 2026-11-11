@@ -223,7 +223,7 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
         }
         if launch.codex {
             // CLI 0.166.0 has no --name. `/rename <name>` calls thread/name/set.
-            // A missing plain-text marker still continues into the prompt.
+            // The init prompt waits until the status line shows that name.
             // A dead terminal is an initialization failure.
             let ui_deadline =
                 std::time::Instant::now() + self.config.init_timeout.min(Duration::from_secs(15));
@@ -261,6 +261,16 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
                     ),
                     client,
                 );
+            }
+            // Send the init prompt only after the status line shows the name.
+            let terminal = self.initial_terminal.clone();
+            if let Err(reason) = self.wait_for_screen(
+                client,
+                std::time::Instant::now() + Duration::from_secs(15),
+                |screen| codex_thread_name_visible(screen, &terminal),
+                "the renamed Codex thread",
+            ) {
+                return self.failure(reason, client);
             }
         }
         if let Err(error) = client.send(&self.config.terminal, prompt) {

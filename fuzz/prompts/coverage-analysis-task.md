@@ -96,7 +96,14 @@ instances, mutations, and optional `dependencies` and `global_context`. Instance
 the trace. `step` is the model step name. Channel endpoints are party instance
 names. Repeat a model step by adding another instance with its own name. Do not
 put handler ids on a trace item. Dependencies use instance names and may carry
-field bindings; global_context is for constants, environment inputs, and
+state keys in `fields`, as an array of non-empty strings. A producer saves each
+key with `ctx.save_state(key, value)`; its dependent reads that same key with
+`ctx.load_depending_state(key)`. For a model field relation with different source
+and destination field names, use the source field name as the state key and let
+the handler populate the destination field using the model relation's `derive`
+when specified. A data dependency needs at least one
+key; do not bind the same key to multiple producers for one dependent instance.
+global_context is for constants, environment inputs, and
 generated values not owned by a step.
 
 {"request_id": "REQUEST",

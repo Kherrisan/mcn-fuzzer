@@ -51,7 +51,7 @@ below are relative to this SKILL.md, independent of the agent's working director
 - Implement generator-assigned parties only. An SDK server can satisfy an
   upstream or callback role; it cannot replace the real SUT or fabricate its
   replies. Endpoint choice must agree with configuration or actual discovery.
-- Keep `generate(ctx, params)` synchronous. Run async SDKs through a case-local
+- Keep decorated step handlers and the optional global initializer synchronous. Run async SDKs through a case-local
   `asyncio.run(...)` when appropriate. Bound the entire coroutine with
   `asyncio.wait_for` as well as individual I/O operations.
 - The runtime imports generator.py before forking. Import service SDKs inside

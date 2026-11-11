@@ -144,6 +144,48 @@ fn check_generator_source(source: &str, name: &str) -> Result<(), String> {
         .map_err(|error| format!("generator syntax: {error}"))?;
     let suite =
         ast::Suite::parse(source, name).map_err(|error| format!("generator syntax: {error}"))?;
+    let mut has_step_handler = false;
+    for stmt in &suite {
+        let (decorators, function) = match stmt {
+            ast::Stmt::FunctionDef(f) => (&f.decorator_list, Some(f)),
+            ast::Stmt::AsyncFunctionDef(f) => (&f.decorator_list, None),
+            _ => continue,
+        };
+        let is_step = decorators.iter().any(|decorator| match decorator {
+            ast::Expr::Call(call) => matches!(call.func.as_ref(), ast::Expr::Name(name) if name.id.as_str() == "step_handler"),
+            _ => false,
+        });
+        let is_init = decorators.iter().any(|decorator| matches!(decorator, ast::Expr::Name(name) if name.id.as_str() == "global_init"));
+        if !is_step && !is_init {
+            continue;
+        }
+        let Some(function) = function else {
+            return Err("step handlers and global initializer must be synchronous".into());
+        };
+        let args = &function.args;
+        let positional = args.posonlyargs.iter().chain(&args.args);
+        if positional
+            .clone()
+            .filter(|arg| arg.default.is_none())
+            .count()
+            > 2
+            || (positional.count() < 2 && args.vararg.is_none())
+            || args.kwonlyargs.iter().any(|arg| arg.default.is_none())
+        {
+            return Err("step handlers and global initializer must accept (ctx, params)".into());
+        }
+        let mut visitor = YieldCheck::default();
+        for stmt in function.body.iter().cloned() {
+            visitor.visit_stmt(stmt);
+        }
+        if visitor.found {
+            return Err("step handlers and global initializer must not yield".into());
+        }
+        has_step_handler |= is_step;
+    }
+    if has_step_handler {
+        return Ok(());
+    }
     let function = suite.into_iter().rev().find(|stmt| match stmt {
         ast::Stmt::FunctionDef(f) => f.name.as_str() == "generate",
         ast::Stmt::AsyncFunctionDef(f) => f.name.as_str() == "generate",
@@ -204,6 +246,16 @@ mod tests {
 
     #[test]
     fn generator_checks_compile_without_importing_or_executing() {
+        check_generator_source(
+            "from generator_server import step_handler\n@step_handler('hello')\ndef hello(ctx, params):\n    pass\n",
+            "generator.py",
+        )
+        .unwrap();
+        assert!(check_generator_source(
+            "@step_handler('hello')\nasync def hello(ctx, params):\n    pass\n",
+            "generator.py",
+        )
+        .is_err());
         check_generator_source(
             "import module_that_does_not_exist\nraise RuntimeError()\ndef generate(ctx, params):\n    pass\n",
             "generator.py",

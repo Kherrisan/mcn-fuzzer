@@ -368,9 +368,9 @@ impl GeneratorSynthesisStage {
         if !self.enabled || !self.initialized || self.paused || self.inflight {
             return Ok(());
         }
-        let Some(model) = self.model.as_ref() else {
+        if self.model.is_none() {
             return Ok(());
-        };
+        }
         let proposal = if self.analysis_enabled && !allow_autonomous {
             let Some(proposal) = self.mailbox.take() else {
                 return Ok(());
@@ -380,7 +380,7 @@ impl GeneratorSynthesisStage {
             None
         };
         let autonomous = proposal.is_none();
-        let (request, output_dir, session, build, snapshot) = if let Some(accepted) = &proposal {
+        let (request, output_dir, session) = if let Some(accepted) = &proposal {
             let request = accepted.proposal.request_id.clone();
             let output_dir = self.output.join("requests").join(&request);
             if output_dir.exists() {
@@ -401,13 +401,7 @@ impl GeneratorSynthesisStage {
                 output_dir.join("proposal.json"),
                 [body.as_slice(), b"\n"].concat(),
             )?;
-            (
-                request,
-                output_dir,
-                accepted.proposal.session.clone(),
-                accepted.proposal.build.clone(),
-                accepted.proposal.snapshot.clone(),
-            )
+            (request, output_dir, accepted.proposal.session.clone())
         } else {
             let request = format!("{:016x}", rand.next());
             let output_dir = self.output.join("requests").join(&request);
@@ -418,22 +412,12 @@ impl GeneratorSynthesisStage {
                 )));
             }
             fs::create_dir_all(&output_dir)?;
-            (
-                request,
-                output_dir,
-                self.session.clone(),
-                String::new(),
-                String::new(),
-            )
+            (request, output_dir, self.session.clone())
         };
         let generation = GeneratorRequest {
             id: request.clone(),
             output_dir,
             session,
-            build,
-            snapshot,
-            model: Arc::clone(model),
-            binding: self.binding.clone(),
             autonomous,
         };
         let prompt = generation.prompt(

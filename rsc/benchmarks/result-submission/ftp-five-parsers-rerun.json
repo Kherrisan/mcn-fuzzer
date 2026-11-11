@@ -1,0 +1,550 @@
+{
+  "output": "/home/user/mcn-fuzzer/rsc/runs/ftp-p5-f5-20261110T122142Z/ftp-1110122143-r1",
+  "exit_code": 2,
+  "timed_out": false,
+  "process_elapsed_seconds": 2237.8738262988627,
+  "semantic_review": false,
+  "complete": false,
+  "phase": "merge",
+  "parse_workers": 5,
+  "max_feedback_rounds": 5,
+  "metrics": {
+    "elapsed_seconds": 2237.8722336292267,
+    "phases": [
+      {
+        "phase": "preprocess",
+        "round": 0,
+        "started_at": 1794313303.4220617,
+        "finished_at": 1794313304.3307538,
+        "elapsed_seconds": 0.9086921215057373,
+        "calls": {},
+        "rejected": {},
+        "calls_by_origin": {
+          "health": 1,
+          "supervisor": 2
+        },
+        "tool_elapsed_seconds": 0.5398961249738932,
+        "delivered_tokens": 0,
+        "delivered_items": 0,
+        "repeated_delivered_items": 0,
+        "worker_occupancy_seconds": 0
+      },
+      {
+        "phase": "parse",
+        "round": 0,
+        "started_at": 1794313304.3307538,
+        "finished_at": 1794313647.3121815,
+        "elapsed_seconds": 342.98142766952515,
+        "calls": {
+          "read_source_batches": 32,
+          "query_model": 7,
+          "submit_parse_result": 32,
+          "search_source": 2
+        },
+        "rejected": {
+          "read_source_batches": 2,
+          "submit_parse_result": 3
+        },
+        "calls_by_origin": {
+          "supervisor": 283,
+          "agent": 73
+        },
+        "tool_elapsed_seconds": 1.858839800581336,
+        "delivered_tokens": 127393,
+        "delivered_items": 70,
+        "repeated_delivered_items": 0,
+        "worker_occupancy_seconds": 881.997492313385
+      },
+      {
+        "phase": "cluster",
+        "round": 0,
+        "started_at": 1794313647.3121815,
+        "finished_at": 1794313779.4322314,
+        "elapsed_seconds": 132.1200499534607,
+        "calls": {
+          "query_model": 13,
+          "submit_clustering_result": 1
+        },
+        "rejected": {},
+        "calls_by_origin": {
+          "supervisor": 117,
+          "agent": 14
+        },
+        "tool_elapsed_seconds": 15.127205176278949,
+        "delivered_tokens": 152325,
+        "delivered_items": 1091,
+        "repeated_delivered_items": 804,
+        "worker_occupancy_seconds": 121.38993334770203
+      },
+      {
+        "phase": "merge",
+        "round": 0,
+        "started_at": 1794313779.4322314,
+        "finished_at": 1794314654.2577493,
+        "elapsed_seconds": 874.8255178928375,
+        "calls": {
+          "query_model": 340,
+          "read_source_batches": 42,
+          "submit_merge_result": 153
+        },
+        "rejected": {
+          "read_source_batches": 5,
+          "submit_merge_result": 7
+        },
+        "calls_by_origin": {
+          "supervisor": 811,
+          "agent": 535
+        },
+        "tool_elapsed_seconds": 22.599045660346746,
+        "delivered_tokens": 405548,
+        "delivered_items": 1208,
+        "repeated_delivered_items": 206,
+        "worker_occupancy_seconds": 2430.040667772293
+      },
+      {
+        "phase": "cluster",
+        "round": 1,
+        "started_at": 1794314654.2577493,
+        "finished_at": 1794314690.4189627,
+        "elapsed_seconds": 36.161213397979736,
+        "calls": {
+          "query_model": 3,
+          "submit_clustering_result": 1
+        },
+        "rejected": {
+          "query_model": 1
+        },
+        "calls_by_origin": {
+          "supervisor": 32,
+          "agent": 4
+        },
+        "tool_elapsed_seconds": 1.130613960325718,
+        "delivered_tokens": 6222,
+        "delivered_items": 292,
+        "repeated_delivered_items": 146,
+        "worker_occupancy_seconds": 22.050937175750732
+      },
+      {
+        "phase": "merge",
+        "round": 1,
+        "started_at": 1794314690.4189627,
+        "finished_at": 1794314797.6931627,
+        "elapsed_seconds": 107.27419996261597,
+        "calls": {
+          "query_model": 20,
+          "submit_merge_result": 7,
+          "read_source_batches": 3
+        },
+        "rejected": {
+          "read_source_batches": 1
+        },
+        "calls_by_origin": {
+          "supervisor": 95,
+          "agent": 30
+        },
+        "tool_elapsed_seconds": 2.2208000868558884,
+        "delivered_tokens": 23675,
+        "delivered_items": 220,
+        "repeated_delivered_items": 1,
+        "worker_occupancy_seconds": 180.95999789237976
+      },
+      {
+        "phase": "cluster",
+        "round": 2,
+        "started_at": 1794314797.6931627,
+        "finished_at": 1794314858.9069467,
+        "elapsed_seconds": 61.213783979415894,
+        "calls": {
+          "query_model": 2,
+          "submit_parse_result": 1,
+          "submit_clustering_result": 1
+        },
+        "rejected": {
+          "submit_parse_result": 1
+        },
+        "calls_by_origin": {
+          "supervisor": 50,
+          "agent": 4
+        },
+        "tool_elapsed_seconds": 0.6714789550751448,
+        "delivered_tokens": 4208,
+        "delivered_items": 152,
+        "repeated_delivered_items": 0,
+        "worker_occupancy_seconds": 19.603679418563843
+      },
+      {
+        "phase": "merge",
+        "round": 2,
+        "started_at": 1794314858.9069467,
+        "finished_at": 1794314889.875536,
+        "elapsed_seconds": 30.968589305877686,
+        "calls": {
+          "query_model": 4,
+          "submit_merge_result": 1
+        },
+        "rejected": {},
+        "calls_by_origin": {
+          "supervisor": 27,
+          "agent": 5
+        },
+        "tool_elapsed_seconds": 0.5622309017926455,
+        "delivered_tokens": 788,
+        "delivered_items": 3,
+        "repeated_delivered_items": 0,
+        "worker_occupancy_seconds": 20.732544898986816
+      },
+      {
+        "phase": "review",
+        "round": 2,
+        "started_at": 1794314889.875536,
+        "finished_at": 1794314890.041794,
+        "elapsed_seconds": 0.1662580966949463,
+        "calls": {},
+        "rejected": {},
+        "calls_by_origin": {},
+        "tool_elapsed_seconds": 0.0,
+        "delivered_tokens": 0,
+        "delivered_items": 0,
+        "repeated_delivered_items": 0,
+        "worker_occupancy_seconds": 0
+      },
+      {
+        "phase": "merge",
+        "round": 3,
+        "started_at": 1794314890.041794,
+        "finished_at": 1794315263.1812673,
+        "elapsed_seconds": 373.13947319984436,
+        "calls": {
+          "query_model": 107,
+          "read_source_batches": 22,
+          "submit_merge_result": 36
+        },
+        "rejected": {
+          "query_model": 2,
+          "read_source_batches": 4,
+          "submit_merge_result": 1
+        },
+        "calls_by_origin": {
+          "supervisor": 350,
+          "agent": 165
+        },
+        "tool_elapsed_seconds": 10.358301404863596,
+        "delivered_tokens": 219221,
+        "delivered_items": 505,
+        "repeated_delivered_items": 73,
+        "worker_occupancy_seconds": 1034.8993682861328
+      },
+      {
+        "phase": "cluster",
+        "round": 4,
+        "started_at": 1794315263.1812673,
+        "finished_at": 1794315290.281551,
+        "elapsed_seconds": 27.1002836227417,
+        "calls": {
+          "query_model": 2,
+          "submit_clustering_result": 1
+        },
+        "rejected": {},
+        "calls_by_origin": {
+          "supervisor": 23,
+          "agent": 3
+        },
+        "tool_elapsed_seconds": 1.1497683953493834,
+        "delivered_tokens": 6312,
+        "delivered_items": 298,
+        "repeated_delivered_items": 149,
+        "worker_occupancy_seconds": 16.703972101211548
+      },
+      {
+        "phase": "merge",
+        "round": 4,
+        "started_at": 1794315290.281551,
+        "finished_at": 1794315391.595235,
+        "elapsed_seconds": 101.3136842250824,
+        "calls": {
+          "query_model": 40,
+          "read_source_batches": 4,
+          "submit_merge_result": 12
+        },
+        "rejected": {
+          "query_model": 2,
+          "submit_merge_result": 2
+        },
+        "calls_by_origin": {
+          "supervisor": 90,
+          "agent": 56
+        },
+        "tool_elapsed_seconds": 3.1537804007530212,
+        "delivered_tokens": 53360,
+        "delivered_items": 317,
+        "repeated_delivered_items": 0,
+        "worker_occupancy_seconds": 227.55215072631836
+      },
+      {
+        "phase": "review",
+        "round": 4,
+        "started_at": 1794315391.595235,
+        "finished_at": 1794315391.754453,
+        "elapsed_seconds": 0.15921783447265625,
+        "calls": {},
+        "rejected": {},
+        "calls_by_origin": {},
+        "tool_elapsed_seconds": 0.0,
+        "delivered_tokens": 0,
+        "delivered_items": 0,
+        "repeated_delivered_items": 0,
+        "worker_occupancy_seconds": 0
+      },
+      {
+        "phase": "cluster",
+        "round": 5,
+        "started_at": 1794315391.754453,
+        "finished_at": 1794315435.7743952,
+        "elapsed_seconds": 44.01994228363037,
+        "calls": {
+          "query_model": 3,
+          "submit_clustering_result": 1
+        },
+        "rejected": {},
+        "calls_by_origin": {
+          "supervisor": 38,
+          "agent": 4
+        },
+        "tool_elapsed_seconds": 1.4732029475271702,
+        "delivered_tokens": 7720,
+        "delivered_items": 312,
+        "repeated_delivered_items": 154,
+        "worker_occupancy_seconds": 16.058353900909424
+      },
+      {
+        "phase": "merge",
+        "round": 5,
+        "started_at": 1794315435.7743952,
+        "finished_at": 1794315541.2819936,
+        "elapsed_seconds": 105.50759840011597,
+        "calls": {
+          "query_model": 30,
+          "submit_merge_result": 7
+        },
+        "rejected": {
+          "submit_merge_result": 1
+        },
+        "calls_by_origin": {
+          "supervisor": 92,
+          "agent": 37
+        },
+        "tool_elapsed_seconds": 2.520174562931061,
+        "delivered_tokens": 32237,
+        "delivered_items": 120,
+        "repeated_delivered_items": 3,
+        "worker_occupancy_seconds": 233.9880702495575
+      }
+    ],
+    "retries": 0,
+    "correction_rounds": 5,
+    "semantic_review": false
+  },
+  "outcome": "execution_failed",
+  "under_20_minutes": false,
+  "codex": {
+    "available": true,
+    "workers": {
+      "parser-1": {
+        "available": true,
+        "thread": "01a1c568-3f8e-7480-9cf0-665ce90a2e7e",
+        "name": "rsc-ftp-1110122143-r1-parser-1",
+        "model": "gpt-6-luna",
+        "effort": "high",
+        "token_usage": {
+          "input_tokens": 1916707,
+          "cached_input_tokens": 1586304,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 18602,
+          "reasoning_output_tokens": 12503,
+          "total_tokens": 1935309
+        },
+        "truncated_outputs": [],
+        "log": "/home/user/mcn-fuzzer/rsc/runs/ftp-p5-f5-20261110T122142Z/ftp-1110122143-r1/agents/parser-1/codex-session.jsonl"
+      },
+      "parser-2": {
+        "available": true,
+        "thread": "01a1c568-695e-7973-a80b-8d60dd1e7a61",
+        "name": "rsc-ftp-1110122143-r1-parser-2",
+        "model": "gpt-6-luna",
+        "effort": "high",
+        "token_usage": {
+          "input_tokens": 500582,
+          "cached_input_tokens": 414464,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 19136,
+          "reasoning_output_tokens": 11540,
+          "total_tokens": 519718
+        },
+        "truncated_outputs": [],
+        "log": "/home/user/mcn-fuzzer/rsc/runs/ftp-p5-f5-20261110T122142Z/ftp-1110122143-r1/agents/parser-2/codex-session.jsonl"
+      },
+      "parser-3": {
+        "available": true,
+        "thread": "01a1c568-9455-7240-a640-735f2e57a3d3",
+        "name": "rsc-ftp-1110122143-r1-parser-3",
+        "model": "gpt-6-luna",
+        "effort": "high",
+        "token_usage": {
+          "input_tokens": 718941,
+          "cached_input_tokens": 636800,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 9581,
+          "reasoning_output_tokens": 2919,
+          "total_tokens": 728522
+        },
+        "truncated_outputs": [],
+        "log": "/home/user/mcn-fuzzer/rsc/runs/ftp-p5-f5-20261110T122142Z/ftp-1110122143-r1/agents/parser-3/codex-session.jsonl"
+      },
+      "parser-4": {
+        "available": true,
+        "thread": "01a1c568-be4d-7261-ab3f-550a186c43dc",
+        "name": "rsc-ftp-1110122143-r1-parser-4",
+        "model": "gpt-6-luna",
+        "effort": "high",
+        "token_usage": {
+          "input_tokens": 735962,
+          "cached_input_tokens": 635136,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 17095,
+          "reasoning_output_tokens": 6996,
+          "total_tokens": 753057
+        },
+        "truncated_outputs": [],
+        "log": "/home/user/mcn-fuzzer/rsc/runs/ftp-p5-f5-20261110T122142Z/ftp-1110122143-r1/agents/parser-4/codex-session.jsonl"
+      },
+      "parser-5": {
+        "available": true,
+        "thread": "01a1c568-e998-7ae2-be18-24962a4bba8b",
+        "name": "rsc-ftp-1110122143-r1-parser-5",
+        "model": "gpt-6-luna",
+        "effort": "high",
+        "token_usage": {
+          "input_tokens": 673322,
+          "cached_input_tokens": 634368,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 4113,
+          "reasoning_output_tokens": 1994,
+          "total_tokens": 677435
+        },
+        "truncated_outputs": [],
+        "log": "/home/user/mcn-fuzzer/rsc/runs/ftp-p5-f5-20261110T122142Z/ftp-1110122143-r1/agents/parser-5/codex-session.jsonl"
+      },
+      "merge-1": {
+        "available": true,
+        "thread": "01a1c56f-800d-7781-b207-072da96b6971",
+        "name": "rsc-ftp-1110122143-r1-merge-1",
+        "model": "gpt-6-luna",
+        "effort": "high",
+        "token_usage": {
+          "input_tokens": 25558583,
+          "cached_input_tokens": 25161600,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 66471,
+          "reasoning_output_tokens": 41396,
+          "total_tokens": 25625054
+        },
+        "truncated_outputs": [],
+        "log": "/home/user/mcn-fuzzer/rsc/runs/ftp-p5-f5-20261110T122142Z/ftp-1110122143-r1/agents/merge-1/codex-session.jsonl"
+      },
+      "merge-2": {
+        "available": true,
+        "thread": "01a1c56f-ad86-7d91-b080-58ba580a43de",
+        "name": "rsc-ftp-1110122143-r1-merge-2",
+        "model": "gpt-6-luna",
+        "effort": "high",
+        "token_usage": {
+          "input_tokens": 17815480,
+          "cached_input_tokens": 17455104,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 54353,
+          "reasoning_output_tokens": 33940,
+          "total_tokens": 17869833
+        },
+        "truncated_outputs": [],
+        "log": "/home/user/mcn-fuzzer/rsc/runs/ftp-p5-f5-20261110T122142Z/ftp-1110122143-r1/agents/merge-2/codex-session.jsonl"
+      },
+      "merge-3": {
+        "available": true,
+        "thread": "01a1c56f-d841-73c2-88e7-2bb4dcfec021",
+        "name": "rsc-ftp-1110122143-r1-merge-3",
+        "model": "gpt-6-luna",
+        "effort": "high",
+        "token_usage": {
+          "input_tokens": 35521036,
+          "cached_input_tokens": 34961024,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 68504,
+          "reasoning_output_tokens": 40998,
+          "total_tokens": 35589540
+        },
+        "truncated_outputs": [],
+        "log": "/home/user/mcn-fuzzer/rsc/runs/ftp-p5-f5-20261110T122142Z/ftp-1110122143-r1/agents/merge-3/codex-session.jsonl"
+      }
+    },
+    "total": {
+      "input_tokens": 83440613,
+      "cached_input_tokens": 81484800,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 257855,
+      "reasoning_output_tokens": 152286,
+      "total_tokens": 83698468
+    }
+  },
+  "model": "gpt-6-luna",
+  "effort": "high",
+  "merge_workers": 3,
+  "published": false,
+  "completed_feedback_rounds": 4,
+  "interrupted_round": 5,
+  "feedback_limit_exhausted": false,
+  "error": "rsc: error: worker merge-2 ended its turn without submitting",
+  "initial_groups": 146,
+  "final_groups": 154,
+  "final_groups_with_results": 99,
+  "parse_items": 290,
+  "cleanup_complete": true,
+  "candidate_validation": {
+    "official_protocol_exists": false,
+    "candidate_round": 4,
+    "candidate_only": true,
+    "valid": false,
+    "error_count": 98,
+    "counts": {
+      "parties": 10,
+      "messages": 51,
+      "channels": 10,
+      "steps": 83,
+      "step_dependencies": 70
+    },
+    "saved_check_count": 99,
+    "saved_check_types": {
+      "reference": 1,
+      "same_name": 2,
+      "ambiguous_reference": 95,
+      "structure": 1
+    },
+    "semantic_review": false
+  },
+  "failure_details": {
+    "worker": "merge-2",
+    "assigned_group": "g16",
+    "rejected_group": "g153",
+    "tool_error": "group belongs to another assignment",
+    "final_message_empty": false,
+    "native_log_line": 1307
+  },
+  "phase_totals_seconds": {
+    "preprocess": 0.9086921215057373,
+    "parse": 342.98142766952515,
+    "cluster": 300.6152732372284,
+    "merge": 1593.029062986374,
+    "review": 0.32547593116760254
+  },
+  "agent_calls": 930,
+  "rejected_calls": 32
+}

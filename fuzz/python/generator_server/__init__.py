@@ -6,6 +6,7 @@ Scripts call ``generate(ctx, step_trace)``. Socket work goes through a
 
 from .context import Channel, Ctx, InteractionError, Listener, Session
 from .registry import Registry
+from .handlers import step_handler, global_init
 from .transport import SocketTransport, Transport
 
 __all__ = [
@@ -17,4 +18,6 @@ __all__ = [
     "Session",
     "SocketTransport",
     "Transport",
+    "step_handler",
+    "global_init",
 ]

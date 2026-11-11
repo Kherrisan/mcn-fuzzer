@@ -90,7 +90,11 @@ TOOLS = [
      _schema({"request_id": REQUEST,
               "prior_step": STEP, "dependent_step": STEP,
               "condition": {"type": "string"},
-              "field_relations": {"type": "array", "items": {"type": "object"}}},
+              "field_relations": {"type": "array", "items": _schema({
+                  "prior_field": {"type": "string"},
+                  "dependent_field": {"type": "string"},
+                  "derive": {"type": "string", "description": "Calculation from the prior field; empty means direct reuse"},
+              }, ("prior_field", "dependent_field"))}},
              ("request_id", "prior_step", "dependent_step"))),
     ("remove_dependency", "Remove a dependency edge in the analysis transaction.",
      _schema({"request_id": REQUEST, "prior_step": STEP, "dependent_step": STEP},
@@ -105,7 +109,13 @@ TOOLS = [
               "channels": {"type": "object"},
               "mutations": {"type": "array"},
               "global_context": {"type": "array"},
-              "dependencies": {"type": "array"},
+              "dependencies": {"type": "array", "items": _schema({
+                  "prior": {"type": "string"}, "dependent": {"type": "string"},
+                  "kind": {"type": "string", "enum": ["order", "data", "resource", "state"]},
+                  "condition": {"type": "string"},
+                  "fields": {"type": "array", "items": {"type": "string", "minLength": 1},
+                             "description": "State keys saved by prior and read by dependent"},
+              }, ("prior", "dependent"))},
               "trace": {"type": "array", "items": TRACE_STEP}},
              ("request_id", "trace", "parties", "channels"))),
 ]

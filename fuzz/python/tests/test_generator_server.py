@@ -415,29 +415,140 @@ def _iox_request(client, node, iox2, body: bytes, timeout_s: float = 5):
 
 
 class StepTraceTests(unittest.TestCase):
-    def test_ctx_field_precedence_and_dependencies(self):
+    def test_dependency_resolves_the_bound_instance_after_duplication(self):
+        with tempfile.TemporaryDirectory(prefix="mcn-instance-dependency-") as directory:
+            script = Path(directory) / "generator.py"
+            script.write_text(
+                "from generator_server import step_handler\n"
+                "@step_handler('receive')\n"
+                "def receive(ctx, params):\n"
+                "    s = ctx.step_instance\n"
+                "    assert ctx.step_name == s['name']\n"
+                "    ctx.save_state('token', s['fields']['token'])\n"
+                "    assert ctx.load_state('token') == s['fields']['token']\n"
+                "@step_handler('send')\n"
+                "def send(ctx, params):\n"
+                "    ctx.observed.append((ctx.step_instance['name'], ctx.load_depending_state('token')))\n"
+            )
+            generate = Registry().get(str(script))
+            ctx = Ctx(Session(), "127.0.0.1", 1, 1.0)
+            ctx.observed = []
+            trace = [
+                {"name": "a", "step": "receive", "fields": {"token": "original"}},
+                {"name": "b", "step": "send", "inputs": {"token": "a.token"}},
+                {"name": "a_copy", "step": "receive", "fields": {"token": "copy"}},
+                {"name": "b_copy", "step": "send", "inputs": {"token": "a_copy.token"}},
+                {"name": "b_later", "step": "send", "inputs": {"token": "a.token"}},
+            ]
+            generate(ctx, trace)
+            self.assertEqual(ctx.observed, [("b", "original"), ("b_copy", "copy"),
+                                             ("b_later", "original")])
+            fresh = Ctx(Session(), "127.0.0.1", 1, 1.0)
+            fresh.observed = []
+            with self.assertRaisesRegex(InteractionError, "missing state 'a.token'"):
+                generate(fresh, [trace[1]])
+            with self.assertRaisesRegex(InteractionError, "no dependency binding"):
+                generate(fresh, [{"name": "missing", "step": "send", "inputs": {}}])
+
+    def test_decorated_dispatch_initializes_and_preserves_inputs(self):
+        directory = Path(tempfile.mkdtemp(prefix="mcn-handler-generator-"))
+        script = directory / "generator.py"
+        script.write_text(
+            "from generator_server import step_handler, global_init\n"
+            "@global_init\n"
+            "def setup(ctx, params):\n"
+            "    assert ctx.step_instance is None\n"
+            "    assert ctx.step_name is None\n"
+            "    ctx.events = [('init', params['shared'][0])]\n"
+            "@step_handler('send USER')\n"
+            "def user(ctx, params):\n"
+            "    ctx.events.append((ctx.step_instance['name'], ctx.step_instance['fields']['username']))\n"
+            "    try: params['shared'][0] = 'changed'\n"
+            "    except TypeError: pass\n"
+            "    else: raise AssertionError('params must be read-only')\n"
+            "    try: ctx.step_instance['fields']['username'] = 'changed'\n"
+            "    except TypeError: pass\n"
+            "    else: raise AssertionError('instance must be read-only')\n"
+        )
+        registry = Registry()
+        generate = registry.get(str(script))
+        self.assertIs(generate, registry.get(str(script)))
         ctx = Ctx(Session(), "127.0.0.1", 1, 1.0)
-        ctx.global_context = {"username": "ubuntu"}
-        ctx.save_state("greet", "challenge", b"challenge-bytes")
-        instance = {
-            "name": "login",
-            "fields": {"username": "explicit"},
-            "omitted_fields": ["optional"],
-            "inputs": {"token": "greet.challenge"},
-        }
-        self.assertEqual(ctx.field(instance, "username"), "explicit")
-        self.assertEqual(ctx.field(instance, "token"), b"challenge-bytes")
-        self.assertEqual(ctx.field({"name": "x", "fields": {}, "inputs": {}}, "username"), "ubuntu")
+        ctx.generator_params = {"shared": ["value"]}
+        generate(ctx, [
+            {"name": "one", "step": "send USER", "fields": {"username": "a"}},
+            {"name": "two", "step": "send USER", "fields": {"username": "b"}},
+        ])
+        self.assertEqual(ctx.events, [("init", "value"), ("one", "a"), ("two", "b")])
+        self.assertIsNone(ctx.step_instance)
+        self.assertIsNone(ctx.step_name)
         with self.assertRaises(InteractionError):
-            ctx.field(instance, "optional")
+            generate(ctx, [{"name": "unknown", "step": "other"}])
+
+    def test_duplicate_decorated_handlers_rejected_on_load(self):
+        directory = Path(tempfile.mkdtemp(prefix="mcn-duplicate-handler-"))
+        script = directory / "generator.py"
+        script.write_text(
+            "from generator_server import step_handler\n"
+            "@step_handler('x')\n"
+            "def first(ctx, params): pass\n"
+            "@step_handler('x')\n"
+            "def second(ctx, params): pass\n"
+        )
+        with self.assertRaisesRegex(ValueError, "duplicate step handler"):
+            Registry().get(str(script))
+
+    def test_server_dispatches_read_only_params_and_step_fields(self):
+        directory = Path(tempfile.mkdtemp(prefix="mcn-handler-request-"))
+        script = directory / "generator.py"
+        script.write_text(
+            "from generator_server import step_handler, global_init\n"
+            "@global_init\n"
+            "def setup(ctx, params): ctx.initial_username = params['username']\n"
+            "@step_handler('hello')\n"
+            "def hello(ctx, params):\n"
+            "    assert ctx.initial_username == 'shared'\n"
+            "    assert ctx.step_instance['fields']['username'] == 'mutated'\n"
+            "    try: params['username'] = 'changed'\n"
+            "    except TypeError: pass\n"
+            "    else: raise AssertionError('params must be read-only')\n"
+        )
+        try:
+            request = {"op": "run", "client": 42, "id": 1, "generator": str(script),
+                       "step_trace": [{"name": "one", "step": "hello", "fields": {"username": "mutated"}}],
+                       "params": {"username": "shared"}, "host": "127.0.0.1", "port": 1}
+            response = cbor2.loads(handle_payload(cbor2.dumps(request), {}))
+            self.assertEqual(response["status"], "ok", response)
+        finally:
+            shutil.rmtree(directory)
+
+    def test_state_access_is_explicit(self):
+        ctx = Ctx(Session(), "127.0.0.1", 1, 1.0)
+        missing = object()
         with self.assertRaises(InteractionError):
-            ctx.field(instance, "missing")
+            ctx.save_state("challenge", None)
+        with self.assertRaises(InteractionError):
+            ctx.load_state("challenge")
+        ctx.step_instance = {"name": "greet"}
+        ctx.save_state("challenge", None)
+        self.assertIsNone(ctx.load_state("challenge", missing))
+        ctx.step_instance = {"name": "other"}
+        self.assertIs(ctx.load_state("challenge", missing), missing)
+        self.assertFalse(hasattr(ctx, "field"))
+
+    def test_depending_state_accepts_dots_in_instance_and_key(self):
+        ctx = Ctx(Session(), "127.0.0.1", 1, 1.0)
+        ctx.step_instance = {"name": "a.1"}
+        ctx.save_state("state.key", 42)
+        ctx.step_instance = {"name": "b", "inputs": {"state.key": "a.1.state.key"}}
+        self.assertEqual(ctx.load_depending_state("state.key"), 42)
 
     def test_states_survive_close_all(self):
         ctx = Ctx(Session(), "127.0.0.1", 1, 1.0)
-        ctx.save_state("greet", "challenge", b"kept")
+        ctx.step_instance = {"name": "greet"}
+        ctx.save_state("challenge", b"kept")
         ctx.close_all()
-        self.assertEqual(ctx.load_state("greet", "challenge"), b"kept")
+        self.assertEqual(ctx.load_state("challenge"), b"kept")
         self.assertEqual(ctx.states[("greet", "challenge")], b"kept")
 
     def test_server_accepts_versioned_step_trace(self):
@@ -447,7 +558,7 @@ class StepTraceTests(unittest.TestCase):
         script.write_text(
             "def generate(ctx, step_trace):\n"
             "    assert step_trace[0]['fields']['username'] == 'ubuntu'\n"
-            "    ctx.save_state('hello_1', 'greeting', b'220 ready')\n"
+            "    assert ctx.get_global('x', 'missing') is None\n"
             f"    open({str(marker)!r}, 'w').write(str(len(step_trace)))\n"
         )
         try:
@@ -461,7 +572,7 @@ class StepTraceTests(unittest.TestCase):
                     "name": "hello_1", "step": "hello", "action": "send",
                     "channel": "control", "fields": {"username": "ubuntu"},
                 }],
-                "global_context": [{"name": "x", "value": None}],
+                "params": {"x": None},
                 "host": "127.0.0.1", "port": 1, "timeout_ms": 1000,
             }
             response = cbor2.loads(handle_payload(cbor2.dumps(request), {}))

@@ -38,3 +38,10 @@ The three-Parser run ended on further regroup requests for three groups: distinc
 In this pair of runs Parse was about 2.93 times faster with three workers, and deterministic Review was negligible. This does **not** establish successful full-pipeline acceleration: neither run passed, extracted item counts differed (208 versus 234), and one sample per configuration is insufficient for a stability claim. Clustering quality, stable field/reference naming and correction convergence remain unresolved acceptance limitations. There was no independent semantic review.
 
 [results.json](results.json) records complete phase metrics, final errors and native token totals without private session traces. Per-run raw `timing-result.json`, `workflow.sqlite`, original submissions and logs remain in the ignored run directory. No additional tuning runs were automatically started.
+
+
+## Five-Parser follow-up
+
+The requested five-Parser / five-feedback-round rerun stopped on an empty Merge-agent response during feedback round 2. See [its validation record](ftp-five-parsers.md); this is an execution failure, not exhaustion of the five-round limit.
+
+A second fresh five-Parser run completed four corrections and stopped during round 5 after a Merge worker submitted another assignment's group and then ended its turn. It took 37m 18s and did not publish a protocol. See [the second run's validation record](ftp-five-parsers-rerun.md).

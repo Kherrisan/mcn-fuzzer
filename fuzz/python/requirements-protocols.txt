@@ -39,6 +39,7 @@ idna==3.20
 ifaddr==0.2.0
 Incremental==24.11.0
 invoke==3.0.3
+mcp==2.3.0
 miniaudio==1.71
 multidict==7.2.1
 packaging==26.3

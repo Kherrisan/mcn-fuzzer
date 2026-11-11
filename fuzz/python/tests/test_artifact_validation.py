@@ -56,6 +56,12 @@ class ArtifactValidationTests(unittest.TestCase):
         self.assertFalse(report["runtime_executed"])
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.root.iterdir()})
 
+    def test_decorated_generator_passes_static_and_import_checks(self):
+        self.write("generator.py", "from generator_server import step_handler, global_init\n"
+                   "@global_init\ndef init(ctx, params): pass\n"
+                   "@step_handler('send USER')\ndef user(ctx, params): pass\n")
+        self.assertEqual(self.validate(import_check=True, pythonpath=str(PYTHON_ROOT))["status"], "ok")
+
     def test_production_subset_accepts_optional_properties_and_ignores_unsupported_keywords(self):
         self.write_json("params.schema.json", {
             "type": "object", "properties": {

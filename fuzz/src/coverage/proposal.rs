@@ -58,17 +58,8 @@ pub struct ProposalDependency {
     pub condition: String,
     #[serde(default)]
     pub kind: String,
-    #[serde(default, alias = "field_relations")]
-    pub fields: Vec<ProposalFieldBinding>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ProposalFieldBinding {
-    pub prior_field: String,
-    pub dependent_field: String,
     #[serde(default)]
-    pub derive: String,
+    pub fields: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -239,11 +230,9 @@ pub fn instantiate(model: &IndexedModel, steps: &[StepRecord]) -> Result<Proposa
             let dependent = step_to_instance.get(&dependent)?.clone();
             let bindings = fields
                 .into_iter()
-                .map(|(prior_field, dependent_field)| ProposalFieldBinding {
-                    prior_field,
-                    dependent_field,
-                    derive: String::new(),
-                })
+                .map(|(prior_field, _dependent_field)| prior_field)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
                 .collect::<Vec<_>>();
             Some(ProposalDependency {
                 prior,
@@ -769,11 +758,7 @@ mod tests {
             dependent: "bye".into(),
             condition: String::new(),
             kind: "data".into(),
-            fields: vec![ProposalFieldBinding {
-                prior_field: "challenge".into(),
-                dependent_field: "token".into(),
-                derive: String::new(),
-            }],
+            fields: vec!["challenge".into()],
         });
         proposal
             .validate(&model, &binding, &identity())

@@ -18,6 +18,8 @@ Retain source-defined error/abort behavior separately.
 For one shared reply wire form, code/outcome classifications are conditions, not separate
 fieldless messages. Retain genuinely distinct wire forms and fields needed by later exchanges.
 Link prerequisites to the exchange that supplies the state, not merely the command requesting it.
+For field relations, record source-supported calculations in `derive`; use an empty string
+when the dependent field directly reuses the prior field. Do not invent calculations.
 Retain request selectors that identify the object whose returned metadata is used later; bind
 subsequent uses to that same object as supported by the source, alongside the returned values.
 Retain base mechanisms alongside extensions unless explicitly replaced. Track abort/error

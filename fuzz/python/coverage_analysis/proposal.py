@@ -130,7 +130,7 @@ def _check_binding(graph, parties, channels, item):
             raise ProposalError(f"instance {item['name']} party does not match the model step")
         if item.get("sender") or item.get("receiver"):
             raise ProposalError(f"network instance {item['name']} cannot name a sender or receiver")
-    if item.get("action") not in (None, "", model.get("action")):
+    if item.get("action") not in (None, "", model.get("action") or "send"):
         raise ProposalError(f"instance {item['name']} action does not match the model step")
     if "condition" in item and item.get("condition") not in (None, model.get("condition") or ""):
         raise ProposalError(f"instance {item['name']} condition does not match the model step")
@@ -193,6 +193,8 @@ def _dependencies(values, names):
         raise ProposalError("dependencies must be an array")
     out = []
     known = set(names)
+    positions = {name: index for index, name in enumerate(names)}
+    bindings = set()
     for item in values:
         if not isinstance(item, dict):
             raise ProposalError("dependency entries must be objects")
@@ -202,18 +204,23 @@ def _dependencies(values, names):
             raise ProposalError(f"dependency {prior} -> {dependent} references an unknown instance")
         if prior == dependent:
             raise ProposalError("dependency cannot point an instance at itself")
+        if positions[prior] >= positions[dependent]:
+            raise ProposalError(f"dependency {prior} -> {dependent} is not in trace order")
         kind = str(item.get("kind") or "order")
         if kind not in {"order", "data", "resource", "state"}:
             raise ProposalError(f"unknown dependency kind {kind}")
-        fields = []
-        for rel in (item.get("fields") or item.get("field_relations") or []):
-            if not isinstance(rel, dict):
-                raise ProposalError("dependency fields must be objects")
-            fields.append({
-                "prior_field": str(rel.get("prior_field") or ""),
-                "dependent_field": str(rel.get("dependent_field") or ""),
-                "derive": str(rel.get("derive") or ""),
-            })
+        if "field_relations" in item:
+            raise ProposalError("dependency uses fields as an array of state key strings")
+        fields = item.get("fields", [])
+        if not isinstance(fields, list) or any(not isinstance(field, str) or not field.strip() for field in fields):
+            raise ProposalError("dependency fields must be non-empty state key strings")
+        if kind == "data" and not fields:
+            raise ProposalError("data dependency requires at least one state key")
+        for field in fields:
+            binding = (dependent, field)
+            if binding in bindings:
+                raise ProposalError(f"step {dependent} state key {field} is bound more than once")
+            bindings.add(binding)
         out.append({
             "prior": prior,
             "dependent": dependent,
@@ -287,11 +294,7 @@ def build_proposal(graph, origin, session, request_id, build, snapshot,
                 "dependent": dependent,
                 "condition": dep.get("condition") or "",
                 "kind": "data" if relations else "order",
-                "fields": [{
-                    "prior_field": str(rel.get("prior_field") or ""),
-                    "dependent_field": str(rel.get("dependent_field") or ""),
-                    "derive": str(rel.get("derive") or ""),
-                } for rel in relations],
+                "fields": list(dict.fromkeys(str(rel.get("prior_field") or "") for rel in relations)),
             })
     globals_value = _global_context(global_context or [])
     dependencies = _dependencies(dependencies or [], _instances(trace))
@@ -334,6 +337,8 @@ def validate_proposal(proposal, graph, handlers, request=None):
             if str(proposal.get(field)) != str(request.get(field)):
                 raise ProposalError(f"proposal.{field} does not match the registered request")
     goal = proposal.get("goal") or {}
+    if not str(goal.get("reason") or "").strip():
+        raise ProposalError("goal.reason is required")
     if proposal["origin"] == "coverage" and not goal.get("handler_ids"):
         raise ProposalError("coverage proposals need goal.handler_ids")
     trace = _as_list(proposal.get("trace") or [], "trace")

@@ -41,6 +41,7 @@ pub fn write_catalog(
                 "field_relations": dependency.field_relations.iter().map(|relation| json!({
                     "prior_field": relation.prior_field,
                     "dependent_field": relation.dependent_field,
+                    "derive": relation.derive,
                 })).collect::<Vec<_>>(),
             })
         })
@@ -79,4 +80,64 @@ pub fn write_catalog(
     fs::write(path, [body.as_slice(), b"\n"].concat())
         .map_err(|error| libafl::Error::unknown(format!("writing catalog: {error}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::load_model;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn catalog_preserves_field_relation_derivations() {
+        let dir = std::env::temp_dir().join(format!(
+            "mcn-catalog-derive-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let model = json!({
+            "meta": {"schema_version":"8.0.0", "protocol":"demo", "complete":true, "documents":[]},
+            "parties": [{"name":"client", "description":"c"}, {"name":"server", "description":"s"}],
+            "messages": [{"name":"msg", "associated_fields":[{"name":"seq"}]}],
+            "channels": [{"name":"control", "description":"c", "transport":"TCP",
+                "connection":"connection_oriented", "endpoint_party_names":["client","server"],
+                "initiator_party_name":"client", "acceptor_party_name":"server", "endpoint_sources":[]}],
+            "steps": [
+                {"name":"a", "action":"send", "message_name":"msg", "channel_name":"control", "sender_name":"client", "receiver_name":"server", "condition":""},
+                {"name":"b", "action":"send", "message_name":"msg", "channel_name":"control", "sender_name":"client", "receiver_name":"server", "condition":""}
+            ],
+            "step_dependencies": [{"prior_step":"a", "dependent_step":"b", "condition":"",
+                "field_relations":[{"prior_field":"seq", "dependent_field":"seq", "derive":"increment by one"},
+                                   {"prior_field":"seq", "dependent_field":"seq"}]}],
+            "unresolved":[]
+        });
+        let model_path = dir.join("protocol.json");
+        fs::write(&model_path, model.to_string()).unwrap();
+        let model = load_model(&model_path).unwrap();
+        let binding = Binding::new(
+            [
+                ("client".into(), PartyRole::Generator),
+                ("server".into(), PartyRole::Sut),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let catalog_path = dir.join("catalog.json");
+        write_catalog(&model, &binding, &catalog_path).unwrap();
+        let catalog: serde_json::Value =
+            serde_json::from_slice(&fs::read(catalog_path).unwrap()).unwrap();
+        assert_eq!(
+            catalog["dependencies"][0]["field_relations"][0]["derive"],
+            "increment by one"
+        );
+        assert_eq!(
+            catalog["dependencies"][0]["field_relations"][1]["derive"],
+            ""
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

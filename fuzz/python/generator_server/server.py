@@ -66,7 +66,6 @@ def _run(table: dict[int, Session], request: dict, client: int, request_id: int)
     path = request.get("generator")
     params = request.get("params", {})
     step_trace = request.get("step_trace")
-    global_context = request.get("global_context", [])
     host = request.get("host", "127.0.0.1")
     port = request.get("port")
     timeout_ms = request.get("timeout_ms", 1000)
@@ -75,8 +74,6 @@ def _run(table: dict[int, Session], request: dict, client: int, request_id: int)
         raise InteractionError("generator", "run requires generator path and a params map")
     if step_trace is not None and not isinstance(step_trace, list):
         raise InteractionError("generator", "step_trace must be an array")
-    if not isinstance(global_context, list):
-        raise InteractionError("generator", "global_context must be an array")
     if not isinstance(host, str) or not isinstance(port, int) or not isinstance(timeout_ms, int):
         raise InteractionError("generator", "run requires host, port and timeout_ms")
     if not isinstance(connect_ms, int):
@@ -95,10 +92,11 @@ def _run(table: dict[int, Session], request: dict, client: int, request_id: int)
         timeout_ms / 1000.0,
         connect_timeout_s=connect_ms / 1000.0,
     )
-    ctx.global_context = _global_context(global_context)
+    ctx.generator_params = _plain_params(params)
+    ctx.global_context = ctx.generator_params
     try:
-        if step_trace:
-            generate(ctx, _plain_step_trace(step_trace))
+        if step_trace or getattr(generate, "_mcn_dispatch", False):
+            generate(ctx, _plain_step_trace(step_trace or []))
         else:
             # Direct unit tests still exercise the old in-process API. Rust
             # corpus inputs without a versioned step_trace are rejected before
@@ -107,19 +105,6 @@ def _run(table: dict[int, Session], request: dict, client: int, request_id: int)
     finally:
         ctx.close_extra()
     return _response(request_id, "ok", None, ctx.bytes_sent, ctx.bytes_recv)
-
-
-def _global_context(values: list) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for item in values:
-        if not isinstance(item, dict):
-            raise InteractionError("generator", "global_context entries must be objects")
-        name = item.get("name")
-        if not isinstance(name, str) or not name:
-            raise InteractionError("generator", "global_context entries need a name")
-        value = item.get("value")
-        out[name] = _plain(value) if value is not None else None
-    return out
 
 
 def _plain_step_trace(trace: list) -> list[dict[str, Any]]:

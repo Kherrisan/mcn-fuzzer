@@ -26,10 +26,6 @@ struct StoredInput {
     #[serde(default)]
     version: u32,
     #[serde(default)]
-    parties: Vec<crate::engine::input::PartyInstance>,
-    #[serde(default)]
-    channels: Vec<crate::engine::input::ChannelInstance>,
-    #[serde(default)]
     step_trace: Vec<crate::engine::input::StepInstance>,
     #[serde(default)]
     global_context: Vec<crate::engine::input::GlobalContextValue>,
@@ -67,10 +63,7 @@ pub fn validate_task(task: &mut Task) -> Result<(), (String, String)> {
     let stored = json!({
         "generator": validated.input.generator,
         "version": validated.input.version,
-        "parties": validated.input.trace.parties,
-        "channels": validated.input.trace.channels,
         "step_trace": validated.input.trace.steps,
-        "global_context": validated.input.global_context,
         "dependencies": validated.input.trace.dependencies,
         "params": params_json(&validated.input.params)?,
         "origin": validated.origin,
@@ -141,6 +134,7 @@ fn params_json(
 
 fn param_json(value: &ParamValue) -> Result<Value, (String, String)> {
     Ok(match value {
+        ParamValue::Null => Value::Null,
         ParamValue::Int(value) => json!(value),
         ParamValue::Bool(value) => json!(value),
         ParamValue::Str(value) => json!(value),
@@ -176,11 +170,15 @@ pub fn replay_task(task: &Task) -> Result<ReplayOutcome, (String, String)> {
         ));
     }
     let input_path = task.request_dir().join("input.json");
-    let stored: StoredInput = serde_json::from_slice(
+    let mut stored: StoredInput = serde_json::from_slice(
         &fs::read(&input_path)
             .map_err(|error| ("infrastructure".to_string(), error.to_string()))?,
     )
     .map_err(|error| ("infrastructure".to_string(), error.to_string()))?;
+    crate::engine::input::merge_legacy_globals(
+        &mut stored.params,
+        std::mem::take(&mut stored.global_context),
+    );
     let replay_id = format!(
         "{}",
         fs::read_dir(task.instance_dir.join("replays"))
@@ -276,10 +274,7 @@ pub fn replay_task(task: &Task) -> Result<ReplayOutcome, (String, String)> {
     let request = json!({
         "generator": stored.generator,
         "version": stored.version,
-        "parties": stored.parties,
-        "channels": stored.channels,
         "step_trace": stored.step_trace,
-        "global_context": stored.global_context,
         "dependencies": stored.dependencies,
         "params": params_json(&stored.params)?,
         "host": task.target.host,

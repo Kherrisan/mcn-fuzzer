@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ParamValue {
+    /// An explicitly unset shared value.
+    Null,
     /// Signed integer.
     Int(i64),
     /// Boolean.
@@ -84,34 +86,6 @@ pub struct StepInstance {
     pub broken_dependencies: Vec<String>,
 }
 
-/// One concrete party instance, bound to its model party type.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PartyInstance {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub r#type: String,
-}
-
-/// One concrete channel instance. Endpoints are party instance names, exactly
-/// like the model channel's endpoint_party_names relationship.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ChannelInstance {
-    pub name: String,
-    #[serde(rename = "type")]
-    pub r#type: String,
-    #[serde(default)]
-    pub endpoints: Vec<String>,
-}
-
-/// A field-level dependency binding between two step instances.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct FieldBinding {
-    pub prior_field: String,
-    pub dependent_field: String,
-    #[serde(default)]
-    pub derive: String,
-}
-
 /// One concrete dependency connecting two step instances.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DependencyInstance {
@@ -122,20 +96,14 @@ pub struct DependencyInstance {
     #[serde(default)]
     pub condition: String,
     #[serde(default)]
-    pub fields: Vec<FieldBinding>,
+    pub fields: Vec<String>,
     #[serde(default)]
     pub origin: String,
 }
 
-/// The mutable concrete trace. Model binding relationships are mirrored here:
-/// channel endpoints are party instances, steps reference a channel and party
-/// instances, and dependencies reference step instances.
+/// The mutable concrete trace and its instance-level dependencies.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TraceInstance {
-    #[serde(default)]
-    pub parties: Vec<PartyInstance>,
-    #[serde(default)]
-    pub channels: Vec<ChannelInstance>,
     #[serde(default, rename = "step_trace")]
     pub steps: Vec<StepInstance>,
     #[serde(default)]
@@ -143,41 +111,8 @@ pub struct TraceInstance {
 }
 
 impl TraceInstance {
-    /// Validate model-shaped bindings and dependency field materialization.
+    /// Validate step uniqueness and dependency field materialization.
     pub fn validate(&self) -> Result<(), String> {
-        let parties = self
-            .parties
-            .iter()
-            .map(|party| (party.name.as_str(), party))
-            .collect::<BTreeMap<_, _>>();
-        if parties.len() != self.parties.len() {
-            return Err("duplicate party instance name".into());
-        }
-        let channels = self
-            .channels
-            .iter()
-            .map(|channel| (channel.name.as_str(), channel))
-            .collect::<BTreeMap<_, _>>();
-        if channels.len() != self.channels.len() {
-            return Err("duplicate channel instance name".into());
-        }
-        for channel in &self.channels {
-            let mut endpoints = BTreeSet::new();
-            for endpoint in &channel.endpoints {
-                if !endpoints.insert(endpoint) {
-                    return Err(format!(
-                        "channel {} repeats endpoint {endpoint}",
-                        channel.name
-                    ));
-                }
-                if !parties.contains_key(endpoint.as_str()) {
-                    return Err(format!(
-                        "channel {} endpoint {endpoint} is not a party instance",
-                        channel.name
-                    ));
-                }
-            }
-        }
         let steps = self
             .steps
             .iter()
@@ -188,45 +123,6 @@ impl TraceInstance {
             return Err("duplicate step instance name".into());
         }
         for step in &self.steps {
-            let Some(channel) = channels.get(step.channel.as_str()) else {
-                return Err(format!(
-                    "step {} references unknown channel {}",
-                    step.name, step.channel
-                ));
-            };
-            let party_ok = |name: Option<&str>, label: &str| -> Result<(), String> {
-                let Some(name) = name else {
-                    return Err(format!("step {} needs {label}", step.name));
-                };
-                if !parties.contains_key(name) {
-                    return Err(format!(
-                        "step {} {label} {name} is not a party instance",
-                        step.name
-                    ));
-                }
-                if !channel.endpoints.iter().any(|endpoint| endpoint == name) {
-                    return Err(format!(
-                        "step {} {label} {name} is not an endpoint of channel {}",
-                        step.name, channel.name
-                    ));
-                }
-                Ok(())
-            };
-            if step.action == "send" {
-                party_ok(step.sender.as_deref(), "sender")?;
-                party_ok(step.receiver.as_deref(), "receiver")?;
-                if step.party.is_some() {
-                    return Err(format!("send step {} must not name a party", step.name));
-                }
-            } else {
-                party_ok(step.party.as_deref(), "party")?;
-                if step.sender.is_some() || step.receiver.is_some() {
-                    return Err(format!(
-                        "network step {} must not name sender/receiver",
-                        step.name
-                    ));
-                }
-            }
             if step
                 .fields
                 .keys()
@@ -265,28 +161,25 @@ impl TraceInstance {
                 ));
             }
             for field in &dependency.fields {
-                if field.prior_field.is_empty() || field.dependent_field.is_empty() {
+                if field.trim().is_empty() {
                     return Err(format!(
                         "dependency {} -> {} has an empty field binding",
                         dependency.prior, dependency.dependent
                     ));
                 }
-                if !bindings.insert((dependency.dependent.clone(), field.dependent_field.clone())) {
-                    return Err(format!(
-                        "dependent field {} is bound more than once",
-                        field.dependent_field
-                    ));
+                if !bindings.insert((dependency.dependent.clone(), field.clone())) {
+                    return Err(format!("dependent field {} is bound more than once", field));
                 }
-                let expected = format!("{}.{}", dependency.prior, field.prior_field);
+                let expected = format!("{}.{field}", dependency.prior);
                 let actual = self
                     .steps
                     .iter()
                     .find(|step| step.name == dependency.dependent)
-                    .and_then(|step| step.inputs.get(&field.dependent_field));
+                    .and_then(|step| step.inputs.get(field));
                 if actual != Some(&expected) {
                     return Err(format!(
                         "step {} input {} does not match dependency binding {expected}",
-                        dependency.dependent, field.dependent_field
+                        dependency.dependent, field
                     ));
                 }
             }
@@ -317,6 +210,18 @@ impl GlobalContextValue {
     }
 }
 
+/// Migrate old shared values into params; explicit params take precedence.
+pub(crate) fn merge_legacy_globals(
+    params: &mut BTreeMap<String, ParamValue>,
+    globals: Vec<GlobalContextValue>,
+) {
+    for entry in globals {
+        params
+            .entry(entry.name)
+            .or_insert(entry.value.unwrap_or(ParamValue::Null));
+    }
+}
+
 /// Script path plus the concrete step trace passed to `generate(ctx, step_trace)`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GeneratorInput {
@@ -325,13 +230,10 @@ pub struct GeneratorInput {
     pub version: u32,
     /// Path of the generator script. Relative paths are resolved at load time.
     pub generator: PathBuf,
-    /// Concrete trace: parties, channels, step instances, dependency instances.
+    /// Concrete step and dependency instances.
     #[serde(flatten)]
     pub trace: TraceInstance,
-    /// Per-testcase values not owned by a step.
-    #[serde(default)]
-    pub global_context: Vec<GlobalContextValue>,
-    /// Legacy parameter dictionary kept for old local seeds and global defaults.
+    /// Shared per-testcase values passed read-only to generator handlers.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, ParamValue>,
     /// Runtime capture export. Skipped by JSON, hashing, equality, and mutation.
@@ -363,7 +265,6 @@ impl GeneratorInput {
             version: STEP_TRACE_VERSION,
             generator,
             trace: TraceInstance::default(),
-            global_context: Vec::new(),
             params,
             pending: None,
         }
@@ -373,7 +274,7 @@ impl GeneratorInput {
     pub fn with_trace(
         generator: PathBuf,
         step_trace: Vec<StepInstance>,
-        global_context: Vec<GlobalContextValue>,
+        params: BTreeMap<String, ParamValue>,
     ) -> Self {
         Self {
             version: STEP_TRACE_VERSION,
@@ -382,8 +283,7 @@ impl GeneratorInput {
                 steps: step_trace,
                 ..TraceInstance::default()
             },
-            global_context,
-            params: BTreeMap::new(),
+            params,
             pending: None,
         }
     }
@@ -431,9 +331,6 @@ impl GeneratorInput {
             version: self.version,
             step_trace: &self.trace.steps,
             dependencies: &self.trace.dependencies,
-            parties: &self.trace.parties,
-            channels: &self.trace.channels,
-            global_context: &self.global_context,
             params: &self.params,
             host,
             port,
@@ -458,9 +355,6 @@ struct RunRequest<'a> {
     version: u32,
     step_trace: &'a [StepInstance],
     dependencies: &'a [DependencyInstance],
-    parties: &'a [PartyInstance],
-    channels: &'a [ChannelInstance],
-    global_context: &'a [GlobalContextValue],
     params: &'a BTreeMap<String, ParamValue>,
     host: &'a str,
     port: u16,
@@ -523,7 +417,6 @@ impl PartialEq for GeneratorInput {
         self.version == other.version
             && self.generator == other.generator
             && self.trace == other.trace
-            && self.global_context == other.global_context
             && self.params == other.params
     }
 }
@@ -535,7 +428,6 @@ impl Hash for GeneratorInput {
         self.version.hash(state);
         self.generator.hash(state);
         self.trace.hash(state);
-        self.global_context.hash(state);
         self.params.hash(state);
     }
 }
@@ -602,12 +494,13 @@ impl Input for GeneratorInput {
                 path.display()
             )));
         }
+        let mut params = parsed.params;
+        merge_legacy_globals(&mut params, parsed.global_context);
         Ok(GeneratorInput {
             version,
             generator,
             trace: parsed.trace,
-            global_context: parsed.global_context,
-            params: parsed.params,
+            params,
             pending: None,
         })
     }
@@ -682,7 +575,7 @@ mod tests {
     }
 
     #[test]
-    fn step_trace_and_global_context_roundtrip_and_legacy_is_rejected() {
+    fn step_trace_and_params_roundtrip_and_legacy_is_rejected() {
         let dir = std::env::temp_dir().join(format!("mcn-step-input-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -703,40 +596,46 @@ mod tests {
             inputs: BTreeMap::from([("token".into(), "hello_1.field".into())]),
             broken_dependencies: vec![],
         };
-        let global = GlobalContextValue {
-            name: "username".into(),
-            kind: "string".into(),
-            value: Some(ParamValue::Str("ubuntu".into())),
-            source: "constant".into(),
-            seed: None,
-        };
-        let mut input = GeneratorInput::with_trace(
+        let input = GeneratorInput::with_trace(
             std::fs::canonicalize(&script).unwrap(),
             vec![instance],
-            vec![global],
+            BTreeMap::from([("username".into(), ParamValue::Str("ubuntu".into()))]),
         );
-        input.trace.parties = vec![
-            PartyInstance {
-                name: "client".into(),
-                r#type: "client".into(),
-            },
-            PartyInstance {
-                name: "server".into(),
-                r#type: "server".into(),
-            },
-        ];
-        input.trace.channels = vec![ChannelInstance {
-            name: "control".into(),
-            r#type: "control".into(),
-            endpoints: vec!["client".into(), "server".into()],
-        }];
 
         input.trace.validate().unwrap();
         let path = dir.join("input.json");
         input.to_file(&path).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(saved.get("parties").is_none());
+        assert!(saved.get("channels").is_none());
+        assert!(saved.get("global_context").is_none());
+        let body = input
+            .run_request(1, 2, 3, 4, "127.0.0.1", 21, 1000, 1000)
+            .unwrap();
+        let request: serde_json::Value = ciborium::de::from_reader(body.as_slice()).unwrap();
+        assert!(request.get("parties").is_none());
+        assert!(request.get("channels").is_none());
+        assert!(request.get("global_context").is_none());
+        assert_eq!(request["params"]["username"], "ubuntu");
         let again = GeneratorInput::from_file(&path).unwrap();
         assert_eq!(again, input);
         assert_eq!(again.trace.steps[0].name, "hello_1");
+        let old_path = dir.join("old-v3.json");
+        let mut old = saved;
+        old["global_context"] = serde_json::json!([
+            {"name": "username", "value": "old", "source": "constant"},
+            {"name": "unset", "value": null, "source": "environment"}
+        ]);
+        old["parties"] = serde_json::json!([]);
+        old["channels"] = serde_json::json!([]);
+        std::fs::write(&old_path, serde_json::to_vec(&old).unwrap()).unwrap();
+        let migrated = GeneratorInput::from_file(&old_path).unwrap();
+        assert_eq!(
+            migrated.params["username"],
+            ParamValue::Str("ubuntu".into())
+        );
+        assert_eq!(migrated.params["unset"], ParamValue::Null);
         let legacy = dir.join("legacy.json");
         std::fs::write(&legacy, r#"{"generator":"gen.py","params":{}}"#).unwrap();
         let error = GeneratorInput::from_file(&legacy).unwrap_err();

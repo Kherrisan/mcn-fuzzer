@@ -216,10 +216,11 @@ fn duplicate_block<R: Rand>(
         copies.push(copy);
     }
     for copy in &mut copies {
-        for source in copy.inputs.values_mut() {
-            if let Some((instance, field)) = source.split_once('.') {
-                if let Some(mapped) = names.get(instance) {
+        for (field, source) in &mut copy.inputs {
+            for (original, mapped) in &names {
+                if source == &format!("{original}.{field}") {
                     *source = format!("{mapped}.{field}");
+                    break;
                 }
             }
         }
@@ -283,17 +284,9 @@ fn add_compatible_dependency<R: Rand>(
     // Only materialize a data dependency when the dependent already has an
     // explicit input binding to this prior. A field that merely exists on both
     // steps is not proof that the prior produces/saves it.
-    let binding = dependent
-        .inputs
-        .iter()
-        .find_map(|(dependent_field, source)| {
-            let (source_instance, prior_field) = source.split_once('.')?;
-            (source_instance == prior.name).then(|| crate::engine::input::FieldBinding {
-                prior_field: prior_field.to_string(),
-                dependent_field: dependent_field.clone(),
-                derive: String::new(),
-            })
-        });
+    let binding = dependent.inputs.iter().find_map(|(field, source)| {
+        (source == &format!("{}.{field}", prior.name)).then(|| field.clone())
+    });
     if let Some(binding) = binding {
         input
             .trace
@@ -312,10 +305,8 @@ fn add_compatible_dependency<R: Rand>(
             .iter_mut()
             .find(|step| step.name == *dependent_name)
         {
-            step.inputs.insert(
-                binding.dependent_field.clone(),
-                format!("{}.{}", prior.name, binding.prior_field),
-            );
+            step.inputs
+                .insert(binding.clone(), format!("{}.{binding}", prior.name));
         }
     } else {
         input
@@ -373,6 +364,7 @@ fn unique_name(trace: &[crate::engine::input::StepInstance], base: &str) -> Stri
 
 pub(crate) fn mutate_value<R: Rand>(rand: &mut R, value: &mut ParamValue) -> MutationResult {
     match value {
+        ParamValue::Null => MutationResult::Skipped,
         ParamValue::Int(number) => {
             if rand.below_or_zero(2) == 0 {
                 *number = INTERESTING[rand.below_or_zero(INTERESTING.len())];
@@ -456,6 +448,52 @@ mod tests {
     use libafl_bolts::rands::StdRand;
 
     #[test]
+    fn duplicate_block_remaps_internal_input_to_copied_instance() {
+        let step =
+            |name: &str, inputs: BTreeMap<String, String>| crate::engine::input::StepInstance {
+                name: name.into(),
+                step: name.into(),
+                action: "send".into(),
+                condition: String::new(),
+                message: None,
+                channel: "control".into(),
+                sender: Some("client".into()),
+                receiver: Some("server".into()),
+                party: None,
+                fields: BTreeMap::new(),
+                omitted_fields: vec![],
+                inputs,
+                broken_dependencies: vec![],
+            };
+        let original = GeneratorInput::with_trace(
+            PathBuf::from("/tmp/generator.py"),
+            vec![
+                step("a.1", BTreeMap::new()),
+                step(
+                    "b",
+                    BTreeMap::from([("state.key".into(), "a.1.state.key".into())]),
+                ),
+            ],
+            BTreeMap::new(),
+        );
+        let duplicate = (0..128)
+            .find_map(|seed| {
+                let mut input = original.clone();
+                duplicate_block(&mut StdRand::with_seed(seed), &mut input, 0);
+                (input.trace.steps.len() == 4).then_some(input)
+            })
+            .expect("a two-step block should be selected");
+        assert_eq!(
+            duplicate.trace.steps[1].inputs["state.key"],
+            "a.1.state.key"
+        );
+        assert_eq!(
+            duplicate.trace.steps[3].inputs["state.key"],
+            "a.1_copy1.state.key"
+        );
+    }
+
+    #[test]
     fn step_trace_field_and_step_mutations_preserve_path() {
         let mut input = GeneratorInput::with_trace(
             PathBuf::from("/tmp/ftp_session.py"),
@@ -491,23 +529,8 @@ mod tests {
                     broken_dependencies: vec![],
                 },
             ],
-            vec![],
+            BTreeMap::new(),
         );
-        input.trace.parties = vec![
-            crate::engine::input::PartyInstance {
-                name: "client".into(),
-                r#type: "client".into(),
-            },
-            crate::engine::input::PartyInstance {
-                name: "server".into(),
-                r#type: "server".into(),
-            },
-        ];
-        input.trace.channels = vec![crate::engine::input::ChannelInstance {
-            name: "control".into(),
-            r#type: "control".into(),
-            endpoints: vec!["client".into(), "server".into()],
-        }];
         let mut rand = StdRand::with_seed(11);
         assert_eq!(
             mutate_generator(&mut rand, &mut input),
@@ -519,10 +542,8 @@ mod tests {
         let mut duplicate = GeneratorInput::with_trace(
             PathBuf::from("/tmp/ftp_session.py"),
             input.trace.steps.clone(),
-            vec![],
+            BTreeMap::new(),
         );
-        duplicate.trace.parties = input.trace.parties.clone();
-        duplicate.trace.channels = input.trace.channels.clone();
         let mut rand = StdRand::with_seed(3);
         duplicate_block(&mut rand, &mut duplicate, 0);
         duplicate.trace.validate().expect("duplicated trace");

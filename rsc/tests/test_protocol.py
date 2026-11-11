@@ -24,6 +24,12 @@ def test_missing_names_and_unrelated_fields_are_not_reference_errors():
     assert object_errors(model, {"rfc9999": document()}) == {}
 
 
+def test_dependency_field_relation_accepts_derivation():
+    model = merged_sample()
+    model["step_dependencies"][0]["field_relations"][0]["derive"] = "increment by one"
+    assert object_errors(model, {"rfc9999": document()}) == {}
+
+
 def test_connectionless_roles_are_a_structural_error():
     model = merged_sample()
     model["channels"][0]["connection"] = "connectionless"

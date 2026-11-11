@@ -2,8 +2,9 @@
 //!
 //! Rust no longer measures regions or maintains the protocol graph. It
 //! registers a frozen snapshot with the service, asks the agent for a
-//! proposal, validates the frozen file, commits the graph transaction, and
-//! hands the proposal to synthesis.
+//! proposal. Python validates that file in submit_proposal. Rust checks the
+//! result identity, hashes the frozen bytes, commits the graph transaction,
+//! and hands the proposal to synthesis.
 
 use std::{
     collections::BTreeSet,
@@ -21,7 +22,7 @@ use serde_json::{json, Value};
 use super::{
     events::SharedLog,
     mcp::McpClient,
-    proposal::{sha256_file, AcceptedProposal, Proposal, ProposalIdentity, ProposalMailbox},
+    proposal::{sha256_file, AcceptedProposal, Proposal, ProposalMailbox},
 };
 use crate::{
     agents::{
@@ -170,8 +171,6 @@ struct AnalysisRequest {
     session: String,
     build: String,
     output_dir: PathBuf,
-    model: IndexedModel,
-    binding: Binding,
 }
 
 impl AgentTask for AnalysisRequest {
@@ -214,13 +213,6 @@ impl AgentTask for AnalysisRequest {
         }
         let path = self.output_dir.join("proposal.json");
         let proposal = Proposal::read(&path)?;
-        let identity = ProposalIdentity {
-            session: self.session.clone(),
-            request_id: self.id.clone(),
-            build: self.build.clone(),
-            snapshot: format!("{:06}", self.snapshot),
-        };
-        proposal.validate(&self.model, &self.binding, &identity)?;
         let sha256 = sha256_file(&path)?;
         Ok(PreparedProposal {
             proposal,
@@ -318,7 +310,9 @@ impl CoverageAnalysisStage {
                 campaign.coverage.analysis_profile, profile.provider
             )));
         }
-        let launch = command_line(profile, &std::path::absolute(analysis_root.join("init"))?)?;
+        // Codex workspace-write uses this process cwd. init/ and requests/ are
+        // both children, so a later task can publish requests/<id>/result.json.
+        let launch = command_line(profile, &std::path::absolute(analysis_agent_cwd(&analysis_root))?)?;
         let launch = mcp_launch(launch, campaign)?;
         let secrets = launch.secrets();
         let log = SharedLog::open(
@@ -525,9 +519,9 @@ impl CoverageAnalysisStage {
         let Some(snapshot) = self.pending.take() else {
             return Ok(());
         };
-        let Some(model) = self.model.as_ref() else {
+        if self.model.is_none() {
             return Ok(());
-        };
+        }
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|value| value.as_nanos())
@@ -597,8 +591,6 @@ impl CoverageAnalysisStage {
                     session: self.session.clone(),
                     build: self.fingerprint.clone(),
                     output_dir: output_dir.clone(),
-                    model: model.clone(),
-                    binding: self.binding.clone(),
                 },
                 prompt,
             })
@@ -826,6 +818,12 @@ where
         }
         Ok(())
     }
+}
+
+/// Working directory of the coverage agent. Codex treats it as the writable
+/// workspace, so it must be the analysis root rather than `init/`.
+fn analysis_agent_cwd(analysis_root: &Path) -> &Path {
+    analysis_root
 }
 
 fn mcp_launch(mut launch: CommandLine, campaign: &Campaign) -> Result<CommandLine, Error> {
@@ -1069,5 +1067,17 @@ pythonpath = "pp"
         assert_eq!(stderr, dir.join("sut.stderr.log"));
         assert!(stdout.is_absolute());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn analysis_agent_cwd_contains_init_and_request_output() {
+        let root = Path::new("/output/coverage/build/analysis");
+        let cwd = analysis_agent_cwd(root);
+        assert_eq!(cwd, root);
+        let init = root.join("init/ready.json");
+        let result = root.join("requests/000001-abc/result.json");
+        assert!(init.starts_with(cwd));
+        assert!(result.starts_with(cwd));
+        assert_ne!(cwd, root.join("init"));
     }
 }

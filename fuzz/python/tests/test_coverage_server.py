@@ -121,6 +121,41 @@ def fixture(root):
 
 
 class CoverageTests(unittest.TestCase):
+    def test_dependency_fields_are_state_keys(self):
+        keys = ["size", "token"]
+        dependency = {"prior": "a", "dependent": "c", "kind": "data", "fields": keys}
+        self.assertEqual(proposal_mod._dependencies([dependency], ["a", "c"])[0]["fields"], keys)
+        for invalid in ([{"prior_field": "size", "dependent_field": "offset"}], [""], []):
+            with self.subTest(fields=invalid), self.assertRaises(proposal_mod.ProposalError):
+                proposal_mod._dependencies([{**dependency, "fields": invalid}], ["a", "c"])
+        with self.assertRaises(proposal_mod.ProposalError):
+            proposal_mod._dependencies([dependency, {**dependency, "prior": "b"}], ["a", "b", "c"])
+        with self.assertRaisesRegex(proposal_mod.ProposalError, "not in trace order"):
+            proposal_mod._dependencies([dependency], ["c", "a"])
+
+    def test_model_field_relation_uses_prior_field_as_state_key(self):
+        model = model_document()
+        model["steps"].append({**model["steps"][0], "name": "next"})
+        model["step_dependencies"] = [{
+            "prior_step": "hello", "dependent_step": "next", "condition": "",
+            "field_relations": [{"prior_field": "transfer size", "dependent_field": "restart marker",
+                                 "derive": "subtract acknowledged bytes"}],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "protocol.json"
+            path.write_text(json.dumps(model))
+            graph = protocol_mod.load_protocol(path)
+            relation = graph.dependencies("next")["before"][0]["field_relations"][0]
+            self.assertEqual(relation["derive"], "subtract acknowledged bytes")
+            parties = {"client_1": "client", "server_1": "server"}
+            channels = {"control_1": {"channel": "control", "endpoints": ["client_1", "server_1"]}}
+            trace = [{"name": name, "step": step, "channel": "control_1", "sender": "client_1",
+                      "receiver": "server_1", "reason": "test"}
+                     for name, step in [("first", "hello"), ("second", "next")]]
+            proposal = proposal_mod.build_proposal(graph, "autonomous", "s", "r", "", "",
+                                                   {"reason": "test"}, trace, None, parties, channels)
+            self.assertEqual(proposal["dependencies"][0]["fields"], ["transfer size"])
+
     def test_aliases_join_file_prefixed_names(self):
         with tempfile.TemporaryDirectory() as raw:
             path = Path(raw) / "coverage.json"
@@ -221,6 +256,10 @@ class ProposalTests(unittest.TestCase):
                 proposal_mod.validate_proposal(changed, graph, handlers,
                                                {"session": "s", "request_id": "req",
                                                 "build": "build1", "snapshot": "000001"})
+            missing_reason = json.loads(json.dumps(proposal))
+            missing_reason["goal"]["reason"] = "  "
+            with self.assertRaises(proposal_mod.ProposalError):
+                proposal_mod.validate_proposal(missing_reason, graph, handlers)
 
 
 def _network_model():
@@ -404,6 +443,106 @@ class ServiceTests(unittest.TestCase):
                 again = call({"op": "commit_analysis", "request_id": "req-1",
                               "proposal_sha256": digest})
                 self.assertEqual(again["graph_revision"], 1)
+                call({"op": "shutdown"})
+            finally:
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                stderr = proc.stderr.read().decode()
+                if proc.returncode not in (0, None):
+                    self.fail(stderr)
+
+    def test_stdio_bridge_lists_tools_and_loads_snapshot(self):
+        try:
+            from mcp import Client
+            from mcp.client.stdio import StdioServerParameters
+        except ImportError:
+            self.skipTest("mcp package is not installed")
+        import asyncio
+
+        python_root = Path(__file__).resolve().parents[1]
+        server_py = python_root / "coverage_analysis" / "server.py"
+        with tempfile.TemporaryDirectory() as raw:
+            files = fixture(raw)
+            socket_path = str(files["root"] / "mcp.sock")
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "coverage_analysis.server", "serve",
+                 "--socket", socket_path, "--state-dir", str(files["root"] / "state"),
+                 "--source-root", str(files["source"])],
+                cwd=str(python_root),
+                env={**os.environ, "PYTHONPATH": str(python_root)},
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                for _ in range(100):
+                    if os.path.exists(socket_path):
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("coverage service did not create its socket")
+
+                def call(payload):
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                        client.settimeout(20)
+                        client.connect(socket_path)
+                        client.sendall(json.dumps(payload).encode() + b"\n")
+                        data = b""
+                        while b"\n" not in data:
+                            chunk = client.recv(1 << 20)
+                            if not chunk:
+                                break
+                            data += chunk
+                    reply = json.loads(data.split(b"\n")[0])
+                    self.assertTrue(reply.get("ok"), reply)
+                    return reply["result"]
+
+                call({"op": "register_request", "request": {
+                    "request_id": "req-1", "session": "s", "build": "build1",
+                    "snapshot": "000001",
+                    "output_dir": str(files["out"]),
+                    "snapshot_dir": str(files["snapshot"]),
+                    "manifest": str(files["manifest"]),
+                    "model": str(files["protocol"]),
+                    "catalog": str(files["catalog"]),
+                    "handlers": str(files["handlers"]),
+                    "source_dir": str(files["source"]),
+                }})
+
+                async def drive():
+                    params = StdioServerParameters(
+                        command=sys.executable,
+                        args=[str(server_py), "stdio", "--socket", socket_path],
+                        cwd=str(python_root),
+                        env={
+                            "PATH": os.environ.get("PATH", ""),
+                            "HOME": os.environ.get("HOME", "/tmp"),
+                            "PYTHONPATH": str(python_root),
+                        },
+                    )
+                    async with Client(params, mode="legacy") as client:
+                        listed = await client.list_tools()
+                        loaded = await client.call_tool("load_profdata", {
+                            "request_id": "req-1",
+                            "snapshot_dir": str(files["snapshot"]),
+                            "manifest_path": str(files["manifest"]),
+                        })
+                        overview = await client.call_tool(
+                            "show_overview_code_coverage", {})
+                        return listed, loaded, overview
+
+                listed, loaded, overview = asyncio.run(asyncio.wait_for(drive(), 40))
+                names = {tool.name for tool in listed.tools}
+                for required in ("load_profdata", "begin_analysis",
+                                 "show_overview_code_coverage", "submit_proposal"):
+                    self.assertIn(required, names)
+                self.assertFalse(loaded.is_error, loaded)
+                body = json.loads(loaded.content[0].text)
+                self.assertEqual(body["snapshot"], "000001")
+                self.assertEqual(body["profdata"], "coverage.profdata.zlib")
+                self.assertFalse(overview.is_error, overview)
+                summary = json.loads(overview.content[0].text)
+                self.assertEqual(summary["total_branches"], 2)
+                self.assertEqual(summary["covered_branches"], 1)
                 call({"op": "shutdown"})
             finally:
                 try:

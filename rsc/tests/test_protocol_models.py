@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from rsc.protocol.contract import COLLECTIONS, protocol_schema
 from rsc.protocol.models import (
     AssociatedField,
+    FieldRelation,
     Issue,
     ProtocolModel,
     protocol_json_schema,
@@ -18,6 +19,14 @@ from rsc.protocol.models import (
 
 def test_published_schema_is_unchanged():
     assert protocol_schema() == protocol_json_schema()
+
+
+def test_field_relation_supports_optional_derive():
+    relation = {"prior_field": "sequence", "dependent_field": "sequence"}
+    assert FieldRelation.model_validate(relation).derive == ""
+    assert FieldRelation.model_validate({**relation, "derive": "increment by one"}).derive == "increment by one"
+    with pytest.raises(ValidationError):
+        FieldRelation.model_validate({**relation, "derive": 1})
 
 
 def test_final_model_rejects_audit_fields():

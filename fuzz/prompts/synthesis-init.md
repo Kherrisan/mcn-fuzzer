@@ -147,7 +147,7 @@ failure, not for predicted SUT rejection.
    Check proposal/RFC consistency without assessing SUT capabilities; report
    intrinsic protocol conflicts instead of dropping selected steps.
 3. Write a self-contained generator module, a parameter schema, and valid initial
-   parameters. Keep imports safe before fork and case resources inside generate().
+   parameters. Keep imports safe before fork and case resources inside the initializer or handlers.
    Follow the detailed API/lifecycle rules supplied by the generation task.
 4. Use the skill's fixed validator with the campaign Python for syntax, interface,
    schema/parameter and completion checks, plus its isolated import probe. Write
@@ -176,7 +176,7 @@ Every later successful request writes four files in its own OUTPUT_DIR:
 
 | File | Required content |
 | --- | --- |
-| generator.py | Complete importable module with synchronous top-level def generate(ctx, step_trace). Include helper/mock code and integration with installed Python modules in this module. |
+| generator.py | Complete importable module with a synchronous `@step_handler("model step name")` function accepting `(ctx, params)` for each selected step name, and optionally one `@global_init` function with the same signature. Runtime dispatches the trace and exposes the current instance as `ctx.step_instance` and its name as `ctx.step_name`. |
 | params.schema.json | Root object schema describing initial values for proposal mutable fields; Rust mutates final trace fields and does not revalidate it. |
 | params.json | Initial mutable-field defaults (strings, signed 64-bit integers, booleans, or nested lists). Rust uses them when the proposal declares mutable fields; it does not pass this object to generator. |
 | result.json | Completion signal with the exact request_id, status="ok", and added_steps as an array of strings. Publish last by atomic rename. |

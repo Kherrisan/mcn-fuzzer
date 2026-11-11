@@ -38,14 +38,11 @@ def main(argv: list[str] | None = None) -> int:
             float(request["timeout_s"]),
             connect_timeout_s=float(request["connect_timeout_s"]),
         )
-        ctx.global_context = {
-            str(item.get("name")): item.get("value")
-            for item in (request.get("global_context") or [])
-            if isinstance(item, dict) and item.get("name")
-        }
+        ctx.generator_params = request.get("params") or {}
+        ctx.global_context = ctx.generator_params
         trace = request.get("step_trace")
-        if trace:
-            generate(ctx, trace)
+        if trace or getattr(generate, "_mcn_dispatch", False):
+            generate(ctx, trace or [])
         else:
             generate(ctx, request.get("params") or {})
     except Exception as exc:

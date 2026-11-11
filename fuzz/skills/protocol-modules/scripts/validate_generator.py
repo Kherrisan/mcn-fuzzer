@@ -104,6 +104,28 @@ def check_generator(path):
         compile(tree, str(path), "exec")
     except (OSError, SyntaxError, ValueError) as exc:
         raise ValidationError(f"generator syntax: {exc}") from exc
+    decorated = []
+    for node in tree.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Name) and decorator.func.id == "step_handler":
+                decorated.append((node, "step"))
+            elif isinstance(decorator, ast.Name) and decorator.id == "global_init":
+                decorated.append((node, "init"))
+    if any(kind == "step" for _, kind in decorated):
+        for node, _ in decorated:
+            if isinstance(node, ast.AsyncFunctionDef):
+                raise ValidationError("step handlers and global initializer must be synchronous")
+            args = node.args
+            positional = args.posonlyargs + args.args
+            if (len(positional) - len(args.defaults) > 2
+                    or (len(positional) < 2 and args.vararg is None)
+                    or any(default is None for default in args.kw_defaults)):
+                raise ValidationError("step handlers and global initializer must accept (ctx, params)")
+            if any(isinstance(child, (ast.Yield, ast.YieldFrom)) for child in ast.walk(node)):
+                raise ValidationError("step handlers and global initializer must not yield")
+        return
     functions = [node for node in tree.body
                  if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "generate"]
     if not functions or isinstance(functions[-1], ast.AsyncFunctionDef):
@@ -202,7 +224,7 @@ def validate(output_dir, request_id, result_path=None,
     checks.append("production schema subset and recursive signed-64-bit parameter representation")
     generator = output_dir / "generator.py"
     check_generator(generator)
-    checks.append("Python compilation and synchronous generate(ctx, params) interface")
+    checks.append("Python compilation and synchronous generator interface")
     if import_check:
         check_imports(generator, pythonpath, timeout)
         checks.append("isolated import, callable signature and import-time resource guard")

@@ -173,6 +173,10 @@ class FieldRelation(StrictModel):
     dependent_field: NonEmpty = Field(
         description="Field name, optionally qualified as Message.field."
     )
+    derive: str = Field(
+        default="",
+        description="How the dependent field is computed from the prior field; empty means direct reuse.",
+    )
 
 
 class StepDependency(StrictModel):

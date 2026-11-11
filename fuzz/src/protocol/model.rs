@@ -262,6 +262,8 @@ pub(crate) struct Dependency {
 pub(crate) struct FieldRelation {
     pub(crate) prior_field: String,
     pub(crate) dependent_field: String,
+    #[serde(default)]
+    pub(crate) derive: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
