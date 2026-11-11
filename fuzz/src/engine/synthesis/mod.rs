@@ -390,8 +390,17 @@ impl GeneratorSynthesisStage {
                 )));
             }
             fs::create_dir_all(&output_dir)?;
-            fs::copy(&accepted.path, output_dir.join("proposal.json"))
-                .map_err(|error| Error::unknown(format!("copying proposal: {error}")))?;
+            let synthesis_proposal = accepted
+                .proposal
+                .synthesis_copy()
+                .map_err(Error::illegal_state)?;
+            let body = serde_json::to_vec_pretty(&synthesis_proposal).map_err(|error| {
+                Error::serialize(format!("writing synthesis proposal: {error}"))
+            })?;
+            fs::write(
+                output_dir.join("proposal.json"),
+                [body.as_slice(), b"\n"].concat(),
+            )?;
             (
                 request,
                 output_dir,

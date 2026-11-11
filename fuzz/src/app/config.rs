@@ -925,7 +925,11 @@ pythonpath = "pp"
             Campaign::load(Path::new("targets/openssl/campaign.toml")).expect("openssl campaign");
         let placeholders = campaign.placeholders(4433);
         assert!(campaign.target.args.iter().any(|arg| arg == "-naccept"));
-        assert!(campaign.target.args.iter().any(|arg| arg.contains("@PORT@")));
+        assert!(campaign
+            .target
+            .args
+            .iter()
+            .any(|arg| arg.contains("@PORT@")));
     }
 
     #[test]

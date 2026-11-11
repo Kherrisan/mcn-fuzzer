@@ -231,6 +231,8 @@ def _proposal_command(args):
         parties=draft.get("parties") or {},
         channels=draft.get("channels") or {},
         mutations=draft.get("mutations") or [],
+        global_context=draft.get("global_context") or [],
+        dependencies=draft.get("dependencies"),
     )
     proposal_mod.validate_proposal(proposal, graph, handlers)
     proposal_mod.freeze(args.output, proposal)

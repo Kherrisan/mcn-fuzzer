@@ -11,10 +11,8 @@ use std::{
 use serde_json::{json, Value};
 
 use crate::{
-    app::config::TargetPlaceholders,
-    engine::executor::run_cleanup_script,
-    engine::input::ParamValue,
-    engine::synthesis::TraceOrigin,
+    app::config::TargetPlaceholders, engine::executor::run_cleanup_script,
+    engine::input::ParamValue, engine::synthesis::TraceOrigin,
 };
 
 use super::{
@@ -25,6 +23,19 @@ use super::{
 #[derive(serde::Deserialize)]
 struct StoredInput {
     generator: PathBuf,
+    #[serde(default)]
+    version: u32,
+    #[serde(default)]
+    parties: Vec<crate::engine::input::PartyInstance>,
+    #[serde(default)]
+    channels: Vec<crate::engine::input::ChannelInstance>,
+    #[serde(default)]
+    step_trace: Vec<crate::engine::input::StepInstance>,
+    #[serde(default)]
+    global_context: Vec<crate::engine::input::GlobalContextValue>,
+    #[serde(default)]
+    dependencies: Vec<crate::engine::input::DependencyInstance>,
+    #[serde(default)]
     params: std::collections::BTreeMap<String, ParamValue>,
     origin: TraceOrigin,
 }
@@ -55,6 +66,12 @@ pub fn validate_task(task: &mut Task) -> Result<(), (String, String)> {
         .map_err(classify_validation)?;
     let stored = json!({
         "generator": validated.input.generator,
+        "version": validated.input.version,
+        "parties": validated.input.trace.parties,
+        "channels": validated.input.trace.channels,
+        "step_trace": validated.input.trace.steps,
+        "global_context": validated.input.global_context,
+        "dependencies": validated.input.trace.dependencies,
         "params": params_json(&validated.input.params)?,
         "origin": validated.origin,
     });
@@ -258,6 +275,12 @@ pub fn replay_task(task: &Task) -> Result<ReplayOutcome, (String, String)> {
     let result_path = replay_dir.join("exec-result.json");
     let request = json!({
         "generator": stored.generator,
+        "version": stored.version,
+        "parties": stored.parties,
+        "channels": stored.channels,
+        "step_trace": stored.step_trace,
+        "global_context": stored.global_context,
+        "dependencies": stored.dependencies,
         "params": params_json(&stored.params)?,
         "host": task.target.host,
         "port": port,

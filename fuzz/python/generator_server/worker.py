@@ -23,12 +23,14 @@ EXIT_CONN = 76
 EXIT_EOF = 77
 EXIT_ALERT = 78
 EXIT_GENERATOR = 79
+EXIT_DEPENDENCY = 80
 
 _STATUS_CODE = {
     "timeout": EXIT_TIMEOUT,
     "conn": EXIT_CONN,
     "eof": EXIT_EOF,
     "alert": EXIT_ALERT,
+    "dependency": EXIT_DEPENDENCY,
 }
 
 
@@ -54,6 +56,7 @@ def status_from_exit(code: int) -> str:
         EXIT_CONN: "conn",
         EXIT_EOF: "eof",
         EXIT_ALERT: "alert",
+        EXIT_DEPENDENCY: "dependency",
     }.get(code, "generator")
 
 

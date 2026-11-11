@@ -20,7 +20,7 @@ class Registry:
         if cached is not None:
             generate = getattr(cached, "generate", None)
             if not callable(generate):
-                raise ValueError(f"{key} has no generate(ctx, params)")
+                raise ValueError(f"{key} has no generate(ctx, step_trace)")
             return generate
         module_name = f"libaflstar_generator_{len(self._modules)}"
         spec = importlib.util.spec_from_file_location(module_name, key)
@@ -30,7 +30,7 @@ class Registry:
         spec.loader.exec_module(module)
         generate = getattr(module, "generate", None)
         if not callable(generate):
-            raise ValueError(f"{key} has no generate(ctx, params)")
+            raise ValueError(f"{key} has no generate(ctx, step_trace)")
         self._modules[key] = module
         self.loads += 1
         return generate

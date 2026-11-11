@@ -16,6 +16,9 @@ from typing import Optional
 from .transport import SocketEndpoint, SocketTransport, Transport, TransportError
 
 
+_MISSING = object()
+
+
 class InteractionError(Exception):
     def __init__(self, status: str, message: str) -> None:
         super().__init__(message)
@@ -74,6 +77,57 @@ class Ctx:
         self._transport: Transport = transport if transport is not None else SocketTransport()
         self._extra: list[Channel] = []
         self._listeners: list[Listener] = []
+        self.global_context: dict = {}
+        self.states: dict[tuple[str, str], object] = {}
+
+    def get_global(self, name: str, default=None):
+        """Read a testcase-scoped global_context value."""
+        return self.global_context.get(name, default)
+
+    def save_state(self, instance: str, field: str, value) -> None:
+        """Store a state value under the concrete instance that produced it."""
+        if not instance or not field:
+            raise InteractionError("generator", "output instance and field must be non-empty")
+        self.states[(str(instance), str(field))] = value
+
+    def load_state(self, instance: str, field: str, default=None):
+        """Read a saved state; missing values are never fabricated."""
+        return self.states.get((str(instance), str(field)), default)
+
+    def field(self, instance: dict, name: str, default=_MISSING):
+        """Resolve a step-instance field in the required precedence order.
+
+        Explicit Rust values win. An omitted field is final and is not refilled.
+        Otherwise a dependency binding (`inputs`) or global_context is read.
+        """
+        if not isinstance(instance, dict):
+            raise InteractionError("generator", "step instance must be a dict")
+        fields = instance.get("fields") or {}
+        if name in fields:
+            return fields[name]
+        omitted = instance.get("omitted_fields") or []
+        if name in omitted:
+            raise InteractionError(
+                "dependency", f"field {name!r} was omitted for {instance.get('name')}"
+            )
+        inputs = instance.get("inputs") or {}
+        source = inputs.get(name)
+        if source:
+            prior, _, prior_field = str(source).partition(".")
+            if not prior or not prior_field:
+                raise InteractionError("dependency", f"invalid dependency binding {source!r}")
+            if (prior, prior_field) not in self.states:
+                raise InteractionError(
+                    "dependency", f"missing state {source!r} for field {name!r}"
+                )
+            return self.states[(prior, prior_field)]
+        if name in self.global_context:
+            return self.global_context[name]
+        if default is not _MISSING:
+            return default
+        raise InteractionError(
+            "dependency", f"field {name!r} has no explicit, dependency, or global value"
+        )
 
     def _timeout(self, timeout: Optional[float]) -> float:
         if timeout is None:

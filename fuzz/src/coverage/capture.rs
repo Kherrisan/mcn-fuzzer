@@ -1651,7 +1651,11 @@ mod tests {
         let script = dir.join("gen.py");
         std::fs::write(&script, "def generate(ctx, params):\n    pass\n").unwrap();
         let seed = dir.join("seed.json");
-        std::fs::write(&seed, format!("{{\"generator\":\"{}\"}}", script.display())).unwrap();
+        std::fs::write(
+            &seed,
+            format!("{{\"version\":3,\"generator\":\"{}\"}}", script.display()),
+        )
+        .unwrap();
         let base = GeneratorInput::from_file(&seed).unwrap();
         let engine = Arc::new(CaptureEngine::new(CaptureConfig::default()));
         let mut feedback = PcapToMetadataFeedback::new(Arc::clone(&engine));

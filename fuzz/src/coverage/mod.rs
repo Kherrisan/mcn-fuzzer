@@ -496,7 +496,13 @@ where
 
 fn input_fingerprint(input: &GeneratorInput) -> Result<String, Error> {
     let mut canonical = serde_json::to_vec(&InputView {
+        version: input.version,
         generator: input.generator.display().to_string(),
+        parties: &input.trace.parties,
+        channels: &input.trace.channels,
+        step_trace: &input.trace.steps,
+        global_context: &input.global_context,
+        dependencies: &input.trace.dependencies,
         params: &input.params,
     })
     .map_err(|error| Error::serialize(format!("coverage input fingerprint: {error}")))?;
@@ -507,7 +513,13 @@ fn input_fingerprint(input: &GeneratorInput) -> Result<String, Error> {
 
 #[derive(Serialize)]
 struct InputView<'a> {
+    version: u32,
     generator: String,
+    parties: &'a [crate::engine::input::PartyInstance],
+    channels: &'a [crate::engine::input::ChannelInstance],
+    step_trace: &'a [crate::engine::input::StepInstance],
+    global_context: &'a [crate::engine::input::GlobalContextValue],
+    dependencies: &'a [crate::engine::input::DependencyInstance],
     params: &'a BTreeMap<String, crate::engine::input::ParamValue>,
 }
 
@@ -2005,7 +2017,7 @@ mod tests {
             fs::write(
                 corpus.join(name),
                 format!(
-                    "{{\"generator\":\"{}\",\"params\":{{\"n\":{n}}}}}\n",
+                    "{{\"version\":3,\"generator\":\"{}\",\"params\":{{\"n\":{n}}}}}\n",
                     script.display()
                 ),
             )

@@ -319,6 +319,8 @@ class State:
             parties=payload.get("parties") or {},
             channels=payload.get("channels") or {},
             mutations=payload.get("mutations") or [],
+            global_context=payload.get("global_context") or [],
+            dependencies=payload.get("dependencies"),
             graph_revision=graph.revision,
         )
         proposal_mod.validate_proposal(proposal, graph, handlers, request.identity())

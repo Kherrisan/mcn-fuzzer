@@ -375,7 +375,7 @@ mod tests {
         touch(&script, "def generate(ctx, params):\n    return None\n");
         touch(
             &dir.join(".hidden.json"),
-            "{\"generator\":\"gen.py\",\"params\":{}}\n",
+            "{\"version\":3,\"generator\":\"gen.py\",\"params\":{}}\n",
         );
         touch(&dir.join("skip.metadata"), "{}");
         touch(&dir.join("skip.pcap"), "pcap");
@@ -385,14 +385,20 @@ mod tests {
         touch(
             &earlier,
             &format!(
-                "{{\"generator\":\"{}\",\"params\":{{\"n\":1}}}}\n",
+                "{{\"version\":3,\"generator\":\"{}\",\"params\":{{\"n\":1}}}}\n",
                 script.display()
             ),
         );
         sleep(Duration::from_millis(20));
-        touch(&later, "{\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n");
+        touch(
+            &later,
+            "{\"version\":3,\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n",
+        );
         let same = dir.join("c.json");
-        touch(&same, "{\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n");
+        touch(
+            &same,
+            "{\"version\":3,\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n",
+        );
         let selected = select_inputs(&dir).unwrap();
         let names: Vec<_> = selected.iter().map(|item| item.name.clone()).collect();
         assert_eq!(names, vec!["a.json", "b.json", "c.json"]);

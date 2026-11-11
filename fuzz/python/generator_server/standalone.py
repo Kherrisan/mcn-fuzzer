@@ -38,7 +38,16 @@ def main(argv: list[str] | None = None) -> int:
             float(request["timeout_s"]),
             connect_timeout_s=float(request["connect_timeout_s"]),
         )
-        generate(ctx, request.get("params") or {})
+        ctx.global_context = {
+            str(item.get("name")): item.get("value")
+            for item in (request.get("global_context") or [])
+            if isinstance(item, dict) and item.get("name")
+        }
+        trace = request.get("step_trace")
+        if trace:
+            generate(ctx, trace)
+        else:
+            generate(ctx, request.get("params") or {})
     except Exception as exc:
         status = "error"
         exception_type = type(exc).__name__

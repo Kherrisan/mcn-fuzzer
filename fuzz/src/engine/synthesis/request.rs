@@ -5,6 +5,7 @@ use std::{fs, path::PathBuf, sync::Arc};
 use serde_json::Value;
 
 use super::{prompts, GeneratorInput, TraceOrigin};
+use crate::engine::input::StepInstance;
 use crate::{
     coverage::proposal::{Proposal, ProposalIdentity},
     protocol::{Binding, IndexedModel},
@@ -50,6 +51,12 @@ impl GeneratorRequest {
     pub(super) fn accept(&self) -> Result<ValidatedGenerator, String> {
         let (result, params) = super::artifacts::check(&self.output_dir, &self.id)?;
         let proposal = Proposal::read(&self.output_dir.join("proposal.json"))?;
+        if !proposal.mutations.is_empty() {
+            return Err(
+                "synthesis proposal still contains mutations; Rust must strip them before synthesis"
+                    .to_string(),
+            );
+        }
         // A coverage proposal keeps the analysis request id it was created for;
         // the synthesis request id is recorded by result.json and the directory.
         // Autonomous proposals are authored for this synthesis request.
@@ -94,6 +101,53 @@ impl GeneratorRequest {
         .map_err(|error| error.to_string())?;
         let generator =
             fs::canonicalize(published.join("generator.py")).map_err(|error| error.to_string())?;
+        let step_trace = proposal
+            .trace
+            .iter()
+            .map(|step| {
+                let fields = step
+                    .mutable_fields
+                    .iter()
+                    .filter_map(|field| {
+                        params
+                            .get(&field.field)
+                            .cloned()
+                            .or_else(|| field.default.clone())
+                            .map(|value| (field.field.clone(), value))
+                    })
+                    .collect();
+                StepInstance {
+                    name: step.name.clone(),
+                    step: step.step.clone(),
+                    action: step.action.clone(),
+                    condition: step.condition.clone(),
+                    message: step.message.clone(),
+                    channel: step.channel.clone(),
+                    sender: step.sender.clone(),
+                    receiver: step.receiver.clone(),
+                    party: step.party.clone(),
+                    fields,
+                    omitted_fields: Vec::new(),
+                    inputs: std::collections::BTreeMap::new(),
+                    broken_dependencies: Vec::new(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut step_trace = step_trace;
+        for dependency in &proposal.dependencies {
+            let Some(dependent) = step_trace
+                .iter_mut()
+                .find(|step| step.name == dependency.dependent)
+            else {
+                continue;
+            };
+            for binding in &dependency.fields {
+                dependent.inputs.insert(
+                    binding.dependent_field.clone(),
+                    format!("{}.{}", dependency.prior, binding.prior_field),
+                );
+            }
+        }
         let added = result
             .get("added_steps")
             .and_then(Value::as_array)
@@ -105,8 +159,55 @@ impl GeneratorRequest {
                     .collect()
             })
             .unwrap_or_default();
+        let parties = proposal
+            .parties
+            .iter()
+            .map(|(name, model_party)| crate::engine::input::PartyInstance {
+                name: name.clone(),
+                r#type: model_party.clone(),
+            })
+            .collect::<Vec<_>>();
+        let channels = proposal
+            .channels
+            .iter()
+            .map(|(name, channel)| crate::engine::input::ChannelInstance {
+                name: name.clone(),
+                r#type: channel.channel.clone(),
+                endpoints: channel.endpoints.clone(),
+            })
+            .collect::<Vec<_>>();
+        let dependencies = proposal
+            .dependencies
+            .iter()
+            .map(|dependency| crate::engine::input::DependencyInstance {
+                prior: dependency.prior.clone(),
+                dependent: dependency.dependent.clone(),
+                kind: if dependency.kind.is_empty() {
+                    "order".to_string()
+                } else {
+                    dependency.kind.clone()
+                },
+                condition: dependency.condition.clone(),
+                fields: dependency
+                    .fields
+                    .iter()
+                    .map(|binding| crate::engine::input::FieldBinding {
+                        prior_field: binding.prior_field.clone(),
+                        dependent_field: binding.dependent_field.clone(),
+                        derive: binding.derive.clone(),
+                    })
+                    .collect(),
+                origin: "proposal".into(),
+            })
+            .collect();
+        let mut input =
+            GeneratorInput::with_trace(generator, step_trace, proposal.global_context.clone());
+        input.trace.parties = parties;
+        input.trace.channels = channels;
+        input.trace.dependencies = dependencies;
+        input.trace.validate()?;
         Ok(ValidatedGenerator {
-            input: GeneratorInput::new(generator, params),
+            input,
             origin: TraceOrigin {
                 request_id: self.id.clone(),
                 session: proposal.session.clone(),

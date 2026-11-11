@@ -119,6 +119,44 @@ fn autonomous_request_accepts_its_own_proposal_without_a_receipt() {
 }
 
 #[test]
+fn accepted_input_carries_step_trace_and_mutable_field_defaults() {
+    let (model, binding, dir) = fixture();
+    write_request(&dir, &model, "s", "r1", "autonomous");
+    let mut proposal: crate::coverage::proposal::Proposal =
+        serde_json::from_slice(&fs::read(dir.join("proposal.json")).unwrap()).unwrap();
+    proposal.trace[0]
+        .mutable_fields
+        .push(crate::coverage::proposal::MutableField {
+            field: "username".into(),
+            kind: "string".into(),
+            default: None,
+            source: "proposal".into(),
+        });
+    fs::write(
+        dir.join("proposal.json"),
+        serde_json::to_vec_pretty(&proposal).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("params.schema.json"),
+        r#"{"type":"object","additionalProperties":false,"properties":{"username":{"type":"string"}}}"#,
+    )
+    .unwrap();
+    fs::write(dir.join("params.json"), r#"{"username":"ubuntu"}"#).unwrap();
+    let request = request(&model, &binding, dir.clone(), "r1", true);
+    let validated = request.accept().unwrap();
+    assert_eq!(
+        validated.input.version,
+        crate::engine::input::STEP_TRACE_VERSION
+    );
+    assert_eq!(validated.input.trace.steps.len(), 1);
+    assert_eq!(
+        validated.input.trace.steps[0].fields.get("username"),
+        Some(&crate::engine::input::ParamValue::Str("ubuntu".into()))
+    );
+}
+
+#[test]
 fn coverage_request_rejects_a_different_request() {
     let (model, binding, dir) = fixture();
     write_request(&dir, &model, "s", "analysis-1", "coverage");

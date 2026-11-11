@@ -1,6 +1,6 @@
 """Resident generator server.
 
-Scripts keep calling ``generate(ctx, params)``. Socket work goes through a
+Scripts call ``generate(ctx, step_trace)``. Socket work goes through a
 ``Transport`` so a later Nyx-Net backend can replace it.
 """
 

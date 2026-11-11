@@ -65,12 +65,18 @@ def handle_payload(payload: bytes, client_sessions: Optional[dict[int, Session]]
 def _run(table: dict[int, Session], request: dict, client: int, request_id: int) -> bytes:
     path = request.get("generator")
     params = request.get("params", {})
+    step_trace = request.get("step_trace")
+    global_context = request.get("global_context", [])
     host = request.get("host", "127.0.0.1")
     port = request.get("port")
     timeout_ms = request.get("timeout_ms", 1000)
     connect_ms = request.get("connect_timeout_ms", timeout_ms)
     if not isinstance(path, str) or not isinstance(params, dict):
-        raise InteractionError("generator", "run requires generator path and params map")
+        raise InteractionError("generator", "run requires generator path and a params map")
+    if step_trace is not None and not isinstance(step_trace, list):
+        raise InteractionError("generator", "step_trace must be an array")
+    if not isinstance(global_context, list):
+        raise InteractionError("generator", "global_context must be an array")
     if not isinstance(host, str) or not isinstance(port, int) or not isinstance(timeout_ms, int):
         raise InteractionError("generator", "run requires host, port and timeout_ms")
     if not isinstance(connect_ms, int):
@@ -89,11 +95,52 @@ def _run(table: dict[int, Session], request: dict, client: int, request_id: int)
         timeout_ms / 1000.0,
         connect_timeout_s=connect_ms / 1000.0,
     )
+    ctx.global_context = _global_context(global_context)
     try:
-        generate(ctx, _plain_params(params))
+        if step_trace:
+            generate(ctx, _plain_step_trace(step_trace))
+        else:
+            # Direct unit tests still exercise the old in-process API. Rust
+            # corpus inputs without a versioned step_trace are rejected before
+            # they reach this server.
+            generate(ctx, _plain_params(params))
     finally:
         ctx.close_extra()
     return _response(request_id, "ok", None, ctx.bytes_sent, ctx.bytes_recv)
+
+
+def _global_context(values: list) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for item in values:
+        if not isinstance(item, dict):
+            raise InteractionError("generator", "global_context entries must be objects")
+        name = item.get("name")
+        if not isinstance(name, str) or not name:
+            raise InteractionError("generator", "global_context entries need a name")
+        value = item.get("value")
+        out[name] = _plain(value) if value is not None else None
+    return out
+
+
+def _plain_step_trace(trace: list) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for item in trace:
+        if not isinstance(item, dict):
+            raise InteractionError("generator", "step_trace entries must be objects")
+        row = {}
+        for key, value in item.items():
+            if key in {"fields", "inputs"} and isinstance(value, dict):
+                row[key] = {str(name): _plain(inner) for name, inner in value.items()}
+            elif key == "omitted_fields" and isinstance(value, list):
+                row[key] = [str(name) for name in value]
+            elif key == "broken_dependencies" and isinstance(value, list):
+                row[key] = [str(name) for name in value]
+            else:
+                row[key] = _plain(value)
+        if not isinstance(row.get("name"), str) or not isinstance(row.get("step"), str):
+            raise InteractionError("generator", "step_trace entries need name and step")
+        out.append(row)
+    return out
 
 
 def _plain_params(params: dict) -> dict[str, Any]:
@@ -106,6 +153,8 @@ def _plain_params(params: dict) -> dict[str, Any]:
 
 
 def _plain(value: Any) -> Any:
+    if value is None:
+        return None
     if isinstance(value, (int, str, bool, bytes)):
         return value
     if isinstance(value, list):

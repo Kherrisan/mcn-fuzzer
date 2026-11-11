@@ -16,7 +16,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::mutations::{self, expand_named};
-use crate::protocol::{Binding, IndexedModel, StepRecord};
+use crate::{
+    engine::input::{GlobalContextValue, ParamValue},
+    protocol::{Binding, IndexedModel, StepRecord},
+};
 
 pub const PROPOSAL_VERSION: u32 = 2;
 
@@ -32,6 +35,40 @@ pub struct ProposalGoal {
 pub struct ProposalChannel {
     pub channel: String,
     pub endpoints: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MutableField {
+    pub field: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub default: Option<ParamValue>,
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProposalDependency {
+    pub prior: String,
+    pub dependent: String,
+    #[serde(default)]
+    pub condition: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default, alias = "field_relations")]
+    pub fields: Vec<ProposalFieldBinding>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProposalFieldBinding {
+    pub prior_field: String,
+    pub dependent_field: String,
+    #[serde(default)]
+    pub derive: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -54,6 +91,9 @@ pub struct ProposalStep {
     pub reason: String,
     #[serde(default)]
     pub constraints: Vec<String>,
+    /// Mutable field descriptions after Rust strips the mutation strategy.
+    #[serde(default)]
+    pub mutable_fields: Vec<MutableField>,
 }
 
 impl mutations::Named for ProposalStep {
@@ -81,6 +121,10 @@ pub struct Proposal {
     pub trace: Vec<ProposalStep>,
     #[serde(default)]
     pub mutations: Vec<Value>,
+    #[serde(default)]
+    pub global_context: Vec<GlobalContextValue>,
+    #[serde(default)]
+    pub dependencies: Vec<ProposalDependency>,
 }
 
 /// Frozen proposal plus the on-disk bytes accepted by Rust.
@@ -96,6 +140,9 @@ impl AcceptedProposal {
         &self.proposal.request_id
     }
 }
+
+/// Immutable model constraints consumed by Rust instantiation/mutation.
+pub type TraceModel = Proposal;
 
 /// One-slot handoff. Coverage replaces the value; synthesis takes it.
 #[derive(Clone, Default)]
@@ -177,9 +224,40 @@ pub fn instantiate(model: &IndexedModel, steps: &[StepRecord]) -> Result<Proposa
             party: step.party_name().map(str::to_string),
             reason: format!("step {}", step.name),
             constraints: Vec::new(),
+            mutable_fields: Vec::new(),
         });
     }
-    let _ = model;
+    let step_to_instance: BTreeMap<String, String> = trace
+        .iter()
+        .map(|item| (item.step.clone(), item.name.clone()))
+        .collect();
+    let dependencies = model
+        .dependency_rows()
+        .into_iter()
+        .filter_map(|(prior, dependent, condition, fields)| {
+            let prior = step_to_instance.get(&prior)?.clone();
+            let dependent = step_to_instance.get(&dependent)?.clone();
+            let bindings = fields
+                .into_iter()
+                .map(|(prior_field, dependent_field)| ProposalFieldBinding {
+                    prior_field,
+                    dependent_field,
+                    derive: String::new(),
+                })
+                .collect::<Vec<_>>();
+            Some(ProposalDependency {
+                prior,
+                dependent,
+                condition,
+                kind: if bindings.is_empty() {
+                    "order".into()
+                } else {
+                    "data".into()
+                },
+                fields: bindings,
+            })
+        })
+        .collect();
     Ok(Proposal {
         version: PROPOSAL_VERSION,
         origin: "autonomous".into(),
@@ -196,6 +274,8 @@ pub fn instantiate(model: &IndexedModel, steps: &[StepRecord]) -> Result<Proposa
         channels,
         trace,
         mutations: Vec::new(),
+        global_context: Vec::new(),
+        dependencies,
     })
 }
 
@@ -295,6 +375,48 @@ impl Proposal {
             |index| self.trace[index].action == "send",
             &self.mutations,
         )?;
+        let mut globals = BTreeSet::new();
+        for value in &self.global_context {
+            if value.name.trim().is_empty() || !globals.insert(value.name.clone()) {
+                return Err("global_context names must be non-empty and unique".into());
+            }
+            let source = if value.source.is_empty() {
+                "constant"
+            } else {
+                value.source.as_str()
+            };
+            if source != "constant" && source != "environment" && source != "generated" {
+                return Err(format!(
+                    "global_context {} has unknown source {}",
+                    value.name, value.source
+                ));
+            }
+            if source == "generated" && value.seed.is_none() {
+                return Err(format!(
+                    "global_context generated value {} needs a replay seed",
+                    value.name
+                ));
+            }
+        }
+        for dependency in &self.dependencies {
+            if !names.contains(&dependency.prior) || !names.contains(&dependency.dependent) {
+                return Err(format!(
+                    "dependency {} -> {} references an unknown instance",
+                    dependency.prior, dependency.dependent
+                ));
+            }
+            if dependency.prior == dependency.dependent {
+                return Err("dependency cannot point an instance at itself".into());
+            }
+            let kind = if dependency.kind.is_empty() {
+                "order"
+            } else {
+                dependency.kind.as_str()
+            };
+            if kind != "order" && kind != "data" && kind != "resource" && kind != "state" {
+                return Err(format!("unknown dependency kind {}", dependency.kind));
+            }
+        }
         Ok(steps)
     }
 
@@ -383,6 +505,62 @@ impl Proposal {
         expand_named(&self.trace, &names, &self.mutations, &|name| {
             counts.get(name).cloned().unwrap_or(json!(0))
         })
+    }
+
+    /// Downstream copy for synthesis: strip mutation strategy and expose only
+    /// the mutable field descriptions. The original proposal remains available
+    /// for handoff/audit.
+    pub fn synthesis_copy(&self) -> Result<Self, String> {
+        let names = mutations::instance_names(&self.trace)?;
+        let mut copy = self.clone();
+        copy.mutations.clear();
+        for item in &mut copy.trace {
+            item.mutable_fields.clear();
+        }
+        let mut declared = BTreeSet::new();
+        for mutation in &self.mutations {
+            if mutation.get("op").and_then(Value::as_str) != Some("field") {
+                continue;
+            }
+            let field = mutation
+                .get("field")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if field.is_empty() {
+                continue;
+            }
+            match mutations::selection(mutation.get("steps").unwrap_or(&Value::Null), &names)? {
+                mutations::Selector::Each(indexes) => {
+                    for index in indexes {
+                        let key = (index, field.clone());
+                        if declared.insert(key) {
+                            copy.trace[index].mutable_fields.push(MutableField {
+                                field: field.clone(),
+                                kind: "string".into(),
+                                default: None,
+                                source: "proposal".into(),
+                            });
+                        }
+                    }
+                }
+                mutations::Selector::Range(start, end) => {
+                    for index in start..=end {
+                        let key = (index, field.clone());
+                        if declared.insert(key) {
+                            copy.trace[index].mutable_fields.push(MutableField {
+                                field: field.clone(),
+                                kind: "string".into(),
+                                default: None,
+                                source: "proposal".into(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(copy)
     }
 
     pub fn write_copy(&self, path: &Path) -> Result<(), String> {
@@ -576,6 +754,61 @@ mod tests {
     }
 
     #[test]
+    fn global_context_and_instance_dependencies_validate() {
+        let (model, binding) = fixture();
+        let mut proposal = base(&model);
+        proposal.global_context.push(GlobalContextValue {
+            name: "username".into(),
+            kind: "string".into(),
+            value: Some(ParamValue::Str("ubuntu".into())),
+            source: "constant".into(),
+            seed: None,
+        });
+        proposal.dependencies.push(ProposalDependency {
+            prior: "hello".into(),
+            dependent: "bye".into(),
+            condition: String::new(),
+            kind: "data".into(),
+            fields: vec![ProposalFieldBinding {
+                prior_field: "challenge".into(),
+                dependent_field: "token".into(),
+                derive: String::new(),
+            }],
+        });
+        proposal
+            .validate(&model, &binding, &identity())
+            .expect("global context and dependencies");
+        let mut bad = proposal.clone();
+        bad.dependencies[0].dependent = "missing".into();
+        assert!(bad.validate(&model, &binding, &identity()).is_err());
+        let mut bad = proposal;
+        bad.global_context.push(GlobalContextValue {
+            name: "username".into(),
+            kind: String::new(),
+            value: None,
+            source: "constant".into(),
+            seed: None,
+        });
+        assert!(bad.validate(&model, &binding, &identity()).is_err());
+    }
+
+    #[test]
+    fn synthesis_copy_strips_mutations_and_adds_mutable_fields() {
+        let (model, _binding) = fixture();
+        let mut proposal = base(&model);
+        proposal.mutations = vec![json!({
+            "op": "field", "steps": ["hello"], "field": "username",
+            "suggestion": "empty or boundary", "evidence": "src/a.c:1"
+        })];
+        let copy = proposal.synthesis_copy().unwrap();
+        assert!(copy.mutations.is_empty());
+        let hello = copy.trace.iter().find(|step| step.step == "hello").unwrap();
+        assert_eq!(hello.mutable_fields.len(), 1);
+        assert_eq!(hello.mutable_fields[0].field, "username");
+        assert_eq!(proposal.mutations.len(), 1);
+    }
+
+    #[test]
     fn mailbox_keeps_only_the_latest_proposal() {
         let mailbox = ProposalMailbox::default();
         let make = |id: &str| AcceptedProposal {
@@ -595,6 +828,8 @@ mod tests {
                 channels: BTreeMap::new(),
                 trace: vec![],
                 mutations: vec![],
+                global_context: vec![],
+                dependencies: vec![],
             },
             path: PathBuf::from(id),
             sha256: String::new(),

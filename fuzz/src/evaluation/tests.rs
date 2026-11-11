@@ -161,6 +161,7 @@ raise SystemExit(5)
 }
 
 fn layout(dir: &Path, provider: &str) {
+    fs::create_dir_all(dir).unwrap();
     fs::write(
         dir.join("cleanup.sh"),
         b"#!/bin/sh\nprintf 'port=%s\\nroot=%s\\n' \"$MCN_FUZZ_PORT\" \"$MCN_FUZZ_WORKDIR\" > fftp.conf\n",

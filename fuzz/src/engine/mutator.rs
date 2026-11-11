@@ -1,6 +1,9 @@
-//! Parameter-only mutations. The generator script path is left unchanged.
+//! Field and step mutations over a concrete step trace.
+//!
+//! Legacy parameter dictionaries remain mutable for old local seeds/tests, but
+//! synthesis inputs use `GeneratorInput::step_trace`.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, collections::BTreeSet};
 
 use libafl::{
     mutators::{MutationResult, Mutator},
@@ -75,9 +78,9 @@ where
     }
 }
 
-/// Stack 2..=64 parameter edits. An empty parameter map is skipped.
+/// Stack 2..=64 field/step edits. Traces take precedence over legacy params.
 pub fn mutate_generator<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
-    if input.params.is_empty() {
+    if input.trace.steps.is_empty() && input.params.is_empty() {
         return MutationResult::Skipped;
     }
     let steps = 1u64 << (1 + rand.below_or_zero(6) as u64);
@@ -91,6 +94,12 @@ pub fn mutate_generator<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> Mu
 }
 
 fn mutate_once<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
+    if !input.trace.steps.is_empty() {
+        if rand.below_or_zero(100) < 70 && mutate_field(rand, input) == MutationResult::Mutated {
+            return MutationResult::Mutated;
+        }
+        return mutate_step(rand, input);
+    }
     let keys: Vec<String> = input.params.keys().cloned().collect();
     if keys.is_empty() {
         return MutationResult::Skipped;
@@ -102,7 +111,267 @@ fn mutate_once<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRes
     mutate_value(rand, value)
 }
 
-fn mutate_value<R: Rand>(rand: &mut R, value: &mut ParamValue) -> MutationResult {
+fn mutate_field<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
+    let candidates = input
+        .trace
+        .steps
+        .iter()
+        .enumerate()
+        .filter(|(_, instance)| !instance.fields.is_empty())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return MutationResult::Skipped;
+    }
+    let index = candidates[rand.below_or_zero(candidates.len())];
+    let keys = input.trace.steps[index]
+        .fields
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    let field = keys[rand.below_or_zero(keys.len())].clone();
+    if rand.below_or_zero(5) == 0 {
+        input.trace.steps[index].fields.remove(&field);
+        if !input.trace.steps[index]
+            .omitted_fields
+            .iter()
+            .any(|item| item == &field)
+        {
+            input.trace.steps[index].omitted_fields.push(field);
+        }
+        return MutationResult::Mutated;
+    }
+    let Some(value) = input.trace.steps[index].fields.get_mut(&field) else {
+        return MutationResult::Skipped;
+    };
+    mutate_value(rand, value)
+}
+
+fn mutate_step<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
+    let len = input.trace.steps.len();
+    if len == 0 {
+        return MutationResult::Skipped;
+    }
+    if len >= 4096 {
+        return MutationResult::Skipped;
+    }
+    let original = input.trace.clone();
+    let choice = rand.below_or_zero(100);
+    let index = rand.below_or_zero(len);
+    let operation = if choice < 55 || len == 1 {
+        duplicate_block(rand, input, index)
+    } else if choice < 78 && len > 1 {
+        let removed = input.trace.steps.remove(index);
+        input.trace.dependencies.retain(|dependency| {
+            dependency.prior != removed.name && dependency.dependent != removed.name
+        });
+        "delete"
+    } else if choice < 100 && len > 1 {
+        let other = if index + 1 < len {
+            index + 1
+        } else {
+            index - 1
+        };
+        input.trace.steps.swap(index, other);
+        "reorder"
+    } else {
+        duplicate_block(rand, input, index)
+    };
+    let broken = broken_dependencies(input);
+    let violate = rand.below_or_zero(100) >= 90;
+    if !violate {
+        if let Err(_error) = input.trace.validate() {
+            input.trace = original;
+            return MutationResult::Skipped;
+        }
+    } else {
+        for (name, label) in broken {
+            if let Some(instance) = input.trace.steps.iter_mut().find(|item| item.name == name) {
+                instance
+                    .broken_dependencies
+                    .push(format!("{operation}: {label}"));
+            }
+        }
+    }
+    MutationResult::Mutated
+}
+
+fn duplicate_block<R: Rand>(
+    rand: &mut R,
+    input: &mut GeneratorInput,
+    start: usize,
+) -> &'static str {
+    let available = input.trace.steps.len().saturating_sub(start).min(4);
+    let length = 1 + rand.below_or_zero(available.max(1));
+    let end = start + length;
+    let block = input.trace.steps[start..end].to_vec();
+    let mut names = std::collections::BTreeMap::new();
+    let mut copies = Vec::with_capacity(block.len());
+    for item in block {
+        let old = item.name.clone();
+        let mut copy = item.clone();
+        copy.name = unique_name(&input.trace.steps, &copy.name);
+        copy.broken_dependencies.clear();
+        names.insert(old, copy.name.clone());
+        copies.push(copy);
+    }
+    for copy in &mut copies {
+        for source in copy.inputs.values_mut() {
+            if let Some((instance, field)) = source.split_once('.') {
+                if let Some(mapped) = names.get(instance) {
+                    *source = format!("{mapped}.{field}");
+                }
+            }
+        }
+    }
+    input.trace.steps.splice(end..end, copies.iter().cloned());
+    let inherited = input
+        .trace
+        .dependencies
+        .iter()
+        .filter(|dependency| {
+            names.contains_key(&dependency.prior) && names.contains_key(&dependency.dependent)
+        })
+        .cloned()
+        .map(|mut dependency| {
+            dependency.prior = names[&dependency.prior].clone();
+            dependency.dependent = names[&dependency.dependent].clone();
+            dependency.origin = "mutation".into();
+            dependency
+        })
+        .collect::<Vec<_>>();
+    input.trace.dependencies.extend(inherited);
+    add_compatible_dependency(rand, input, &names);
+    "duplicate"
+}
+
+fn add_compatible_dependency<R: Rand>(
+    rand: &mut R,
+    input: &mut GeneratorInput,
+    names: &std::collections::BTreeMap<String, String>,
+) {
+    let Some((dependent_index, dependent)) = input
+        .trace
+        .steps
+        .iter()
+        .enumerate()
+        .find(|(_, step)| names.values().any(|name| name == &step.name))
+    else {
+        return;
+    };
+    let dependent_name = dependent.name.clone();
+    let dependent = dependent.clone();
+    let candidates = input
+        .trace
+        .steps
+        .iter()
+        .take(dependent_index)
+        .enumerate()
+        .filter(|(_, step)| {
+            step.channel == dependent.channel
+                && !input.trace.dependencies.iter().any(|dependency| {
+                    dependency.prior == step.name && dependency.dependent == dependent_name
+                })
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return;
+    }
+    let prior_index = candidates[rand.below_or_zero(candidates.len())];
+    let prior = input.trace.steps[prior_index].clone();
+    // Only materialize a data dependency when the dependent already has an
+    // explicit input binding to this prior. A field that merely exists on both
+    // steps is not proof that the prior produces/saves it.
+    let binding = dependent
+        .inputs
+        .iter()
+        .find_map(|(dependent_field, source)| {
+            let (source_instance, prior_field) = source.split_once('.')?;
+            (source_instance == prior.name).then(|| crate::engine::input::FieldBinding {
+                prior_field: prior_field.to_string(),
+                dependent_field: dependent_field.clone(),
+                derive: String::new(),
+            })
+        });
+    if let Some(binding) = binding {
+        input
+            .trace
+            .dependencies
+            .push(crate::engine::input::DependencyInstance {
+                prior: prior.name.clone(),
+                dependent: dependent_name.clone(),
+                kind: "data".into(),
+                condition: String::new(),
+                fields: vec![binding.clone()],
+                origin: "mutation".into(),
+            });
+        if let Some(step) = input
+            .trace
+            .steps
+            .iter_mut()
+            .find(|step| step.name == *dependent_name)
+        {
+            step.inputs.insert(
+                binding.dependent_field.clone(),
+                format!("{}.{}", prior.name, binding.prior_field),
+            );
+        }
+    } else {
+        input
+            .trace
+            .dependencies
+            .push(crate::engine::input::DependencyInstance {
+                prior: prior.name.clone(),
+                dependent: dependent_name.clone(),
+                kind: "order".into(),
+                condition: String::new(),
+                fields: Vec::new(),
+                origin: "mutation".into(),
+            });
+    }
+}
+
+fn broken_dependencies(input: &GeneratorInput) -> Vec<(String, String)> {
+    let indexes: std::collections::BTreeMap<&str, usize> = input
+        .trace
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.name.as_str(), index))
+        .collect();
+    let mut broken = Vec::new();
+    for dependency in &input.trace.dependencies {
+        let prior = indexes.get(dependency.prior.as_str());
+        let dependent = indexes.get(dependency.dependent.as_str());
+        let label = format!("{} -> {}", dependency.prior, dependency.dependent);
+        match (prior, dependent) {
+            (Some(prior), Some(dependent)) if prior < dependent => {}
+            _ => {
+                let target = dependency.dependent.clone();
+                broken.push((target, label));
+            }
+        }
+    }
+    broken
+}
+
+fn unique_name(trace: &[crate::engine::input::StepInstance], base: &str) -> String {
+    let used = trace
+        .iter()
+        .map(|item| item.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut index = 1usize;
+    loop {
+        let candidate = format!("{base}_copy{index}");
+        if !used.contains(candidate.as_str()) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
+pub(crate) fn mutate_value<R: Rand>(rand: &mut R, value: &mut ParamValue) -> MutationResult {
     match value {
         ParamValue::Int(number) => {
             if rand.below_or_zero(2) == 0 {
@@ -185,6 +454,84 @@ fn mutate_bytes<R: Rand>(rand: &mut R, bytes: &mut Vec<u8>) {
 mod tests {
     use super::*;
     use libafl_bolts::rands::StdRand;
+
+    #[test]
+    fn step_trace_field_and_step_mutations_preserve_path() {
+        let mut input = GeneratorInput::with_trace(
+            PathBuf::from("/tmp/ftp_session.py"),
+            vec![
+                crate::engine::input::StepInstance {
+                    name: "hello_1".into(),
+                    step: "hello".into(),
+                    action: "send".into(),
+                    condition: String::new(),
+                    message: Some("hello".into()),
+                    channel: "control".into(),
+                    sender: Some("client".into()),
+                    receiver: Some("server".into()),
+                    party: None,
+                    fields: BTreeMap::from([("token".into(), ParamValue::Str("abc".into()))]),
+                    omitted_fields: vec![],
+                    inputs: BTreeMap::new(),
+                    broken_dependencies: vec![],
+                },
+                crate::engine::input::StepInstance {
+                    name: "bye_1".into(),
+                    step: "bye".into(),
+                    action: "send".into(),
+                    condition: String::new(),
+                    message: Some("bye".into()),
+                    channel: "control".into(),
+                    sender: Some("client".into()),
+                    receiver: Some("server".into()),
+                    party: None,
+                    fields: BTreeMap::new(),
+                    omitted_fields: vec![],
+                    inputs: BTreeMap::new(),
+                    broken_dependencies: vec![],
+                },
+            ],
+            vec![],
+        );
+        input.trace.parties = vec![
+            crate::engine::input::PartyInstance {
+                name: "client".into(),
+                r#type: "client".into(),
+            },
+            crate::engine::input::PartyInstance {
+                name: "server".into(),
+                r#type: "server".into(),
+            },
+        ];
+        input.trace.channels = vec![crate::engine::input::ChannelInstance {
+            name: "control".into(),
+            r#type: "control".into(),
+            endpoints: vec!["client".into(), "server".into()],
+        }];
+        let mut rand = StdRand::with_seed(11);
+        assert_eq!(
+            mutate_generator(&mut rand, &mut input),
+            MutationResult::Mutated
+        );
+        assert_eq!(input.generator, PathBuf::from("/tmp/ftp_session.py"));
+        assert!(!input.trace.steps.is_empty());
+
+        let mut duplicate = GeneratorInput::with_trace(
+            PathBuf::from("/tmp/ftp_session.py"),
+            input.trace.steps.clone(),
+            vec![],
+        );
+        duplicate.trace.parties = input.trace.parties.clone();
+        duplicate.trace.channels = input.trace.channels.clone();
+        let mut rand = StdRand::with_seed(3);
+        duplicate_block(&mut rand, &mut duplicate, 0);
+        duplicate.trace.validate().expect("duplicated trace");
+        assert!(duplicate
+            .trace
+            .dependencies
+            .iter()
+            .any(|dependency| dependency.origin == "mutation"));
+    }
 
     #[test]
     fn mutation_keeps_the_script_path() {

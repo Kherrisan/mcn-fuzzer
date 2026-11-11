@@ -26,6 +26,7 @@ TRACE_STEP = _schema({
     "party": {"type": "string"},
     "reason": {"type": "string"},
     "constraints": {"type": "array", "items": {"type": "string"}},
+    "mutable_fields": {"type": "array"},
 }, ("name", "step", "channel", "reason"))
 PAGE_PROPS = {
     "offset": {"type": "integer", "minimum": 0, "default": 0},
@@ -103,6 +104,8 @@ TOOLS = [
               "parties": {"type": "object"},
               "channels": {"type": "object"},
               "mutations": {"type": "array"},
+              "global_context": {"type": "array"},
+              "dependencies": {"type": "array"},
               "trace": {"type": "array", "items": TRACE_STEP}},
              ("request_id", "trace", "parties", "channels"))),
 ]

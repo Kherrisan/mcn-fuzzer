@@ -1,7 +1,7 @@
 //! Generator script path plus the parameter dictionary Rust is allowed to mutate.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     hash::{Hash, Hasher},
     io::{self, Read, Write},
@@ -46,21 +46,312 @@ pub struct PendingCapture {
     pub persist_us: Arc<Mutex<u128>>,
 }
 
-/// Script path plus the parameters passed to `generate(ctx, params)`.
+/// Version of the concrete step-trace execution input.
+pub const STEP_TRACE_VERSION: u32 = 3;
+
+/// One concrete step instance selected by Rust for execution.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct StepInstance {
+    /// Unique instance name inside this trace.
+    pub name: String,
+    /// Model step name this instance implements.
+    pub step: String,
+    /// Model action: send, listen, connect, or close.
+    pub action: String,
+    #[serde(default)]
+    pub condition: String,
+    #[serde(default)]
+    pub message: Option<String>,
+    pub channel: String,
+    #[serde(default)]
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub receiver: Option<String>,
+    #[serde(default)]
+    pub party: Option<String>,
+    /// Final field values decided by Rust. Missing means use dependency/global
+    /// context in the generator.
+    #[serde(default)]
+    pub fields: BTreeMap<String, ParamValue>,
+    /// Fields explicitly removed by Rust; distinct from "not overridden".
+    #[serde(default)]
+    pub omitted_fields: Vec<String>,
+    /// Dependency bindings from target field to `instance.field` source.
+    #[serde(default)]
+    pub inputs: BTreeMap<String, String>,
+    /// Dependencies deliberately broken by the selected mutation strategy.
+    #[serde(default)]
+    pub broken_dependencies: Vec<String>,
+}
+
+/// One concrete party instance, bound to its model party type.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PartyInstance {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+}
+
+/// One concrete channel instance. Endpoints are party instance names, exactly
+/// like the model channel's endpoint_party_names relationship.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ChannelInstance {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub r#type: String,
+    #[serde(default)]
+    pub endpoints: Vec<String>,
+}
+
+/// A field-level dependency binding between two step instances.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct FieldBinding {
+    pub prior_field: String,
+    pub dependent_field: String,
+    #[serde(default)]
+    pub derive: String,
+}
+
+/// One concrete dependency connecting two step instances.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DependencyInstance {
+    pub prior: String,
+    pub dependent: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub condition: String,
+    #[serde(default)]
+    pub fields: Vec<FieldBinding>,
+    #[serde(default)]
+    pub origin: String,
+}
+
+/// The mutable concrete trace. Model binding relationships are mirrored here:
+/// channel endpoints are party instances, steps reference a channel and party
+/// instances, and dependencies reference step instances.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TraceInstance {
+    #[serde(default)]
+    pub parties: Vec<PartyInstance>,
+    #[serde(default)]
+    pub channels: Vec<ChannelInstance>,
+    #[serde(default, rename = "step_trace")]
+    pub steps: Vec<StepInstance>,
+    #[serde(default)]
+    pub dependencies: Vec<DependencyInstance>,
+}
+
+impl TraceInstance {
+    /// Validate model-shaped bindings and dependency field materialization.
+    pub fn validate(&self) -> Result<(), String> {
+        let parties = self
+            .parties
+            .iter()
+            .map(|party| (party.name.as_str(), party))
+            .collect::<BTreeMap<_, _>>();
+        if parties.len() != self.parties.len() {
+            return Err("duplicate party instance name".into());
+        }
+        let channels = self
+            .channels
+            .iter()
+            .map(|channel| (channel.name.as_str(), channel))
+            .collect::<BTreeMap<_, _>>();
+        if channels.len() != self.channels.len() {
+            return Err("duplicate channel instance name".into());
+        }
+        for channel in &self.channels {
+            let mut endpoints = BTreeSet::new();
+            for endpoint in &channel.endpoints {
+                if !endpoints.insert(endpoint) {
+                    return Err(format!(
+                        "channel {} repeats endpoint {endpoint}",
+                        channel.name
+                    ));
+                }
+                if !parties.contains_key(endpoint.as_str()) {
+                    return Err(format!(
+                        "channel {} endpoint {endpoint} is not a party instance",
+                        channel.name
+                    ));
+                }
+            }
+        }
+        let steps = self
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(index, step)| (step.name.as_str(), index))
+            .collect::<BTreeMap<_, _>>();
+        if steps.len() != self.steps.len() {
+            return Err("duplicate step instance name".into());
+        }
+        for step in &self.steps {
+            let Some(channel) = channels.get(step.channel.as_str()) else {
+                return Err(format!(
+                    "step {} references unknown channel {}",
+                    step.name, step.channel
+                ));
+            };
+            let party_ok = |name: Option<&str>, label: &str| -> Result<(), String> {
+                let Some(name) = name else {
+                    return Err(format!("step {} needs {label}", step.name));
+                };
+                if !parties.contains_key(name) {
+                    return Err(format!(
+                        "step {} {label} {name} is not a party instance",
+                        step.name
+                    ));
+                }
+                if !channel.endpoints.iter().any(|endpoint| endpoint == name) {
+                    return Err(format!(
+                        "step {} {label} {name} is not an endpoint of channel {}",
+                        step.name, channel.name
+                    ));
+                }
+                Ok(())
+            };
+            if step.action == "send" {
+                party_ok(step.sender.as_deref(), "sender")?;
+                party_ok(step.receiver.as_deref(), "receiver")?;
+                if step.party.is_some() {
+                    return Err(format!("send step {} must not name a party", step.name));
+                }
+            } else {
+                party_ok(step.party.as_deref(), "party")?;
+                if step.sender.is_some() || step.receiver.is_some() {
+                    return Err(format!(
+                        "network step {} must not name sender/receiver",
+                        step.name
+                    ));
+                }
+            }
+            if step
+                .fields
+                .keys()
+                .any(|field| step.omitted_fields.contains(field))
+            {
+                return Err(format!(
+                    "step {} has a field both explicit and omitted",
+                    step.name
+                ));
+            }
+        }
+        let mut bindings = BTreeSet::new();
+        for dependency in &self.dependencies {
+            let Some(prior) = steps.get(dependency.prior.as_str()) else {
+                return Err(format!(
+                    "dependency prior {} is not a step instance",
+                    dependency.prior
+                ));
+            };
+            let Some(dependent) = steps.get(dependency.dependent.as_str()) else {
+                return Err(format!(
+                    "dependency dependent {} is not a step instance",
+                    dependency.dependent
+                ));
+            };
+            if prior >= dependent {
+                return Err(format!(
+                    "dependency {} -> {} is not in trace order",
+                    dependency.prior, dependency.dependent
+                ));
+            }
+            if dependency.kind == "data" && dependency.fields.is_empty() {
+                return Err(format!(
+                    "data dependency {} -> {} has no field binding",
+                    dependency.prior, dependency.dependent
+                ));
+            }
+            for field in &dependency.fields {
+                if field.prior_field.is_empty() || field.dependent_field.is_empty() {
+                    return Err(format!(
+                        "dependency {} -> {} has an empty field binding",
+                        dependency.prior, dependency.dependent
+                    ));
+                }
+                if !bindings.insert((dependency.dependent.clone(), field.dependent_field.clone())) {
+                    return Err(format!(
+                        "dependent field {} is bound more than once",
+                        field.dependent_field
+                    ));
+                }
+                let expected = format!("{}.{}", dependency.prior, field.prior_field);
+                let actual = self
+                    .steps
+                    .iter()
+                    .find(|step| step.name == dependency.dependent)
+                    .and_then(|step| step.inputs.get(&field.dependent_field));
+                if actual != Some(&expected) {
+                    return Err(format!(
+                        "step {} input {} does not match dependency binding {expected}",
+                        dependency.dependent, field.dependent_field
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A value available once per testcase, independent of any step instance.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct GlobalContextValue {
+    pub name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub value: Option<ParamValue>,
+    /// `constant`, `environment`, or `generated`.
+    #[serde(default)]
+    pub source: String,
+    /// Deterministic seed for generated values, replayed with the input.
+    #[serde(default)]
+    pub seed: Option<u64>,
+}
+
+impl GlobalContextValue {
+    pub fn as_param(&self) -> Option<&ParamValue> {
+        self.value.as_ref()
+    }
+}
+
+/// Script path plus the concrete step trace passed to `generate(ctx, step_trace)`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GeneratorInput {
+    /// Execution-input format version. Legacy inputs without it are rejected.
+    #[serde(default = "default_version")]
+    pub version: u32,
     /// Path of the generator script. Relative paths are resolved at load time.
     pub generator: PathBuf,
-    /// Parameter dictionary.
+    /// Concrete trace: parties, channels, step instances, dependency instances.
+    #[serde(flatten)]
+    pub trace: TraceInstance,
+    /// Per-testcase values not owned by a step.
+    #[serde(default)]
+    pub global_context: Vec<GlobalContextValue>,
+    /// Legacy parameter dictionary kept for old local seeds and global defaults.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, ParamValue>,
     /// Runtime capture export. Skipped by JSON, hashing, equality, and mutation.
     #[serde(skip)]
     pending: Option<PendingCapture>,
 }
 
+fn default_version() -> u32 {
+    STEP_TRACE_VERSION
+}
+
 #[derive(Deserialize)]
 struct GeneratorFile {
+    #[serde(default)]
+    version: Option<u32>,
     generator: String,
+    #[serde(default)]
+    global_context: Vec<GlobalContextValue>,
+    #[serde(flatten)]
+    trace: TraceInstance,
     #[serde(default)]
     params: BTreeMap<String, ParamValue>,
 }
@@ -69,10 +360,43 @@ impl GeneratorInput {
     /// Build a generator input.
     pub fn new(generator: PathBuf, params: BTreeMap<String, ParamValue>) -> Self {
         Self {
+            version: STEP_TRACE_VERSION,
             generator,
+            trace: TraceInstance::default(),
+            global_context: Vec::new(),
             params,
             pending: None,
         }
+    }
+
+    /// Build an execution input from a concrete trace.
+    pub fn with_trace(
+        generator: PathBuf,
+        step_trace: Vec<StepInstance>,
+        global_context: Vec<GlobalContextValue>,
+    ) -> Self {
+        Self {
+            version: STEP_TRACE_VERSION,
+            generator,
+            trace: TraceInstance {
+                steps: step_trace,
+                ..TraceInstance::default()
+            },
+            global_context,
+            params: BTreeMap::new(),
+            pending: None,
+        }
+    }
+
+    /// Old corpus entries without a version are intentionally not inferred.
+    pub fn require_current_version(&self) -> Result<(), Error> {
+        if self.version != STEP_TRACE_VERSION {
+            return Err(Error::illegal_argument(format!(
+                "generator input version {} is not supported; re-run synthesis for step_trace version {}",
+                self.version, STEP_TRACE_VERSION
+            )));
+        }
+        Ok(())
     }
 
     /// Attach a capture that `to_file` will export. The scheduled parent input is not this value.
@@ -104,6 +428,12 @@ impl GeneratorInput {
             worker_id,
             case_id,
             generator: self.generator.display().to_string(),
+            version: self.version,
+            step_trace: &self.trace.steps,
+            dependencies: &self.trace.dependencies,
+            parties: &self.trace.parties,
+            channels: &self.trace.channels,
+            global_context: &self.global_context,
             params: &self.params,
             host,
             port,
@@ -125,6 +455,12 @@ struct RunRequest<'a> {
     worker_id: u64,
     case_id: u64,
     generator: String,
+    version: u32,
+    step_trace: &'a [StepInstance],
+    dependencies: &'a [DependencyInstance],
+    parties: &'a [PartyInstance],
+    channels: &'a [ChannelInstance],
+    global_context: &'a [GlobalContextValue],
     params: &'a BTreeMap<String, ParamValue>,
     host: &'a str,
     port: u16,
@@ -184,7 +520,11 @@ impl GeneratorResponse {
 
 impl PartialEq for GeneratorInput {
     fn eq(&self, other: &Self) -> bool {
-        self.generator == other.generator && self.params == other.params
+        self.version == other.version
+            && self.generator == other.generator
+            && self.trace == other.trace
+            && self.global_context == other.global_context
+            && self.params == other.params
     }
 }
 
@@ -192,7 +532,10 @@ impl Eq for GeneratorInput {}
 
 impl Hash for GeneratorInput {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.version.hash(state);
         self.generator.hash(state);
+        self.trace.hash(state);
+        self.global_context.hash(state);
         self.params.hash(state);
     }
 }
@@ -247,7 +590,26 @@ impl Input for GeneratorInput {
             )));
         }
         let generator = resolve_generator(path, Path::new(&parsed.generator))?;
-        Ok(GeneratorInput::new(generator, parsed.params))
+        let version = parsed.version.ok_or_else(|| {
+            Error::illegal_argument(format!(
+                "generator seed {} is legacy params-only input; re-run synthesis for step_trace version {STEP_TRACE_VERSION}",
+                path.display()
+            ))
+        })?;
+        if version != STEP_TRACE_VERSION {
+            return Err(Error::illegal_argument(format!(
+                "generator seed {} uses input version {version}; re-run synthesis for step_trace version {STEP_TRACE_VERSION}",
+                path.display()
+            )));
+        }
+        Ok(GeneratorInput {
+            version,
+            generator,
+            trace: parsed.trace,
+            global_context: parsed.global_context,
+            params: parsed.params,
+            pending: None,
+        })
     }
 
     fn generate_name(&self, _id: Option<libafl::corpus::CorpusId>) -> String {
@@ -301,7 +663,7 @@ mod tests {
         let seed = dir.join("seeds").join("one.json");
         std::fs::write(
             &seed,
-            r#"{"generator":"../gen.py","params":{"user":"ubuntu","tries":2,"ok":true}}"#,
+            r#"{"version":3,"generator":"../gen.py","params":{"user":"ubuntu","tries":2,"ok":true}}"#,
         )
         .unwrap();
         let input = GeneratorInput::from_file(&seed).unwrap();
@@ -320,6 +682,69 @@ mod tests {
     }
 
     #[test]
+    fn step_trace_and_global_context_roundtrip_and_legacy_is_rejected() {
+        let dir = std::env::temp_dir().join(format!("mcn-step-input-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("gen.py");
+        std::fs::write(&script, "def generate(ctx, step_trace):\n    pass\n").unwrap();
+        let instance = StepInstance {
+            name: "hello_1".into(),
+            step: "hello".into(),
+            action: "send".into(),
+            condition: "start".into(),
+            message: Some("hello".into()),
+            channel: "control".into(),
+            sender: Some("client".into()),
+            receiver: Some("server".into()),
+            party: None,
+            fields: BTreeMap::from([("name".into(), ParamValue::Str("x".into()))]),
+            omitted_fields: vec!["optional".into()],
+            inputs: BTreeMap::from([("token".into(), "hello_1.field".into())]),
+            broken_dependencies: vec![],
+        };
+        let global = GlobalContextValue {
+            name: "username".into(),
+            kind: "string".into(),
+            value: Some(ParamValue::Str("ubuntu".into())),
+            source: "constant".into(),
+            seed: None,
+        };
+        let mut input = GeneratorInput::with_trace(
+            std::fs::canonicalize(&script).unwrap(),
+            vec![instance],
+            vec![global],
+        );
+        input.trace.parties = vec![
+            PartyInstance {
+                name: "client".into(),
+                r#type: "client".into(),
+            },
+            PartyInstance {
+                name: "server".into(),
+                r#type: "server".into(),
+            },
+        ];
+        input.trace.channels = vec![ChannelInstance {
+            name: "control".into(),
+            r#type: "control".into(),
+            endpoints: vec!["client".into(), "server".into()],
+        }];
+
+        input.trace.validate().unwrap();
+        let path = dir.join("input.json");
+        input.to_file(&path).unwrap();
+        let again = GeneratorInput::from_file(&path).unwrap();
+        assert_eq!(again, input);
+        assert_eq!(again.trace.steps[0].name, "hello_1");
+        let legacy = dir.join("legacy.json");
+        std::fs::write(&legacy, r#"{"generator":"gen.py","params":{}}"#).unwrap();
+        let error = GeneratorInput::from_file(&legacy).unwrap_err();
+        assert!(format!("{error:?}").contains("legacy"), "{error:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn pending_capture_is_exported_and_ignored_by_identity() {
         let dir = std::env::temp_dir().join(format!("mcn-pcap-input-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -327,7 +752,11 @@ mod tests {
         let script = dir.join("gen.py");
         std::fs::write(&script, "def generate(ctx, params):\n    pass\n").unwrap();
         let seed = dir.join("one.json");
-        std::fs::write(&seed, format!("{{\"generator\":\"{}\"}}", script.display())).unwrap();
+        std::fs::write(
+            &seed,
+            format!("{{\"version\":3,\"generator\":\"{}\"}}", script.display()),
+        )
+        .unwrap();
         let input = GeneratorInput::from_file(&seed).unwrap();
         assert!(!input.has_pending());
 

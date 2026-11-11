@@ -983,7 +983,10 @@ pub(crate) fn run_cleanup_script(
         .env("MCN_FUZZ_PORT", port.to_string())
         .status()
         .map_err(|error| {
-            Error::unknown(format!("starting cleanup script {}: {error}", script.display()))
+            Error::unknown(format!(
+                "starting cleanup script {}: {error}",
+                script.display()
+            ))
         })?;
     if !status.success() {
         return Err(Error::unknown(format!(

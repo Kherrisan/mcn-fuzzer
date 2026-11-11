@@ -176,9 +176,9 @@ Every later successful request writes four files in its own OUTPUT_DIR:
 
 | File | Required content |
 | --- | --- |
-| generator.py | Complete importable module with synchronous top-level def generate(ctx, params). Include helper/mock code and integration with installed Python modules in this module. |
-| params.schema.json | Root object schema describing named mutation parameters; the runtime checks only a basic schema subset. |
-| params.json | Root JSON object of strings, signed 64-bit integers, booleans, or recursively nested lists of those types. No nested objects, floats, or null. |
+| generator.py | Complete importable module with synchronous top-level def generate(ctx, step_trace). Include helper/mock code and integration with installed Python modules in this module. |
+| params.schema.json | Root object schema describing initial values for proposal mutable fields; Rust mutates final trace fields and does not revalidate it. |
+| params.json | Initial mutable-field defaults (strings, signed 64-bit integers, booleans, or nested lists). Rust uses them when the proposal declares mutable fields; it does not pass this object to generator. |
 | result.json | Completion signal with the exact request_id, status="ok", and added_steps as an array of strings. Publish last by atomic rename. |
 
 Each generation task provides exact success/failure JSON examples. On failure,
@@ -186,7 +186,7 @@ publish matching IDs, a non-ok status, and a specific error in result.json.
 A conversational answer alone is not a completion signal.
 
 Only generator.py and params.schema.json are copied to the published generator
-directory. Runtime params arrive in memory; the script cannot depend on the
+directory. Runtime step_trace arrives in memory; the script cannot depend on the
 proposal, params.json, extra sibling modules, or synthesis workspace files.
 Keep support code inside generator.py or use Python modules already installed in
 the campaign interpreter. Do not install packages, edit fuzzer/SUT configuration or source,

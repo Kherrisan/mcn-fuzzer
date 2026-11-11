@@ -143,6 +143,44 @@ class CoverageTests(unittest.TestCase):
             self.assertTrue(diagnostics)
 
 
+
+
+class HandlerMappingTests(unittest.TestCase):
+    def test_shared_symbol_across_messages_is_one_handler(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "handlers.json"
+            path.write_text(json.dumps({
+                "version": 2, "session": "s",
+                "mappings": [
+                    {"message": "one", "handlers": [
+                        {"symbol": "shared", "location": "server.c:10"}]},
+                    {"message": "two", "handlers": [
+                        {"symbol": "shared", "location": "server.c:10"}]},
+                ],
+            }))
+            loaded = load_handlers(path)
+            self.assertEqual(len(loaded.by_id), 1)
+            self.assertEqual(len(loaded.for_message("one")), 1)
+            self.assertEqual(len(loaded.for_message("two")), 1)
+            self.assertEqual(loaded.for_message("one")[0].id,
+                             loaded.for_message("two")[0].id)
+
+    def test_same_name_with_different_identity_still_fails(self):
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "handlers.json"
+            path.write_text(json.dumps({
+                "version": 2, "session": "s",
+                "mappings": [
+                    {"message": "one", "handlers": [
+                        {"symbol": "shared", "location": "server.c:10"}]},
+                    {"message": "two", "handlers": [
+                        {"symbol": "shared", "location": "server.c:20"}]},
+                ],
+            }))
+            with self.assertRaises(Exception):
+                load_handlers(path)
+
+
 class ProposalTests(unittest.TestCase):
     def test_proposal_round_trip_and_content_identity(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -165,6 +203,16 @@ class ProposalTests(unittest.TestCase):
                                             "build": "build1", "snapshot": "000001"})
             self.assertNotIn("proposal_id", proposal)
             self.assertEqual(proposal["request_id"], "req")
+            self.assertEqual(proposal["global_context"], [])
+            self.assertIn("dependencies", proposal)
+            self.assertIn("mutable_fields", proposal["trace"][0])
+            with_globals = proposal_mod.build_proposal(
+                graph, "coverage", "s", "req2", "build1", "000001",
+                {"handler_ids": [handler_id], "reason": "reach foo"}, trace, handlers,
+                parties, channels, global_context=[
+                    {"name": "username", "kind": "string", "value": "ubuntu",
+                     "source": "constant"}])
+            self.assertEqual(with_globals["global_context"][0]["name"], "username")
             changed = json.loads(json.dumps(proposal))
             changed["trace"][0]["constraints"] = ["different"]
             proposal_mod.validate_proposal(changed, graph, handlers)

@@ -92,10 +92,12 @@ the proposal):
 ## Propose
 
 Call `submit_proposal` with parties, channels, an ordered trace of step
-instances, and mutations. Instance names are semantic and stay stable if you
-reorder the trace. `step` is the model step name. Channel endpoints are party
-instance names. Repeat a model step by adding another instance with its own
-name. Do not put handler ids on a trace item.
+instances, mutations, and optional `dependencies` and `global_context`. Instance names are semantic and stay stable if you reorder
+the trace. `step` is the model step name. Channel endpoints are party instance
+names. Repeat a model step by adding another instance with its own name. Do not
+put handler ids on a trace item. Dependencies use instance names and may carry
+field bindings; global_context is for constants, environment inputs, and
+generated values not owned by a step.
 
 {"request_id": "REQUEST",
  "origin": "coverage",
@@ -107,6 +109,12 @@ name. Do not put handler ids on a trace item.
             "sender": "client_1", "receiver": "server_1",
             "reason": "target exploration or prefix/reply role",
             "constraints": ["field/state conditions"]}],
+ "dependencies": [
+   {"prior": "greet", "dependent": "login_first", "kind": "order", "condition": "",
+    "fields": []}],
+ "global_context": [
+   {"name": "username", "kind": "string", "value": "ubuntu",
+    "source": "constant"}],
  "mutations": [
    {"op": "field", "steps": ["login_first"], "field": "username",
     "suggestion": "explore empty and length boundaries", "evidence": "src/auth.c:120"},

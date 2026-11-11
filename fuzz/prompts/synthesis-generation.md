@@ -13,22 +13,20 @@ REQUEST={{ request_id }}
 {% endif %}PYTHON={{ campaign.python }}
 GENERATOR_PARTIES={{ generator_parties | join(", ") }}
 
-On success, write generator.py, params.schema.json, params.json, then atomically publish result.json in OUTPUT_DIR.
+On success, write generator.py, params.schema.json, params.json (initial field defaults), then atomically publish result.json in OUTPUT_DIR.
 Trace steps use action send, listen, connect, or close. Implement listen,
 connect, and close only for GENERATOR_PARTIES. SUT parties perform those
 actions themselves; wait for or observe them. listen means the socket is
-listening, not that a peer has connected. Repeated step instances are repeated occurrences. A duplicate mutation repeats
-the selected instances: an array repeats each selected instance in place, and
-a `[start:end]` range repeats that whole block after the original range.
-`count_param` is the number of extra copies, initially 0. Copies reuse the
-same party, channel, and field parameters and do not nest another duplicate.
-Field mutations name a parameter on the selected send instances. Implement the
-suggested field, including fields the model does not list, and keep each
-instance's parameter separate. Do not drop a step to make the script validate.
+listening, not that a peer has connected. Repeated step instances are repeated occurrences. Rust inserts, drops,
+duplicates, reorders, and mutates instances; the generator must not infer or
+apply those operations. A step instance's `mutable_fields` declares fields the
+generator may fill, including fields the model does not list. Keep each
+instance's field values separate. Do not drop a step to make the script validate.
 Read the proposal at {{ proposal }} before implementing. Use its ordered step
-instances, party and channel instances, mutations, per-step reasons and
-constraints. The proposal takes precedence over
-memories of previous requests. Do not construct a receipt.
+instances, party and channel instances, dependencies, global_context,
+mutable_fields, per-step reasons and constraints. The proposal is the downstream description: it has already been stripped of
+mutation operations and contains `mutable_fields` for each trace instance. The
+proposal takes precedence over memories of previous requests. Do not construct a receipt.
 WORKSPACE is the fixed agent working directory for this campaign. OUTPUT_DIR is
 the new, separate artifact directory assigned to this request; the fuzzer has
 already created it. Write all artifacts using absolute paths under OUTPUT_DIR.
@@ -117,7 +115,7 @@ CATALOG. Do not request a receipt or call a Rust selector.
     "channels":{"control_1":{"channel":"control","endpoints":["client_1","server_1"]}},
     "trace":[{"name":"login_first","step":"exact step name","channel":"control_1",
               "sender":"client_1","receiver":"server_1","reason":"why","constraints":[]}],
-    "mutations":[]}
+    "dependencies":[], "global_context":[], "mutations":[]}
    Party and channel keys are instance names. Each maps to a model party or
    channel name. Channel endpoints are party instance names. Each trace item
    names one step instance and points `step` at the model step name. Repeat a
@@ -160,10 +158,13 @@ claiming it was verified.
    fields/assigned identifiers needed by later field_relations. Implement the
    proposal's requested protocol behavior regardless of SUT feature support.
    Search relevant document sections instead of dumping entire files.
-3. Use proposal.context.dependencies to check the selected interactions first.
-   Only dependencies with both ends selected appear there. If a prerequisite is
-   unclear, query the relevant steps and step_dependencies from the model path
-   or CATALOG. Do not dump the complete model into the conversation.
+3. Use proposal.dependencies to check the selected interactions first. Each
+   dependency names concrete instance names and may carry field bindings. Pure
+   order dependencies do not require saving a message; data bindings map to
+   `instance.inputs` at runtime. Use proposal.global_context for constants,
+   environment inputs, and generated values that do not depend on a step. If a
+   prerequisite is unclear, query the relevant steps and step_dependencies from
+   the model path or CATALOG. Do not dump the complete model into the conversation.
    Conditions are not unconditional edges: an optional delay reply need not occur
    when a service is already ready. Handle cycles/self-dependencies as conditions
    or bounded repetitions, not recursive expansion. Add necessary setup only.
@@ -184,17 +185,34 @@ Expose a synchronous top-level function with this structure:
 ~~~python
 from generator_server.context import Ctx, InteractionError
 
-def generate(ctx: Ctx, params: dict) -> None:
+def generate(ctx: Ctx, step_trace: list[dict]) -> None:
     try:
-        run_environment_and_trace(ctx, params)
+        run_environment_and_trace(ctx, step_trace)
     finally:
         ctx.close_all()
 ~~~
+
+`step_trace` is the ordered list of concrete step instances selected and
+mutated by Rust. Each instance has `name`, `step`, `action`, `channel`,
+endpoint fields, `fields` (explicit final field values), `omitted_fields`
+(fields deliberately absent), `inputs` (target field -> `"prior_instance.field"`
+dependency bindings), and `broken_dependencies`. Execute instances in order and
+do not insert, duplicate, reorder, or delete them. Do not inspect mutation
+operations; none are present.
 
 Implement run_environment_and_trace (or replace the call) and every helper in
 generator.py. Submit no stubs, ellipsis, unimplemented branches, or unconditional
 success paths. The return value is ignored. Do not use async def as the entrypoint,
 require a command-line main(), or construct Ctx yourself inside the generator.
+
+Use `ctx.field(instance, name, default=...)` to resolve a field in the mandated
+order: explicit `fields` value, explicit omission, `inputs` dependency, then
+`ctx.get_global(name)`. Save states needed by later dependencies with
+`ctx.save_state(instance_name, field_name, value)`. Missing states must raise
+`InteractionError`; never invent a runtime value. `ctx.states` is retained for
+the whole generator invocation, including after closing or reconnecting; it is
+not a per-connection cache. `params.json` is only the
+initial field-default source used by Rust; it is not passed to this function.
 
 The Python server imports/caches the module BEFORE forking a worker.
 At module scope define constants, functions, classes, and safe imports only.
@@ -290,23 +308,21 @@ for the other root before termination.
 
 # Parameters and output files
 
-Provide a useful valid baseline conversation and expose meaningful protocol fields
-in params.json. An empty map skips mutation. Rust mutates parameters without
-revalidating the schema. Handle changed types/signs/lengths/list contents;
-bound local allocations, loops, service counts, and timeouts without sanitizing
-all mutated wire content back to fixed valid values.
+Provide a useful valid baseline conversation and expose initial values for the
+proposal's `mutable_fields` in params.json. Rust owns the final field values and
+mutates them without revalidating the schema. Handle changed types/signs/lengths/
+list contents; bound local allocations, loops, service counts, and timeouts
+without sanitizing all mutated wire content back to fixed valid values.
 
-- generator.py: complete module obeying the interface/lifecycle above.
-- params.json: root object; values only string, signed 64-bit integer, boolean,
-  or recursively nested lists. No nested objects, floats, null, or JSON bytes.
-  Encode bytes as hex/base64/text parameters when appropriate and deliberately
-  handle malformed mutated encodings.
+- generator.py: complete module obeying `generate(ctx, step_trace)` and the
+  interface/lifecycle above. Use only explicit values, dependencies, and
+  global_context; never receive mutation operations.
+- params.json: root object of initial mutable-field values; keys match
+  `mutable_fields`. Values only string, signed 64-bit integer, boolean, or
+  recursively nested lists. No nested objects, floats, null, or JSON bytes.
 - params.schema.json: root type="object", properties, required, and
-  additionalProperties=false. Use property types string/integer/boolean/array.
-  The validator implements only a basic subset and initial-value representability,
-  not full JSON Schema constraints (enum, pattern, minimum/maximum, array items).
-  The mutator does not honor those constraints. Do not use $ref or rely on
-  unsupported validation to keep runtime resource usage bounded.
+  additionalProperties=false for those initial defaults. The validator implements
+  only a basic subset; Rust does not enforce it for mutated values.
 - result.json: final completion signal. It is read immediately when it appears.
   Echo the exact IDs below; added_steps must be an array of strings, even if empty.
 

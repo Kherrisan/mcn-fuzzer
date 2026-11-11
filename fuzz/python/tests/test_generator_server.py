@@ -1,4 +1,5 @@
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -410,6 +411,64 @@ def _iox_request(client, node, iox2, body: bytes, timeout_s: float = 5):
     payload = response.payload()
     raw = bytes(int(payload[index]) for index in range(payload.len()))
     return cbor2.loads(raw)
+
+
+
+class StepTraceTests(unittest.TestCase):
+    def test_ctx_field_precedence_and_dependencies(self):
+        ctx = Ctx(Session(), "127.0.0.1", 1, 1.0)
+        ctx.global_context = {"username": "ubuntu"}
+        ctx.save_state("greet", "challenge", b"challenge-bytes")
+        instance = {
+            "name": "login",
+            "fields": {"username": "explicit"},
+            "omitted_fields": ["optional"],
+            "inputs": {"token": "greet.challenge"},
+        }
+        self.assertEqual(ctx.field(instance, "username"), "explicit")
+        self.assertEqual(ctx.field(instance, "token"), b"challenge-bytes")
+        self.assertEqual(ctx.field({"name": "x", "fields": {}, "inputs": {}}, "username"), "ubuntu")
+        with self.assertRaises(InteractionError):
+            ctx.field(instance, "optional")
+        with self.assertRaises(InteractionError):
+            ctx.field(instance, "missing")
+
+    def test_states_survive_close_all(self):
+        ctx = Ctx(Session(), "127.0.0.1", 1, 1.0)
+        ctx.save_state("greet", "challenge", b"kept")
+        ctx.close_all()
+        self.assertEqual(ctx.load_state("greet", "challenge"), b"kept")
+        self.assertEqual(ctx.states[("greet", "challenge")], b"kept")
+
+    def test_server_accepts_versioned_step_trace(self):
+        directory = Path(tempfile.mkdtemp(prefix="mcn-trace-generator-"))
+        script = directory / "generator.py"
+        marker = directory / "seen.txt"
+        script.write_text(
+            "def generate(ctx, step_trace):\n"
+            "    assert step_trace[0]['fields']['username'] == 'ubuntu'\n"
+            "    ctx.save_state('hello_1', 'greeting', b'220 ready')\n"
+            f"    open({str(marker)!r}, 'w').write(str(len(step_trace)))\n"
+        )
+        try:
+            request = {
+                "op": "run",
+                "client": 21,
+                "id": 7,
+                "generator": str(script),
+                "version": 3,
+                "step_trace": [{
+                    "name": "hello_1", "step": "hello", "action": "send",
+                    "channel": "control", "fields": {"username": "ubuntu"},
+                }],
+                "global_context": [{"name": "x", "value": None}],
+                "host": "127.0.0.1", "port": 1, "timeout_ms": 1000,
+            }
+            response = cbor2.loads(handle_payload(cbor2.dumps(request), {}))
+            self.assertEqual(response["status"], "ok", response)
+            self.assertEqual(marker.read_text(), "1")
+        finally:
+            shutil.rmtree(directory)
 
 
 class ServerProcessTests(unittest.TestCase):

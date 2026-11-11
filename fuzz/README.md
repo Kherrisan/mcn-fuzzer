@@ -46,7 +46,7 @@ Set `[campaign].timeout_secs` to stop the fuzz loop after a wall-clock duration.
 
 `replay` reads the corpus input file. LibAFL also writes `.metadata` sidecars; those are not generator inputs.
 
-Optional `[generator_synthesis]` synthesizes new `generate(ctx, params)` scripts from a schema 8.0.0 protocol model. It is off when the section is omitted. The `run` command is the only entry that starts a campaign-private HC core; replay, accept, and benchmark do not. The core starts when synthesis or coverage analysis is enabled, and both agents share it. Profiles live under `[agents.profiles.<name>]` with `provider` set to `codex`, `claude`, or `pi`. A failed synthesis task is recorded and existing corpus entries keep fuzzing.
+Optional `[generator_synthesis]` synthesizes new `generate(ctx, step_trace)` scripts from a schema 8.0.0 protocol model. It is off when the section is omitted. The `run` command is the only entry that starts a campaign-private HC core; replay, accept, and benchmark do not. The core starts when synthesis or coverage analysis is enabled, and both agents share it. Profiles live under `[agents.profiles.<name>]` with `provider` set to `codex`, `claude`, or `pi`. A failed synthesis task is recorded and existing corpus entries keep fuzzing.
 
 `[generator_synthesis]` replaces the removed `[protocol_generation]` table; the
 old name is a configuration error with a migration hint, including when both
@@ -176,14 +176,17 @@ baselined active entry is dropped because its partial mutation state cannot be
 reconstructed. Novel children receive the proposal's `TraceOrigin` metadata
 before they are written back to the on-disk corpus.
 
-The synthesis stage consumes that proposal unchanged: it copies it to a new
-request directory and points the prompt at it instead of a receipt. Coverage
+The synthesis stage copies the accepted proposal into the request directory
+after stripping `mutations` and adding `mutable_fields`, then points the prompt
+at that downstream description instead of a receipt. Coverage
 mode never generates without a proposal. Autonomous mode (analysis disabled, or
 seedless bootstrap) asks the agent to write `proposal.draft.json`, run
 `python -m coverage_analysis.server proposal` to fill IDs and validate it, and
-then generate. Both modes publish `generator.py`, `params.schema.json`,
-`params.json`, and `result.json`; Rust validates the proposal, code, parameters,
-and identity in-process before publishing the generator. Failed or expired
+then generate. Both modes publish `generator.py`, `params.schema.json`, `params.json`, and
+`result.json`; Rust validates the proposal, code, and initial mutable-field
+defaults in-process before publishing the generator. The proposal copy handed to
+synthesis has `mutations` stripped and replaced by per-instance
+`mutable_fields`; dependencies and `global_context` stay in the proposal. Failed or expired
 proposals are aborted and leave existing corpus entries untouched.
 
 The synthesizer prompts are Markdown MiniJinja templates in `prompts/`. They are embedded in the fuzzer at build time, so rebuild after editing them.
@@ -194,7 +197,7 @@ Protocol, step and trace hash IDs use the first eight lowercase hexadecimal char
 
 Both prompts also inject the absolute path to [the protocol module skill](skills/protocol-modules/SKILL.md) and require the agent to read it before selecting libraries. It covers all ten ProFuzzBench protocols, with message/packet codecs, upstream/server SDKs, crypto helpers, import names, installed versions and limitations. Keep the skill and its references accessible at runtime. Evaluation fingerprints the skill directory along with the prompt templates, so changing its contents requires preparing a new evaluation task.
 
-Proposals contain the ordered trace with per-step reasons and constraints, the selected definitions, handler references, dependencies, and document identities. They do not embed the full model. The skill requires the agent to run [the fixed artifact validator](skills/protocol-modules/scripts/validate_generator.py) on `result.draft.json` before atomically publishing `result.json`. The agent additionally runs its bounded import probe. Fuzzer acceptance rechecks the completion IDs, parameter schema and values, and Python syntax and entrypoint in Rust using the RustPython compiler; it does not launch Python or run the generator or SUT.
+Proposals contain the ordered trace with per-step reasons and constraints, the selected definitions, handler references, dependencies, optional global context, and document identities. Rust instantiates the proposal as a `TraceInstance`: `PartyInstance` and `ChannelInstance` mirror model party/channel relationships, `StepInstance` references a channel and party instances (no connection field), and `DependencyInstance` connects two step instances with optional field bindings. Execution input is versioned (`version: 3`) and carries parties, channels, `step_trace`, dependencies, and global context; legacy params-only/v2 corpus files are rejected with a re-synthesis error instead of being guessed. Each step instance carries final `fields`, explicit `omitted_fields`, dependency `inputs`, and broken-dependency metadata. During execution `generate(ctx, step_trace)` must use `ctx.field()` for explicit/dependency/global precedence and `ctx.save_state()` for states needed downstream; `ctx.states` lives until the generator exits. They do not embed the full model. The skill requires the agent to run [the fixed artifact validator](skills/protocol-modules/scripts/validate_generator.py) on `result.draft.json` before atomically publishing `result.json`. The agent additionally runs its bounded import probe. Fuzzer acceptance rechecks the completion IDs, parameter schema and values, and Python syntax and entrypoint in Rust using the RustPython compiler; it does not launch Python or run the generator or SUT.
 
 The prepared environment is CPython 3.12 on Linux x86_64. Install its pinned dependencies into the campaign interpreter (the supplied campaigns use `.venv/bin/python`):
 
@@ -214,7 +217,7 @@ behavior comes from the proposal and RFCs; public generator API/SDK references
 and static artifact validation remain available. Runtime replies, failures and
 coverage are evaluated by the fuzzer after publication.
 
-`WORKSPACE` is the agent's fixed working directory (`generator_synthesis.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its proposal, `generator.py`, parameter schema, initial params, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root.
+`WORKSPACE` is the agent's fixed working directory (`generator_synthesis.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its proposal (mutations stripped, mutable fields added), `generator.py`, initial field-default schema, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root.
 
 When synthesis is enabled, `[parties]` and `generator_synthesis.model` are required. A campaign that includes `[parties]` resolves those selectors against the model before cases start, even when synthesis is disabled. A missing model is an error. `sut` and `generator` are each a non-empty list of protocol party names or `"*"`. `"*"` means every model party not named by the other side. Parties in neither set stay unavailable. The removed `generator_synthesis.bindings` table is a configuration error. The LightFTP campaign assigns the server parties to the SUT and the remaining parties to the generator.
 
@@ -247,4 +250,4 @@ sudo ./target/release/mcn-fuzz accept --campaign targets/openssl/campaign.toml
 sudo ./target/release/mcn-fuzz replay --campaign targets/openssl/campaign.toml --input targets/openssl/corpus/<file>
 ```
 
-`generators/tls12.py` keeps `generate(ctx, params)`. It rebuilds TLS lengths, then applies `version`, `cipher`, `sni`, `extensions_hex`, and `truncate`. The response reader takes the 5-byte record header and then at most 18432 body bytes. A ServerHello is `ok`. An alert is `alert`. A short close is `eof`. Connect failures stay `conn` and read deadlines stay `timeout`.
+`generators/tls12.py` is a legacy params-only example; new synthesis generators use `generate(ctx, step_trace)`. It rebuilds TLS lengths, then applies `version`, `cipher`, `sni`, `extensions_hex`, and `truncate`. The response reader takes the 5-byte record header and then at most 18432 body bytes. A ServerHello is `ok`. An alert is `alert`. A short close is `eof`. Connect failures stay `conn` and read deadlines stay `timeout`.

@@ -415,6 +415,24 @@ impl IndexedModel {
             .collect()
     }
 
+    /// Step-level dependency rows for proposal instantiation.
+    pub fn dependency_rows(&self) -> Vec<(String, String, String, Vec<(String, String)>)> {
+        self.dependencies
+            .iter()
+            .map(|dep| {
+                (
+                    dep.prior_step.clone(),
+                    dep.dependent_step.clone(),
+                    dep.condition.clone(),
+                    dep.field_relations
+                        .iter()
+                        .map(|rel| (rel.prior_field.clone(), rel.dependent_field.clone()))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
     /// Party names defined by the model, in name order.
     pub fn party_names(&self) -> BTreeSet<String> {
         self.parties.keys().cloned().collect()

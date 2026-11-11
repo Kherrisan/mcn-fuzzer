@@ -12,6 +12,7 @@ ORIGINS = {"coverage", "autonomous"}
 TRACE_FIELDS = {
     "name", "step", "action", "condition", "message",
     "channel", "sender", "receiver", "party", "reason", "constraints",
+    "mutable_fields",
 }
 
 
@@ -138,9 +139,94 @@ def _check_binding(graph, parties, channels, item):
     return step_name
 
 
+def _mutable_fields(values):
+    if not isinstance(values, list):
+        raise ProposalError("mutable_fields must be an array")
+    out = []
+    seen = set()
+    for item in values:
+        if not isinstance(item, dict):
+            raise ProposalError("mutable_fields entries must be objects")
+        field = str(item.get("field") or "").strip()
+        if not field or field in seen:
+            raise ProposalError(f"mutable field {field!r} must be non-empty and unique")
+        seen.add(field)
+        out.append({
+            "field": field,
+            "kind": str(item.get("kind") or "string"),
+            "default": item.get("default"),
+            "source": str(item.get("source") or "proposal"),
+        })
+    return out
+
+
+def _global_context(values, validate=False):
+    if not isinstance(values, list):
+        raise ProposalError("global_context must be an array")
+    out = []
+    seen = set()
+    for item in values:
+        if not isinstance(item, dict):
+            raise ProposalError("global_context entries must be objects")
+        name = str(item.get("name") or "").strip()
+        if not name or name in seen:
+            raise ProposalError(f"global_context name {name!r} must be non-empty and unique")
+        seen.add(name)
+        source = str(item.get("source") or "constant")
+        if source not in {"constant", "environment", "generated"}:
+            raise ProposalError(f"global_context {name} has unknown source {source}")
+        seed = item.get("seed")
+        if source == "generated" and (not isinstance(seed, int) or isinstance(seed, bool)):
+            raise ProposalError(f"global_context generated value {name} needs an integer seed")
+        out.append({
+            "name": name,
+            "kind": str(item.get("kind") or ""),
+            "value": item.get("value"),
+            "source": source,
+            "seed": seed,
+        })
+    return out
+
+
+def _dependencies(values, names):
+    if not isinstance(values, list):
+        raise ProposalError("dependencies must be an array")
+    out = []
+    known = set(names)
+    for item in values:
+        if not isinstance(item, dict):
+            raise ProposalError("dependency entries must be objects")
+        prior = str(item.get("prior") or "")
+        dependent = str(item.get("dependent") or "")
+        if prior not in known or dependent not in known:
+            raise ProposalError(f"dependency {prior} -> {dependent} references an unknown instance")
+        if prior == dependent:
+            raise ProposalError("dependency cannot point an instance at itself")
+        kind = str(item.get("kind") or "order")
+        if kind not in {"order", "data", "resource", "state"}:
+            raise ProposalError(f"unknown dependency kind {kind}")
+        fields = []
+        for rel in (item.get("fields") or item.get("field_relations") or []):
+            if not isinstance(rel, dict):
+                raise ProposalError("dependency fields must be objects")
+            fields.append({
+                "prior_field": str(rel.get("prior_field") or ""),
+                "dependent_field": str(rel.get("dependent_field") or ""),
+                "derive": str(rel.get("derive") or ""),
+            })
+        out.append({
+            "prior": prior,
+            "dependent": dependent,
+            "condition": str(item.get("condition") or ""),
+            "kind": kind,
+            "fields": fields,
+        })
+    return out
+
+
 def build_proposal(graph, origin, session, request_id, build, snapshot,
                    goal, trace, handlers, parties, channels, mutations=None,
-                   graph_revision=None):
+                   graph_revision=None, global_context=None, dependencies=None):
     if origin not in ORIGINS:
         raise ProposalError(f"origin must be one of {sorted(ORIGINS)}")
     trace = _as_list(trace, "trace")
@@ -175,6 +261,7 @@ def build_proposal(graph, origin, session, request_id, build, snapshot,
             "party": item.get("party"),
             "reason": reason,
             "constraints": [str(value) for value in _as_list(item.get("constraints") or [], "constraints")],
+            "mutable_fields": _mutable_fields(item.get("mutable_fields") or []),
         })
     try:
         validate_mutations(normalized, mutations or [], graph.steps)
@@ -184,6 +271,30 @@ def build_proposal(graph, origin, session, request_id, build, snapshot,
     for handler in goal_handlers:
         if handlers is not None and handler not in known_handlers:
             raise ProposalError(f"goal references unknown handler {handler}")
+    if dependencies is None:
+        first = {}
+        for item in normalized:
+            first.setdefault(item["step"], item["name"])
+        dependencies = []
+        for dep in graph.induced_dependencies([item["step"] for item in normalized]):
+            prior = first.get(dep["prior"])
+            dependent = first.get(dep["dependent"])
+            if not prior or not dependent:
+                continue
+            relations = dep.get("field_relations") or []
+            dependencies.append({
+                "prior": prior,
+                "dependent": dependent,
+                "condition": dep.get("condition") or "",
+                "kind": "data" if relations else "order",
+                "fields": [{
+                    "prior_field": str(rel.get("prior_field") or ""),
+                    "dependent_field": str(rel.get("dependent_field") or ""),
+                    "derive": str(rel.get("derive") or ""),
+                } for rel in relations],
+            })
+    globals_value = _global_context(global_context or [])
+    dependencies = _dependencies(dependencies or [], _instances(trace))
     return {
         "version": VERSION,
         "origin": origin,
@@ -197,6 +308,8 @@ def build_proposal(graph, origin, session, request_id, build, snapshot,
         "channels": channels or {},
         "trace": normalized,
         "mutations": list(mutations or []),
+        "global_context": globals_value,
+        "dependencies": dependencies,
     }
 
 
@@ -236,6 +349,11 @@ def validate_proposal(proposal, graph, handlers, request=None):
         validate_mutations(trace, proposal.get("mutations") or [], graph.steps)
     except MutationError as error:
         raise ProposalError(str(error)) from error
+    names = _instances(trace)
+    for item in trace:
+        _mutable_fields(item.get("mutable_fields") or [])
+    _global_context(proposal.get("global_context") or [], validate=True)
+    _dependencies(proposal.get("dependencies") or [], names)
     known_handlers = set(handlers.by_id) if handlers else set()
     for handler in goal.get("handler_ids") or []:
         if handlers is not None and handler not in known_handlers:

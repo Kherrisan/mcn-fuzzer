@@ -168,19 +168,21 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
                 .any(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("json"))
         })
         .unwrap_or(false);
-    if campaign.generator_synthesis.enabled && !seed_files {
-        if !mutation.has_queue(&session.state) {
-            let mut bootstrap_rand = libafl_bolts::rands::StdRand::with_seed(0x5052_4f54);
-            let ready = synthesis.bootstrap_first(&mut bootstrap_rand, || analysis.poll_agent())?;
-            mutation.enqueue(&mut session.state, ready.request, ready.input, ready.origin)?;
-        }
-    } else {
+    if seed_files {
         session.state.load_initial_inputs(
             &mut session.fuzzer,
             &mut session.executor,
             &mut session.mgr,
             &[campaign.campaign.seeds.clone()],
         )?;
+    }
+    if campaign.generator_synthesis.enabled
+        && session.state.corpus().count() == 0
+        && !mutation.has_queue(&session.state)
+    {
+        let mut bootstrap_rand = libafl_bolts::rands::StdRand::with_seed(0x5052_4f54);
+        let ready = synthesis.bootstrap_first(&mut bootstrap_rand, || analysis.poll_agent())?;
+        mutation.enqueue(&mut session.state, ready.request, ready.input, ready.origin)?;
     }
     // A seedless campaign cannot ask the scheduler for a corpus input yet.
     // Run the same mutation stage directly while it still has synthesis input.

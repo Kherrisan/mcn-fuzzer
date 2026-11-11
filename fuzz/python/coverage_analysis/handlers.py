@@ -96,7 +96,7 @@ def load_handlers(path):
             raw_handlers.append(raw)
         pending.append((entry, raw_handlers))
     counts = Counter(raw.get("symbol") for _entry, handlers in pending for raw in handlers)
-    seen = set()
+    seen = {}
     rows = []
     for entry, raw_handlers in pending:
         handlers = []
@@ -104,9 +104,15 @@ def load_handlers(path):
             symbol = str(raw.get("symbol"))
             location = str(raw.get("location") or "")
             ident = handler_name(symbol, location, counts[symbol] > 1)
+            identity = (symbol, location)
             if ident in seen:
-                raise HandlerError(f"duplicate handler name {ident}")
-            seen.add(ident)
+                if seen[ident] != identity:
+                    raise HandlerError(f"duplicate handler name {ident}")
+                # The same function can handle several inbound messages. Keep
+                # one logical handler id and allow each message mapping to
+                # reference it.
+            else:
+                seen[ident] = identity
             handlers.append(Handler(ident, symbol, location, str(raw.get("evidence") or ""),
                                     bool(raw.get("uncertain"))))
         rows.append(HandlerRow(entry.get("message"), handlers,

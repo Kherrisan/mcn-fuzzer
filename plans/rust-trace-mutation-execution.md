@@ -1,104 +1,97 @@
-# Rust trace 变异与可调度的协议生成器
+# Rust 双层变异与 Step Trace 驱动执行
 
 ## 状态与目标
 
-本文记录讨论中的设计方向，作为 [Protocol name 引用与 proposal mutations](protocol-name-proposal-mutations.md) 的后续方案。接口示例用于表达职责，尚不是已经实现或冻结的 schema；待确定事项列在文末。
+本文是 [Protocol name 引用与 proposal mutations](protocol-name-proposal-mutations.md) 的后续实施计划。基础结构已实施（见文末实施记录）；仍未完成的部分在验收记录中明确标出。
 
-目标是让 synthesis 根据 proposal 生成可复用的 step 实现，Rust 在其支持的范围内变异执行序列和字段参数。一个 generator 可以执行多个 trace，减少每次序列变化都重新 synthesis 的成本。
+Rust fuzzer 负责 step 和 field 两级变异；generator 只按 trace 顺序执行 step instance、填充字段和完成协议计算，不读取或解释变异策略。同一个 generator 可以执行不同顺序、重复次数和字段取值的 trace，减少重新 synthesis 的次数。
 
-最近 LightFTP 一小时运行中，7 次完成的 synthesis 从 proposal 复制到生成器发布，按产物时间戳估算平均耗时约 4 分 20 秒，中位数约 3 分 58 秒，范围约 2 分 30 秒至 7 分 15 秒。序列变异的预期收益是复用这些生成结果；是否提高探索效率仍需对照实验验证。
-
-## 当前限制
-
-- Rust 的 `GeneratorMutator` 目前主要修改 `GeneratorInput.params`；执行输入主要是 generator 路径和参数。仅修改 proposal trace，不会使已生成 Python 代码自动改序执行。
-- Protocol dependency 保存前后 step、自然语言 condition 和 field relations。它还不能直接成为 Rust 可执行的完整约束，尤其是条件依赖、循环和重复 step 的实例绑定。
-- 当前 `Ctx` 管理连接、监听器、收发缓冲及字节计数；`recv()` 返回的数据没有自动登记为带来源的协议消息。
-- 现有 generator 可以自行维护协议状态，但这些状态和操作尚没有统一的可调度接口。
-
-## 分工与执行方式
+当前 `GeneratorMutator` 主要修改 `GeneratorInput.params`，执行端仍以 params 驱动 generator。此次改造将完整 step trace 作为执行输入，并贯通 corpus 和 replay。
 
 | 层 | 职责 |
 | --- | --- |
-| Coverage analysis | 选择探索目标、基础 trace、必要依赖和允许的字段/序列变异，给出源码与覆盖率依据 |
-| Synthesis | 实现消息构造、编码、接收、组帧、解析和状态更新，生成可按 trace 调用的 step handlers |
-| Rust | 变异执行输入的 trace 和 params，检查可机器判断的约束，执行后依据反馈保留 corpus |
-| 通用执行器 / Ctx | 调度实例、管理资源与消息历史，向 handlers 提供当前连接和协议状态 |
+| Coverage proposal | 提供基础 trace、step 能力集合、dependencies、global_context 和字段 mutations |
+| Rust fuzzer | 消费 mutations，生成 mutable fields 描述，执行两级变异并保存最终执行 trace |
+| Generator synthesis | 根据 step 定义、dependencies、global_context 和 mutable fields 生成可调度 handlers |
+| Generator / Ctx | 按实例顺序执行、填充字段、完成协议计算，并按数据依赖保存和读取结果 |
 
-概念接口如下，具体签名和传输方式待定：
+## Proposal：Dependency 与 Global Context
+
+Proposal 保留目标、party/channel 绑定、基础 trace、可实现的 step 集合、dependencies 和 mutations，新增 `global_context`。不为每个 step 另建前序消息上下文，也不单独声明“哪些值需要保存到 ctx”。
+
+- **Dependencies** 统一表达 step 间的时序依赖和数据依赖。数据依赖描述来源输出、目标字段及必要的派生关系；纯时序依赖只约束顺序，不要求保存消息或字段。资源和协议状态要求也通过依赖表达。
+- **Global context** 描述不依赖任何 step 的常量、执行环境输入、本地生成值及其派生关系。每个 testcase 初始化一次，需要重放的生成种子随输入保存。依赖 step 输出的数据仍放在 dependency 中，不移入 global_context。
+- **Mutations** 提供字段可变异点和候选操作，供 Rust 消费。Step 插入、重复、删除和重排策略由 Rust 配置控制，proposal 不再声明 duplicate 次数等序列变异策略。
+
+Step 能力集合与基础 trace 分开：集合可包含基础 trace 尚未使用的消息，synthesis 必须为集合内全部 step 生成 handler。Rust 首版只能插入已有 handler 支持的 step；扩展能力集合需要重新 synthesis。
+
+Synthesis 根据数据依赖推导 ctx 读写，仅保存后续数据依赖需要的输出。纯时序依赖不产生数据保存要求；跨连接数据的来源和作用域也由 dependency 表达。例如，后续认证消息依赖前序 challenge，dependency 指明来源字段及派生关系，synthesis 据此保存 challenge 并生成消费者读取逻辑，无需额外的保存清单。
+
+自然语言可以解释条件和派生算法，但 Rust 判断顺序所需的依赖与实例绑定必须机器可读。未知条件不能当作已满足，复杂协议计算由 handler 实现。继续用 name 引用定义与实例，不恢复摘要实体 ID。
+
+## Rust 转换与执行接口
+
+Rust 接收 proposal 后生成面向 synthesis 和执行的描述：
+
+1. 解析 mutations，提取各 step 的 mutable fields。
+2. 将变异操作、候选值和选择策略保留在 Rust 内部。
+3. 剥离交给 synthesis/generator 的 mutations，替换为各 step 的 `mutable_fields`，仅声明可填充字段的路径、类型和默认取值来源。
+4. 保留 step 定义、dependencies、global_context 和基础 trace，让 synthesis 实现字段填充与协议执行。
+
+原始 proposal 保留用于交接追溯；剥离发生在 Rust 生成的下游描述中。Synthesis 不接收 mutations，生成的代码也不包含 duplicate 控制或字段变异算法。
+
+执行入口改为：
 
 ```python
-def generate(ctx, params, trace):
-    for instance in trace:
-        execute_step(ctx, instance, params)
+def generate(ctx, step_trace):
+    for instance in step_trace:
+        execute_step(ctx, instance)
 ```
 
-`execute_step` 是分派入口，各种消息由协议专用 handler 实现；connect/listen/close 等操作可复用已有 transport 能力。模型中 SUT 发送的 step，在 generator 一侧对应接收、解析和记录，不要求为了这一执行视角新增 protocol action 类型。
+每个 step instance 包含唯一实例名、step 引用、party/channel 绑定、具体数据依赖绑定，以及 Rust 决定的字段取值。字段取值属于实例，同一模型 step 的多个实例可以使用不同取值。Generator 不自行插入、重复或重排步骤。
 
-Rust 只能调度 generator 已实现的操作及其支持的 party/channel 绑定。首版建议限定在一个 proposal 的能力集合内；引入新消息或新连接行为时，再扩展或重新生成 generator。无需一开始就要求每个 generator 覆盖整个协议。
+字段填充规则：
 
-被变异的是执行输入，而不是冻结的 proposal。变异后的 trace 和参数需要随 corpus 保存并通过运行接口传入 generator，确保重放使用相同的变异描述；接收数据等动态结果在重放时重新获取。
+- 有实例显式取值时，直接采用该值。
+- 没有显式取值时，按 dependency 或 global_context 取得输入，再完成派生计算。
+- 删除字段以显式的字段缺省表示，与“没有提供覆盖值”区分；这是最终字段状态，不是交给 generator 的 mutation 操作。
+- 长度、校验值等自动派生字段根据最终输入计算；若 Rust 为这些字段提供显式值，则采用显式值，不能再次覆盖修复。
 
-## Proposal 应表达的内容
+运行时才可取得的数据仍按 dependency 解析。首版不支持向 generator 下发“对未知响应值执行翻转”等变异指令；Rust 可以为相应目标字段提供独立的替代值。Generator 始终只处理取值、填充和协议计算，不理解变异方式。
 
-| 字段 | 作用 |
-| --- | --- |
-| `goal` | 目标 handler、路径及源码/覆盖率依据 |
-| `parties` | 参与者实例及模型 party 引用 |
-| `channels` | 通道实例、端点和连接角色 |
-| `steps` | generator 必须实现的操作集合，以及输入、输出、状态要求 |
-| `trace` | 基础有序 step instance 序列 |
-| `dependencies` | 实例之间的资源、数据和状态依赖 |
-| `mutations` | 字段变异与允许的序列变异范围 |
+Connect/listen/close 等网络 step 复用现有 transport 能力。模型中 SUT 发送的 step，在 generator 一侧对应接收和解析，不因此新增协议 action 类型。Handler 负责组帧，不能把一次 recv 直接视为一条完整消息。
 
-继续以 name 引用定义和实例，不恢复实体摘要 ID。`steps` 描述能力，`trace` 描述某次执行；实例名和其引用的模型 step name 分别对应不同对象。
+## Ctx、实例绑定与重放
 
-每个 step 实现契约需要说明输入来自 params、环境还是前序输出，哪些输出写入 ctx，以及执行前后状态如何变化。报文编解码与密码学实现由 synthesis 完成，不要求 coverage analysis 提供代码。
+Ctx 以 testcase 为隔离边界，管理 global_context、连接资源，以及数据依赖要求保留的输出。无需为所有 step 保存完整消息历史；执行诊断与依赖所需数据分别处理。
 
-自然语言 condition 可以作为说明，但不能成为 Rust 判断合法性的唯一依据。Coverage/synthesis 需要将本次选定分支的必要依赖具体化；未知条件不应被当成已满足。
+- 输出按唯一实例名和连接生命周期存储。重复执行创建新实例，不覆盖先前结果，下游不能隐式读取“最后一条消息”。
+- 重复块内部引用映射到对应副本，块外输入保留原绑定，已有下游引用默认不变。改变绑定必须由 Rust 明确生成并校验。
+- 重复默认复用 party/channel，新连接由显式网络 step 建立。关闭或重连后，旧连接级状态失效；跨连接共享数据须由 dependency 明确声明。
+- Handler 保存依赖需要的实际输出，记录解析失败、EOF、超时等结果；缺失输出不能被假定为已产生。
 
-## Ctx 的消息与状态管理
+Corpus 保存最终 trace、字段取值、依赖绑定和必要的生成种子。Rust 的变异策略记录与 generator 执行输入分离。Replay 使用相同描述重新执行，服务端响应重新获取；实际解析及派生值记录在执行日志中，不承诺动态响应逐字节一致。
 
-建议在现有 transport 能力上增加以下概念，不必立即将其固定为具体类结构：
+## Rust 两级变异与依赖策略
 
-```text
-ctx
- ├─ parties      参与者实例与状态
- ├─ channels     通道实例、连接资源和协议状态
- ├─ executions   每次 step 执行及其输入、输出和结果
- └─ messages     收发消息的原始字节、解析字段和来源
-```
+首版支持插入、重复单步或连续块、删除、重排，以及实例字段变异，两级操作可以组合。插入可以选择基础 trace 尚未使用、但已有 handler 的 step；新增实例获得唯一名称及独立字段取值。
 
-- 每次执行单独记录。重复 step 不能覆盖先前结果；下游必须能够定位所依赖的 channel、step instance 和具体执行轮次。
-- 一次 recv 不等于一条消息。协议 handler 负责组帧和解析，再登记消息；同时保留部分数据、EOF、超时或解析失败的实际结果。
-- 数据绑定与字段变异有明确先后关系：先解析前序输出并构造消息，再应用变异，按声明更新或故意破坏长度、校验和等关联字段。
-- 通道状态包括连接是否有效，以及协议需要的认证状态、密钥、transcript、序号等。关闭或重连后，不能将旧连接的状态无条件继承到新连接。
-- 状态以 testcase 为边界隔离；需要有消息总字节、执行次数和资源数量限制，不能让重复变异造成无限积累。
-- 一个通道应明确读写所有权。若 handlers 使用并发辅助服务，执行器需要与其协调，不能仅靠共享字典保证正确性。
+Step 级采用可配置的默认策略：
 
-## 依赖与变异规则
+- **90% 保持依赖**：变异后检查时序、数据和资源依赖；插入位置及数据绑定必须满足要求，没有可行候选时跳过该操作。
+- **10% 尝试违反依赖**：允许破坏协议顺序或状态前提，不自动修复，并在 Rust 执行元数据中记录被违反的依赖。
 
-需要区分两类约束：
+比例指策略选择概率，分别统计候选、生成成功和实际执行数量。保持依赖模式只保证已建模的约束，不宣称生成序列必然完全符合协议。
 
-1. **执行所需的依赖**：连接存在、必需的数据已经取得、引用的输出属于正确连接/轮次。这类依赖保证生成器有能力执行该操作。
-2. **协议合法性约束**：消息允许的时序、扩展配对、字段一致性等。默认可保持，但 proposal 可以明确指定其中某些规则为本次有意违反的目标。
+实际执行仍需有效 handler、可用连接及可取得的必需字段。删除数据生产者后，Rust 若为消费者提供显式字段值，可以执行该实例；否则报告依赖缺失，不伪造 ctx 输出，也不能声称已向 SUT 发送非法消息。
 
-例如前面发生过 login，并不代表另一条新连接已经认证。重复模型 step 后，依赖必须落到实际实例与执行轮次；仅检查名称的前后位置不足以保证状态正确。
+重排需考虑共享状态冲突，不能仅检查是否存在直接依赖边。随机拓扑排序仅适用于已具体化且无环的实例依赖，不能直接把含循环和条件边的全协议图当作 DAG。
 
-首版候选操作：
+沿用单次重复上限 32、trace 长度上限 4096，以及现有 testcase 超时和资源清理机制，避免重复造成无界执行或状态积累。
 
-- 交换：调整确认独立的步骤；除了没有依赖路径，还需排除共享状态冲突。
-- 重复：复用已有数组/区间语义。`["s2", "s4"]` 分别原地重复；`"[s2:s4]"` 整体重复包含端点的连续区间。
-- 删除：仅删除声明为可选、且删除后仍满足保留步骤依赖的部分。
+## TLS 场景中的上下文与字段填充
 
-重复副本默认复用 party/channel。新建连接必须通过显式实例和网络操作表达，不由 duplicate 隐式克隆。重复后如何绑定前序消息和状态，需要按操作语义确定，不能一律引用“最后收到的消息”。
-
-随机拓扑排序只适用于已经具体化且无环的实例依赖。不能将包含循环、条件边的全协议图直接当 DAG，也不能通过自动修复把本次有意制造的非法字段或序列恢复成合法输入。
-
-## TLS 1.3 PSK resumption 示例
-
-本节以 session ticket 恢复为例，展示设计需求。它不是对现有 OpenSSL campaign 已支持 TLS 1.3 恢复的声明。
-
-### 基础交互与执行状态
+保留 TLS 1.3 PSK resumption 作为复杂数据依赖的设计示例，不作为首版必须实现的协议能力，也不表示现有 OpenSSL campaign 已支持该流程。
 
 ```text
 bootstrap_conn:
@@ -108,49 +101,94 @@ resume_conn:
   connect → send resumption ClientHello → recv server message → 后续处理
 ```
 
-“完整握手”是说明用缩写，实际 trace 应展开对应消息。服务端在两次连接间必须保留可用的 ticket 状态；单次连接后退出、禁用 ticket 或仅启用 TLS 1.2 的配置不能直接承担此场景。
+“完整握手”是说明用缩写，实际 trace 应展开对应消息。恢复 ClientHello 对首次握手秘密值、ticket/nonce 等数据的需求通过 dependencies 表达，synthesis 据此生成保存和读取逻辑。无 step 依赖的配置与本地生成输入放入 global_context，不另建一份前序消息上下文。
 
-Ctx 需要保存首次握手的秘密值及收到的 ticket/nonce 等信息，以获得恢复 PSK；不能只复制 ticket 字节。恢复 ClientHello handler 从这些状态取输入，完成编码、binder 计算并记录实际发送内容。参见 [RFC 8446 §4.6.1](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.6.1)。
-
-### 多个 ClientHello 的不同含义
-
-| 场景 | Trace 概念 | 执行要求 |
-| --- | --- | --- |
-| 多条连接上的尝试 | conn1: CH₁ → response；conn2: CH₂ → response | 每条连接独立维护 transcript/密钥，明确 ticket 来源与连接实例 |
-| HRR 流程 | CH₁ → HRR → CH₂ → response | CH₂ 根据实际 HRR 构造，处理指定 key share 和 binder |
-| 同连接额外重复 | CH₁ → CH 副本 → CH 副本 → response | 作为有意重复消息的状态机测试，不因满足 connect 前置条件就宣称合法 |
-
-HRR 后发送的 CH₂ 不是普通字节副本；其消息和 binder 需满足对应的更新规则。参见 [RFC 8446 §4.1.2](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.1.2) 和 [§4.2.11.2](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.2.11.2)。
-
-### 缺少 group 的不同变异
-
-| ClientHello 变化 | 应区分的行为 |
+| 场景 | 依赖与执行含义 |
 | --- | --- |
-| `psk_ke`，同时省略 supported_groups/key_share | 可以是纯 PSK 模式，接受与否取决于服务端 |
-| `psk_dhe_ke`，有 supported_groups，key_share 列表为空 | 可以触发 HRR 选择 group |
-| 保留 key_share，删除 supported_groups | 有意破坏扩展配对要求 |
-| 保留 supported_groups，删除整个 key_share 扩展 | 不等同于空 key share 列表，同样破坏配对要求 |
+| 多连接恢复尝试 | 明确 ticket 来源，各连接保持独立状态，允许声明的跨连接数据引用 |
+| HRR 后的 ClientHello | 通过 dependency 读取实际 HRR，handler 根据最终字段完成相关派生计算 |
+| 同连接重复 ClientHello | Rust 插入新的实例，作为可能违反时序的状态机测试，不因连接存在就判定协议合法 |
 
-参见 [RFC 8446 §4.2.8](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.2.8)、[§4.2.9](https://www.rfc-editor.org/rfc/rfc8446.html#section-4.2.9) 和 [§9.2](https://www.rfc-editor.org/rfc/rfc8446.html#section-9.2)。
+若 Rust 选择让 supported_groups 缺省，trace 表达最终字段状态，handler 按该状态构造消息并计算未被显式覆盖的长度和 binder。若 Rust 同时提供 binder 的显式错误取值，handler 直接采用，不再修复。删除、重复及字段值选择均发生在 Rust，generator 无需知道这些值来自哪种变异。
 
-如果探索目标是删除 supported_groups，建议保持其他关联项正确：先构造正常 ClientHello，再删除扩展、更新长度、重算 binder，最后发送。否则会同时引入 binder 错误，难以解释命中了哪条路径。错误 binder 本身可以作为另一项明确变异。
+服务端的 HRR、ServerHello、alert、断连或超时需关联到实际实例与连接。协议拒绝与 generator 实现失败应分别记录。
 
-记录服务端实际返回的 HRR、ServerHello、alert、断连或超时，并保留它们所属的连接与执行轮次。协议拒绝不等于生成器实现失败，也不应为了保证握手成功自动补回被删除的扩展。
+## 实施阶段与验收
 
-## 实施建议、验证与待定事项
+实施顺序：
 
-建议先建立 proposal 能力集合、step 输入/输出契约和执行输入中的 trace，再把已有 duplicate 迁入 Rust 控制；随后评估受约束的交换、删除和更广的序列生成。
+1. 更新 proposal 类型和 Python/Rust 校验，以 dependencies 表达 step 上下文，增加 global_context，并调整 coverage 提示词。
+2. 实现 Rust 对 mutations 的消费和剥离，生成包含 mutable fields 的 synthesis 描述。
+3. 更新 synthesis 提示词、Ctx 和产物校验，实现依赖驱动的字段保存、读取及填充，并为能力集合生成全部 handlers。
+4. 贯通 GeneratorInput、执行请求、Python server、corpus、replay 和 evaluation 的 step trace 输入。
+5. 将重复控制迁入 Rust，加入其余 step 操作和实例字段变异，更新示例与验证用例。
 
-验证应包括：实例/轮次引用正确、组帧结果保存、跨连接状态隔离、重复块的数据绑定、缺失依赖处理、重放一致性、有限资源清理，以及 TLS 的正常恢复/HRR/故意非法消息三类场景。
+新格式显式版本化。旧 params-only generator 和 corpus 不自动推断迁移，加载时明确提示重新 synthesis；环境配置继续由执行环境提供。
 
-收益用相同墙钟时间的对照实验判断：新覆盖率、目标步骤实际执行比例、吞吐、超时/生成器失败比例，以及 synthesis 调用次数。保留字段变异基线，避免仅因更多序列被拒绝而误判效率。
+验收重点：
 
-正式实施前还需确定：
+- 数据依赖正确导出、保存和读取字段；纯时序依赖不产生消息缓存要求。
+- Global context 正确提供常量、环境和不依赖 step 的生成值，testcase 间状态隔离。
+- Synthesis/generator 输入不包含 mutations 或变异策略，只包含 mutable fields 描述及执行所需信息。
+- Generator 按实例顺序执行，采用 Rust 提供的字段值；字段缺省不被补回，显式派生字段值不被重算覆盖。
+- 插入、重复和字段变异正确组合，重复块绑定及跨连接作用域正确。
+- 保持依赖与违反依赖两类策略可区分，无法执行的缺失依赖有明确结果。
+- Corpus replay 保持顺序、字段值、生成种子和依赖绑定，动态响应重新获取。
+- 短程 LightFTP campaign 跑通 proposal → synthesis → 双层变异 → 执行 → corpus replay，确认序列变化无需重新 synthesis。
 
-- trace 从 Rust 传入 Python 的接口、corpus 存储格式及旧输入兼容策略。
-- step 能力描述、可执行条件和依赖绑定的机器可读格式。
-- 重复执行、跨连接操作的输出引用和状态作用域。
-- 字段变异、依赖重算、密码学计算与故意破坏的执行顺序表达。
-- 首版开放的序列操作、资源上限，以及合法性约束的可违反范围。
+记录新覆盖率、实际执行比例、吞吐、超时/依赖缺失/generator 失败比例和 synthesis 次数，避免仅因生成更多无法执行的序列而误判收益。本计划不自动启动一小时 campaign，也不扩大先前清理摘要实体 ID 的范围。
 
-本文件不扩大先前清理摘要实体 ID 的范围；TLS transcript hash、binder 和密钥派生是协议执行所必需的密码学计算。
+
+## 实施记录（2026-11-10）
+
+以检查点 `bf3feb3a` 为基线完成以下范围：
+
+- Proposal：新增 `global_context`、实例级 `dependencies`、trace step 的 `mutable_fields`；Python coverage proposal 构建/校验和 Rust `Proposal` 校验均支持。`Proposal::synthesis_copy` 剥离 `mutations` 并生成下游 `mutable_fields`。
+- Rust mutation：`GeneratorInput` 升级为 `version: 3`，新增 `TraceInstance`、`step_trace`、`global_context`、`DependencyInstance`；`GeneratorMutator` 支持实例字段变异、字段显式缺省、插入/重复、删除、重排和基础依赖检查；90% 保持依赖、10% 允许破坏并记录 `broken_dependencies`。
+- 执行：`generate(ctx, step_trace)`；step instance 携带 Rust 决定的 `fields`、`omitted_fields`、dependency `inputs` 和 provenance；`GeneratorInput::run_request`、Python server/standalone、evaluation replay 贯通 `step_trace`。
+- Ctx：`ctx.field()` 按显式值、显式缺省、dependency、global_context 顺序解析；`ctx.save_state()` / `ctx.load_state()` 按实例和字段保存 states；缺省不补回，缺失依赖报错。
+- Corpus/replay：输入 JSON、fingerprint、evaluation input、standalone 请求都保存/重放 trace、字段值、global context 和依赖绑定；旧 params-only JSON 在 `GeneratorInput::from_file` 明确报错，要求重新 synthesis。
+- 兼容说明：旧 params-only generator 的 Python server/artifact 入口仍可用于本地直调测试，但 Rust 执行输入必须是 version 3 TraceInstance。
+
+验证：
+
+- `cargo test --lib`：137 passed；`cargo test --test coverage_mcp`：1 passed。
+- Python unittest：53 passed。
+- `cargo check --all-targets`、`cargo build --release` 通过。
+- 单元测试覆盖 proposal synthesis copy、global/dependencies 校验、step_trace round-trip/legacy 拒绝、字段/step mutation、artifact `mutable_fields` 默认值、Ctx field/dependency 解析、server step_trace。
+- 短程 LightFTP `test-results/trace2`：synthesis 发布了 `generate(ctx, step_trace)` generator；autonomous candidate 执行了 baseline，step 级变异生成 6 个实例并进入 corpus，coverage replay 运行。首次 coverage analysis 因多个 message 复用同一 `ftpserv.c::ftp_client_thread` handler 被误判为重复名而失败；已修复 `handlers.py` 按符号/位置允许同一 handler 被多个 message 引用，并对真正不同身份的冲突继续报错。
+
+未完成/限制：
+
+- `global_context` 的 `generated` 值目前由 proposal 提供具体值/seed，Rust 尚未生成派生值工具。
+- 依赖策略是首版基础检查；条件边、循环和跨连接作用域尚未完整求解。
+- 未运行一小时 campaign；短程 coverage 阶段被上述既有 handler mapping 重复名阻塞。
+
+
+## 实施记录补充（TraceInstance 版）
+
+- Rust 执行输入升级为 `version = 3`，新增 `TraceInstance`：
+  - `PartyInstance { name, type }`
+  - `ChannelInstance { name, type, endpoints[] }`
+  - `StepInstance`（引用 channel 和 party instance，不保存 connection）
+  - `DependencyInstance`（prior/dependent step instance、kind、condition、field bindings、origin）
+- `TraceInstance` 与 model 的绑定关系保持同构：Channel.start/endpoints 对应 party instances；Step 的 channel/party 字段对应 channel/party instance；Dependency 的 prior/dependent 对应 step instances。
+- proposal dependency 在 `GeneratorRequest::accept` 中实例化为 `DependencyInstance`，字段 binding 同时写入 `StepInstance.inputs`。
+- mutator 支持连续 block duplicate：唯一重命名、内部 dependencies/inputs 重映射、外部引用保留；复制后可在同 channel 的兼容 prior 上新增 `origin = "mutation"` 的 `DependencyInstance`。
+- `Ctx.outputs` 改名 `Ctx.states`，`save_output/load_output` 改名 `save_state/load_state`；states 从出现保留到 generator 结束，关闭连接不清理。
+- `available_steps` 已删除；不构造基础 trace 未出现的 model step。
+- 当前验证：Rust `137 passed`；Python `53 passed`；`cargo check --all-targets`、`cargo build --release` 通过。
+- 未完成：完整条件依赖求值、循环拓扑排序、复杂跨连接策略；未跑一小时 campaign。
+
+
+## 60 分钟 LightFTP 验证（trace61）
+
+- 命令：`sudo -n -E ./target/release/mcn-fuzz run --campaign test-results/trace61/campaign.toml`
+- 实际运行：1h 1m 11s；`executions = 12522`，`corpus = 103`，`crashes = 0`。
+- coverage map occupancy：`158/960`（16%）；最终 source coverage：`209/720` branches，`626/1790` lines。
+- synthesis：6 个请求（1 autonomous + 5 coverage proposal），全部 `result.status = ok`；coverage analysis 5 个 proposal 被接受，7 个 snapshot。
+- trace instance：corpus 103 个输入全部 `version = 3`；step trace 平均 35.6，范围 7..154；dependency 共 1913，其中 `origin = mutation` 1476，`origin = proposal` 437。
+- 本 run 的所有 dependency 都是 `order`；没有产生 `data` dependency，因此没有在真实 SUT 上验证 field binding 路径（单元测试覆盖 `Ctx.field`/`inputs`）。
+- generator status：`ok = 10030`、`timeout = 1862`、`generator = 528`、`dependency = 102`。`dependency` 来自显式 `omitted_fields` 的实例，符合“缺省不补回”的语义。
+- 首个 synthesis candidate baseline 在 15:21:48 执行一次且未进入 corpus；corpus 首个 trace 已经是带 mutation dependency 的副本。
+- 本轮真实运行验证了 block duplicate、唯一实例名、mutation-origin order dependency、TraceInstance v3 持久化和 coverage replay；未验证 data dependency 的真实 SUT 路径。

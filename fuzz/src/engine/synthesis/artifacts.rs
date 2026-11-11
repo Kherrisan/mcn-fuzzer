@@ -151,7 +151,7 @@ fn check_generator_source(source: &str, name: &str) -> Result<(), String> {
     });
     let Some(ast::Stmt::FunctionDef(function)) = function else {
         return Err(
-            "generator must define synchronous top-level def generate(ctx, params)".to_string(),
+            "generator must define synchronous top-level def generate(ctx, step_trace)".to_string(),
         );
     };
     let args = &function.args;
@@ -163,7 +163,7 @@ fn check_generator_source(source: &str, name: &str) -> Result<(), String> {
         || args.kwonlyargs.iter().any(|arg| arg.default.is_none())
     {
         return Err(
-            "generate() signature must accept exactly the runtime call generate(ctx, params)"
+            "generate() signature must accept exactly the runtime call generate(ctx, step_trace)"
                 .to_string(),
         );
     }

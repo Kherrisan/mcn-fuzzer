@@ -21,6 +21,7 @@ pub const EXIT_EOF: i32 = 77;
 pub const EXIT_ALERT: i32 = 78;
 /// Worker exit for a script or protocol error.
 pub const EXIT_GENERATOR: i32 = 79;
+pub const EXIT_DEPENDENCY: i32 = 80;
 
 /// Default wait for both PIDs, in milliseconds.
 pub const DEFAULT_STARTUP_TIMEOUT_MS: u64 = 1_000;
@@ -344,6 +345,7 @@ fn logical_exit_status(code: i32) -> &'static str {
         EXIT_CONN => "conn",
         EXIT_EOF => "eof",
         EXIT_ALERT => "alert",
+        EXIT_DEPENDENCY => "dependency",
         _ => "generator",
     }
 }
