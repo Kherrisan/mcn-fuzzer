@@ -53,10 +53,7 @@ pub struct TraceOrigin {
 impl_serdeany!(TraceOrigin);
 
 pub(crate) use crate::agents::redact_text;
-use crate::agents::{
-    AgentFailure, AgentInit, AgentOutcome, SessionInit, TerminalFact, WorkerConfig,
-};
-pub use crate::agents::{AgentSession, SessionPhase};
+use crate::agents::{AgentFailure, AgentInit, AgentOutcome, SessionInit, WorkerConfig};
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SynthesisProgress {
@@ -64,9 +61,6 @@ pub struct SynthesisProgress {
     pub paused: bool,
     pub published: BTreeMap<String, String>,
     pub failures: Vec<String>,
-    /// Latest session snapshot. Absent in older metadata files.
-    #[serde(default)]
-    pub session: AgentSession,
 }
 
 impl_serdeany!(SynthesisProgress);
@@ -150,7 +144,6 @@ pub struct GeneratorSynthesisStage {
     mode_hint: String,
     /// Test-only. When set, initialization must not publish `ready.json`.
     init_hold: bool,
-    session_state: AgentSession,
     exited: bool,
     /// Env values used only to redact text before it is stored. Never written.
     secrets: Vec<String>,
@@ -225,7 +218,6 @@ impl GeneratorSynthesisStage {
             launch: None,
             mode_hint: String::new(),
             init_hold: false,
-            session_state: AgentSession::default(),
             exited: false,
             secrets: Vec::new(),
             mailbox,
@@ -292,10 +284,8 @@ impl GeneratorSynthesisStage {
             poll()?;
             self.initialize()?;
             match self.recv_one(Duration::from_millis(200)) {
-                Some(Outcome::Launched(fact)) => {
-                    self.record_session("launch", SessionPhase::Initializing, &fact, None)
-                }
-                Some(Outcome::Ready((), fact)) => return self.accept_initialization(&fact),
+                Some(Outcome::Launched(_)) => {}
+                Some(Outcome::Ready((), _)) => return self.accept_initialization(),
                 Some(Outcome::InitTimedOut(failure)) => self.consume_init_timeout(failure)?,
                 Some(Outcome::Failed(failure)) => {
                     self.note_terminal_failure(&failure);
@@ -358,7 +348,6 @@ impl GeneratorSynthesisStage {
     pub fn shutdown(&mut self) {
         if self.enabled && !self.exited {
             self.exited = true;
-            self.record_session("stop", SessionPhase::Exited, &TerminalFact::default(), None);
         }
         self.worker.take();
     }
@@ -436,11 +425,6 @@ impl GeneratorSynthesisStage {
             .map_err(|_| Error::unknown("synthesis worker stopped".to_string()))?;
         self.inflight = true;
         self.current_request = Some(request);
-        let fact = TerminalFact {
-            terminal: self.session_state.terminal.clone(),
-            ..TerminalFact::default()
-        };
-        self.record_session("send", SessionPhase::Busy, &fact, None);
         Ok(())
     }
 
@@ -494,37 +478,19 @@ where
         state
             .metadata_or_insert_with(BitmapProgress::default)
             .set_synthesis_inflight(self.inflight);
-        let synthesis_due = state
-            .metadata_or_insert_with(BitmapProgress::default)
-            .synthesis_due();
         if self.paused {
             state
                 .metadata_or_insert_with(BitmapProgress::default)
                 .take_synthesis_request();
-        } else if !self.initialized {
-            if synthesis_due {
-                self.record_session(
-                    "init_deferred",
-                    SessionPhase::Initializing,
-                    &TerminalFact::default(),
-                    Some("synthesis request skipped while initialization is pending".to_string()),
-                );
-            }
-        } else if !self.inflight
+        } else if self.initialized
+            && !self.inflight
             && state
                 .metadata_or_insert_with(BitmapProgress::default)
                 .synthesis_due()
         {
             // Coverage mode must keep the trigger pending until a proposal
             // arrives; taking it early would drop the only dispatch signal.
-            if self.analysis_enabled && self.mailbox.peek().is_none() {
-                self.record_session(
-                    "waiting_proposal",
-                    SessionPhase::Ready,
-                    &TerminalFact::default(),
-                    Some("synthesis trigger retained until a proposal is accepted".to_string()),
-                );
-            } else {
+            if !(self.analysis_enabled && self.mailbox.peek().is_none()) {
                 state
                     .metadata_or_insert_with(BitmapProgress::default)
                     .take_synthesis_request();
@@ -534,7 +500,6 @@ where
         state
             .metadata_or_insert_with(BitmapProgress::default)
             .set_synthesis_inflight(self.inflight);
-        self.mirror_session(state);
         Ok(())
     }
 }
@@ -545,22 +510,16 @@ impl GeneratorSynthesisStage {
         S: HasCorpus<GeneratorInput> + HasMetadata,
     {
         match outcome {
-            Outcome::Launched(fact) => {
-                self.record_session("launch", SessionPhase::Initializing, &fact, None);
-                self.mirror_session(state);
-                Ok(())
-            }
-            Outcome::Ready((), fact) => {
-                if let Err(error) = self.accept_initialization(&fact) {
+            Outcome::Launched(_) => Ok(()),
+            Outcome::Ready((), _) => {
+                if let Err(error) = self.accept_initialization() {
                     self.note_failure(state, error.to_string());
                 }
-                self.mirror_session(state);
                 Ok(())
             }
             Outcome::InitTimedOut(failure) => {
                 let result = self.consume_init_timeout(failure);
-                self.mirror_session(state);
-                result
+                        result
             }
             Outcome::Failed(failure) => {
                 if !self.initialized {
@@ -579,27 +538,18 @@ impl GeneratorSynthesisStage {
             }
             Outcome::Artifact {
                 result: Err(reason),
-                fact,
                 ..
             } => {
                 self.finish_request(false);
-                self.record_session("blocked", SessionPhase::Ready, &fact, Some(reason.clone()));
                 self.note_failure(state, reason);
                 Ok(())
             }
             Outcome::Artifact {
                 result: Ok(ready),
-                fact,
                 ..
             } => {
                 if self.closed_requests.contains(&ready.request) {
                     self.finish_request(false);
-                    self.record_session(
-                        "blocked",
-                        SessionPhase::Ready,
-                        &fact,
-                        Some("ignored a late result for a closed request".to_string()),
-                    );
                     self.note_failure(
                         state,
                         "ignored a late result for a closed request".to_string(),
@@ -607,7 +557,6 @@ impl GeneratorSynthesisStage {
                     return Ok(());
                 }
                 self.finish_request(false);
-                self.record_session("result", SessionPhase::Ready, &fact, None);
                 // Accepted artifacts enter the mutation FIFO, never the
                 // corpus as initial parameters. The ordinary mutation stage
                 // runs the baseline once and then mutates through feedback.
@@ -635,23 +584,13 @@ impl GeneratorSynthesisStage {
             self.redacted(&failure.reason)
         );
         self.paused = self.init_timeouts >= crate::agents::INIT_TIMEOUT_LIMIT;
-        self.record_session(
-            "timeout",
-            if self.paused {
-                SessionPhase::Paused
-            } else {
-                SessionPhase::Initializing
-            },
-            &failure.fact,
-            Some(reason.clone()),
-        );
         if self.paused {
             return Err(Error::unknown(reason));
         }
         Ok(())
     }
 
-    fn accept_initialization(&mut self, fact: &TerminalFact) -> Result<(), Error> {
+    fn accept_initialization(&mut self) -> Result<(), Error> {
         let ready = SessionInit {
             output_dir: self.output.join("init"),
             session: self.session.clone(),
@@ -659,12 +598,10 @@ impl GeneratorSynthesisStage {
         .accept();
         if let Err(reason) = ready {
             self.paused = true;
-            self.record_session("blocked", SessionPhase::Paused, fact, Some(reason.clone()));
             return Err(Error::unknown(reason));
         }
         self.initialized = true;
         self.init_timeouts = 0;
-        self.record_session("ready", SessionPhase::Ready, fact, None);
         Ok(())
     }
 
@@ -683,7 +620,6 @@ impl GeneratorSynthesisStage {
         let progress = state.metadata_or_insert_with(SynthesisProgress::default);
         progress.failures.push(reason);
         progress.paused = self.paused;
-        progress.session = self.session_state.clone();
     }
 
     fn remember<S: HasMetadata>(&mut self, state: &mut S, ready: &ReadyInput) {
@@ -693,48 +629,10 @@ impl GeneratorSynthesisStage {
             ready.origin.request_id.clone(),
             ready.input.generator.display().to_string(),
         );
-        progress.session = self.session_state.clone();
     }
 
-    fn mirror_session<S: HasMetadata>(&self, state: &mut S) {
-        if !self.enabled {
-            return;
-        }
-        let progress = state.metadata_or_insert_with(SynthesisProgress::default);
-        progress.paused = self.paused;
-        progress.session = self.session_state.clone();
-    }
-
-    fn note_terminal_failure(&mut self, failure: &AgentFailure) {
+    fn note_terminal_failure(&mut self, _failure: &AgentFailure) {
         self.paused = true;
-        let transition = if failure.timeout {
-            "timeout"
-        } else {
-            "blocked"
-        };
-        self.record_session(
-            transition,
-            SessionPhase::Paused,
-            &failure.fact,
-            Some(failure.reason.clone()),
-        );
-    }
-
-    /// Record one transition. `error` replaces the stored HC error when `Some`.
-    fn record_session(
-        &mut self,
-        transition: &str,
-        phase: SessionPhase,
-        fact: &TerminalFact,
-        error: Option<String>,
-    ) {
-        if !self.enabled {
-            return;
-        }
-        self.session_state
-            .record(transition, phase, fact, error, &self.secrets);
-        self.session_state
-            .append_log(&self.output.join("session.jsonl"));
     }
 
     fn redacted(&self, text: &str) -> String {

@@ -223,7 +223,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--request-id", required=True)
-    parser.add_argument("--proposal", help="frozen proposal.json; its request_id must match --request-id")
+    parser.add_argument(
+        "--proposal",
+        help="frozen proposal.json from the generation command; request identity is not read from this file",
+    )
     parser.add_argument("--result", type=Path, help="draft completion JSON; default: OUTPUT_DIR/result.json")
     parser.add_argument("--check-imports", action="store_true")
     parser.add_argument("--pythonpath", default=os.environ.get("PYTHONPATH", ""))
@@ -232,10 +235,6 @@ def main():
     if not 0 < args.import_timeout <= 60:
         parser.error("--import-timeout must be positive and at most 60 seconds")
     try:
-        if args.proposal:
-            proposal = read_json(args.proposal)
-            if proposal.get("request_id") != args.request_id:
-                raise ValidationError("proposal request_id does not match --request-id")
         report = validate(args.output_dir, args.request_id, args.result,
                           import_check=args.check_imports,
                           pythonpath=args.pythonpath, timeout=args.import_timeout)

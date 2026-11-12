@@ -57,6 +57,41 @@ If a tool returns `not_loaded`, load the missing dataset and retry. If it return
 Pass `request_id` to every query tool after `load_profdata` so the request keeps
 reading the snapshot it registered, even if another load happens later.
 
+## Previously submitted proposals
+
+Earlier requests in this analysis directory each contain a frozen
+`proposal.json` and a completion `result.json`. Before choosing a goal, inspect
+them with the file tools; do not open the full coverage JSON or CFG files.
+
+```text
+rg --files {{ output_dir }}/..
+cat {{ output_dir }}/../*/proposal.json
+cat {{ output_dir }}/../*/result.json
+```
+
+For every earlier request, extract the goal handler ids, the ordered model-step
+sequence, the concrete `fields`, and the `mutations`. Treat a proposal as a
+duplicate when the goal handler set, the ordered model-step sequence, and those
+concrete values or mutations match. Renaming instances, changing comments, or
+reordering equivalent steps does not make it different.
+
+Do not submit a duplicate or substantially similar proposal. If an earlier
+proposal was submitted (`result.json` status `ok`) but the current snapshot
+shows its target handler still at the same missed branches or reached
+functions, you may reuse that trace only when you change a concrete detail that
+can alter the executed path, for example:
+
+- a field value, length, encoding, or boundary that was previously null,
+  omitted, or left at the model default;
+- the order of a prerequisite step, or an added or removed condition;
+- a dependency or state key that changes a derived field;
+- a duplicate count, repetition, or a different reply or data-path step.
+
+In `goal.reason`, name the earlier request id and state the exact changed
+detail and why it should reach different coverage. Do not merely rename
+instances or rewrite the rationale. If no concrete change is defensible, return
+`status: no_proposal` citing the earlier request id instead of resubmitting.
+
 ## Explore
 
 Budget matters: inspect summaries first and drill down only where the evidence
@@ -90,6 +125,10 @@ the proposal):
   established. Do not turn an uncertain condition into a required edge.
 
 ## Propose
+
+Before `submit_proposal`, compare the goal, trace, and concrete fields with the
+earlier proposals as described above. If you reuse an earlier trace,
+`goal.reason` must name that request id and the changed detail.
 
 Call `submit_proposal` with parties, channels, an ordered trace of step
 instances, mutations, and optional `dependencies`. Instance names are semantic and stay stable if you reorder

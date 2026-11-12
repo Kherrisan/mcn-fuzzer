@@ -28,7 +28,7 @@ use crate::{
     agents::{
         artifacts::{check_identity, read_json},
         command_line, current_boot, AgentClient, AgentCommand, AgentFailure, AgentInit,
-        AgentOutcome, AgentSession, AgentTask, CommandLine, SessionInit, SessionPhase,
+        AgentOutcome, AgentTask, CommandLine, SessionInit,
         WorkerConfig,
     },
     app::config::{AgentProvider, Campaign},
@@ -248,7 +248,6 @@ pub struct CoverageAnalysisStage {
     seen_snapshots: BTreeSet<u64>,
     worker: Option<Client>,
     launch: Option<CommandLine>,
-    session_state: AgentSession,
     secrets: Vec<String>,
     exited: bool,
 }
@@ -353,7 +352,6 @@ impl CoverageAnalysisStage {
             seen_snapshots: BTreeSet::new(),
             worker: None,
             launch: Some(launch),
-            session_state: AgentSession::default(),
             secrets,
             exited: false,
         };
@@ -386,7 +384,6 @@ impl CoverageAnalysisStage {
             seen_snapshots: BTreeSet::new(),
             worker: None,
             launch: None,
-            session_state: AgentSession::default(),
             secrets: Vec::new(),
             exited: false,
         }
@@ -741,14 +738,6 @@ impl CoverageAnalysisStage {
                             );
                         }
                     }
-                    self.session_state = AgentSession {
-                        phase: SessionPhase::Ready,
-                        transition: "ready".into(),
-                        terminal: fact.terminal.clone(),
-                        hc_state: fact.state.clone(),
-                        hc_status: fact.status.clone(),
-                        hc_error: fact.error.clone(),
-                    };
                     self.log_event("analysis_initialized", json!({"terminal": fact.terminal}));
                 }
                 AgentOutcome::Launched(fact) => {

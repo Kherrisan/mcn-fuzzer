@@ -10,7 +10,6 @@ mod profile;
 mod session;
 mod worker;
 pub(crate) use session::{redact_text, AgentFailure, TerminalFact};
-pub use session::{AgentSession, SessionPhase};
 pub(crate) use worker::{
     AgentClient, AgentCommand, AgentInit, AgentOutcome, AgentTask, SessionInit, WorkerConfig,
 };

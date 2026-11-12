@@ -41,6 +41,18 @@ class ArtifactValidationTests(unittest.TestCase):
             self.root / "result.draft.json", **kwargs,
         )
 
+    def test_proposal_without_request_id_is_accepted(self):
+        proposal = self.root / "proposal.json"
+        proposal.write_text('{"origin":"coverage","session":"s","snapshot":"000002"}\n', encoding="utf-8")
+        run = subprocess.run([
+            sys.executable, str(SCRIPT), "--output-dir", str(self.root),
+            "--request-id", "request-1",
+            "--proposal", str(proposal),
+            "--result", str(self.root / "result.draft.json"),
+        ], capture_output=True, text=True, timeout=10)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertEqual(json.loads(run.stdout)["status"], "ok")
+
     def test_draft_cli_imports_without_executing_or_publishing(self):
         before = {p.name: p.read_bytes() for p in self.root.iterdir()}
         run = subprocess.run([
