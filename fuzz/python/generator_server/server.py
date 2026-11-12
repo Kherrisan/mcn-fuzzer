@@ -95,11 +95,7 @@ def _run(table: dict[int, Session], request: dict, client: int, request_id: int)
     ctx.generator_params = _plain_params(params)
     ctx.global_context = ctx.generator_params
     try:
-        if step_trace or getattr(generate, "_mcn_dispatch", False):
-            generate(ctx, _plain_step_trace(step_trace or []))
-        else:
-            # Direct generator tests may still exercise the parameter-only API.
-            generate(ctx, _plain_params(params))
+        generate(ctx, _plain_step_trace(step_trace or []))
     finally:
         ctx.close_extra()
     return _response(request_id, "ok", None, ctx.bytes_sent, ctx.bytes_recv)

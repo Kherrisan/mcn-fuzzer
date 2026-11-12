@@ -411,11 +411,7 @@ where
     Ok(cases)
 }
 
-fn collect_corpus<C>(
-    corpus: &C,
-    kind: &str,
-    out: &mut Vec<PendingCase>,
-) -> Result<(), Error>
+fn collect_corpus<C>(corpus: &C, kind: &str, out: &mut Vec<PendingCase>) -> Result<(), Error>
 where
     C: Corpus<GeneratorInput>,
 {
@@ -495,8 +491,7 @@ fn replay_pending(
             Ok(outcome) => {
                 failures.push(format!(
                     "{} profile missing after {}",
-                    &case.id,
-                    outcome.exit_kind
+                    &case.id, outcome.exit_kind
                 ));
                 failed = true;
                 break;
@@ -609,8 +604,7 @@ fn replay_pending(
     );
     if !publish_ok {
         return Err(Error::unknown(
-            "source coverage snapshot was not published"
-                .to_string(),
+            "source coverage snapshot was not published".to_string(),
         ));
     }
     let mut updated = progress.clone();
@@ -1852,14 +1846,18 @@ mod tests {
         fs::write(dir.join("work").join("mode"), b"a").unwrap();
         let binary = compile_coverage_probe(&dir);
         let script = dir.join("gen.py");
-        fs::write(&script, b"def generate(ctx, params):\n    return None\n").unwrap();
+        fs::write(
+            &script,
+            b"from generator_server import step_handler\n@step_handler('probe')\ndef handle_probe(ctx, params):\n    return None\n",
+        )
+        .unwrap();
         let corpus = dir.join("corpus");
         fs::create_dir_all(&corpus).unwrap();
         for (name, n) in [("a.json", 1), ("b.json", 2)] {
             fs::write(
                 corpus.join(name),
                 format!(
-                    "{{\"generator\":\"{}\",\"params\":{{\"n\":{n}}}}}\n",
+                    "{{\"generator\":\"{}\",\"params\":{{\"n\":{n}}},\"step_trace\":[{{\"name\":\"probe-1\",\"step\":\"probe\",\"action\":\"send\",\"channel\":\"control\"}}]}}\n",
                     script.display()
                 ),
             )
@@ -1969,7 +1967,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(progress.replay_executions, 3);
-                let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

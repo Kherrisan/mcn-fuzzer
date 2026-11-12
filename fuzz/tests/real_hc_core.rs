@@ -728,7 +728,9 @@ def write_result(text):
         return
     os.makedirs(output_dir, exist_ok=True)
     script = (
-        "def generate(ctx, params):\n"
+        "from generator_server import step_handler\n"
+        "@step_handler('send command')\n"
+        "def handler(ctx, params):\n"
         "    verb = str(params.get('verb', 'NOOP'))\n"
         "    arg = str(params.get('arg', ''))\n"
         "    line = verb if arg == '' else verb + ' ' + arg\n"

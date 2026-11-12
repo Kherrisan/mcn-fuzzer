@@ -186,39 +186,7 @@ fn check_generator_source(source: &str, name: &str) -> Result<(), String> {
     if has_step_handler {
         return Ok(());
     }
-    let function = suite.into_iter().rev().find(|stmt| match stmt {
-        ast::Stmt::FunctionDef(f) => f.name.as_str() == "generate",
-        ast::Stmt::AsyncFunctionDef(f) => f.name.as_str() == "generate",
-        _ => false,
-    });
-    let Some(ast::Stmt::FunctionDef(function)) = function else {
-        return Err(
-            "generator must define synchronous top-level def generate(ctx, step_trace)".to_string(),
-        );
-    };
-    let args = &function.args;
-    let positional = args.posonlyargs.iter().chain(&args.args);
-    let count = positional.clone().count();
-    let required = positional.filter(|arg| arg.default.is_none()).count();
-    if required > 2
-        || (count < 2 && args.vararg.is_none())
-        || args.kwonlyargs.iter().any(|arg| arg.default.is_none())
-    {
-        return Err(
-            "generate() signature must accept exactly the runtime call generate(ctx, step_trace)"
-                .to_string(),
-        );
-    }
-    let mut visitor = YieldCheck::default();
-    for stmt in function.body {
-        visitor.visit_stmt(stmt);
-    }
-    if visitor.found {
-        return Err(
-            "generate() must execute synchronously, not return a yield generator".to_string(),
-        );
-    }
-    Ok(())
+    Err("generator must define at least one top-level @step_handler".into())
 }
 
 #[derive(Default)]
@@ -257,18 +225,17 @@ mod tests {
         )
         .is_err());
         check_generator_source(
-            "import module_that_does_not_exist\nraise RuntimeError()\ndef generate(ctx, params):\n    pass\n",
+            "import module_that_does_not_exist\nraise RuntimeError()\n@step_handler('hello')\ndef hello(ctx, params):\n    pass\n",
             "generator.py",
-        )
-        .unwrap();
+        ).unwrap();
         for (source, expected) in [
+            ("def generate(ctx, params):\n    pass\n", "step_handler"),
+            ("@step_handler('x')\ndef x(ctx):\n    pass\n", "accept"),
             (
-                "async def generate(ctx, params):\n    pass\n",
-                "synchronous",
+                "@step_handler('x')\ndef x(ctx, params):\n    yield 1\n",
+                "yield",
             ),
-            ("def generate(ctx, params):\n    yield 1\n", "yield"),
-            ("def generate(ctx):\n    pass\n", "signature"),
-            ("return 1\ndef generate(ctx, params):\n    pass\n", "syntax"),
+            ("return 1\n", "syntax"),
         ] {
             let error = check_generator_source(source, "generator.py").unwrap_err();
             assert!(error.contains(expected), "{error}");

@@ -11,8 +11,10 @@ use std::{
 use serde_json::{json, Value};
 
 use crate::{
-    app::config::TargetPlaceholders, engine::executor::run_cleanup_script,
-    engine::input::ParamValue, engine::synthesis::TraceOrigin,
+    app::config::TargetPlaceholders,
+    engine::executor::run_cleanup_script,
+    engine::input::{DependencyInstance, ParamValue, StepInstance},
+    engine::synthesis::TraceOrigin,
 };
 
 use super::{
@@ -54,14 +56,89 @@ pub fn validate_task(task: &mut Task) -> Result<(), (String, String)> {
             _ => {}
         }
     }
-    let validated = crate::engine::synthesis::validate_generator_artifacts(&dir, &task.request_id)
-        .map_err(classify_validation)?;
+    let mut validated =
+        crate::engine::synthesis::validate_generator_artifacts(&dir, &task.request_id)
+            .map_err(classify_validation)?;
+    let proposal =
+        crate::coverage::proposal::Proposal::read(&task.prepared().join("proposal.json"))
+            .map_err(|error| ("invalid_artifact".to_string(), error))?;
+    let step_trace = proposal
+        .trace
+        .iter()
+        .map(|step| {
+            let fields = step
+                .mutable_fields
+                .iter()
+                .filter_map(|field| {
+                    validated
+                        .input
+                        .params
+                        .get(&field.field)
+                        .cloned()
+                        .or_else(|| field.default.clone())
+                        .map(|value| (field.field.clone(), value))
+                })
+                .collect();
+            StepInstance {
+                name: step.name.clone(),
+                step: step.step.clone(),
+                action: step.action.clone(),
+                condition: step.condition.clone(),
+                message: step.message.clone(),
+                channel: step.channel.clone(),
+                sender: step.sender.clone(),
+                receiver: step.receiver.clone(),
+                party: step.party.clone(),
+                fields,
+                omitted_fields: Vec::new(),
+                inputs: std::collections::BTreeMap::new(),
+                broken_dependencies: Vec::new(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut step_trace = step_trace;
+    for dependency in &proposal.dependencies {
+        let Some(dependent) = step_trace
+            .iter_mut()
+            .find(|step| step.name == dependency.dependent)
+        else {
+            continue;
+        };
+        for field in &dependency.fields {
+            dependent
+                .inputs
+                .insert(field.clone(), format!("{}.{field}", dependency.prior));
+        }
+    }
+    let dependencies = proposal
+        .dependencies
+        .iter()
+        .map(|dependency| DependencyInstance {
+            prior: dependency.prior.clone(),
+            dependent: dependency.dependent.clone(),
+            kind: if dependency.kind.is_empty() {
+                "order".to_string()
+            } else {
+                dependency.kind.clone()
+            },
+            condition: dependency.condition.clone(),
+            fields: dependency.fields.clone(),
+            origin: "proposal".into(),
+        })
+        .collect();
+    validated.input.trace.steps = step_trace;
+    validated.input.trace.dependencies = dependencies;
     let stored = json!({
         "generator": validated.input.generator,
         "step_trace": validated.input.trace.steps,
         "dependencies": validated.input.trace.dependencies,
         "params": params_json(&validated.input.params)?,
-        "origin": validated.origin,
+        "origin": TraceOrigin {
+            request_id: task.request_id.clone(),
+            session: proposal.session,
+            step_names: proposal.trace.iter().map(|step| step.name.clone()).collect(),
+            added_steps: Vec::<String>::new(),
+        },
     });
     fs::write(
         dir.join("input.json"),

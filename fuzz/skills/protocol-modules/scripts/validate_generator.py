@@ -98,6 +98,21 @@ def check_parameters(schema, params):
 
 
 def check_generator(path):
+    class YieldCheck(ast.NodeVisitor):
+        found = False
+
+        def visit_Yield(self, node):
+            self.found = True
+
+        visit_YieldFrom = visit_Yield
+
+        def visit_FunctionDef(self, node):
+            pass
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
+        visit_Lambda = visit_FunctionDef
+
     try:
         source = Path(path).read_text(encoding="utf-8")
         tree = ast.parse(source, filename=str(path))
@@ -123,42 +138,13 @@ def check_generator(path):
                     or (len(positional) < 2 and args.vararg is None)
                     or any(default is None for default in args.kw_defaults)):
                 raise ValidationError("step handlers and global initializer must accept (ctx, params)")
-            if any(isinstance(child, (ast.Yield, ast.YieldFrom)) for child in ast.walk(node)):
+            visitor = YieldCheck()
+            for statement in node.body:
+                visitor.visit(statement)
+            if visitor.found:
                 raise ValidationError("step handlers and global initializer must not yield")
         return
-    functions = [node for node in tree.body
-                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "generate"]
-    if not functions or isinstance(functions[-1], ast.AsyncFunctionDef):
-        raise ValidationError("generator must define synchronous top-level def generate(ctx, params)")
-    function = functions[-1]
-    args = function.args
-    positional = args.posonlyargs + args.args
-    required = len(positional) - len(args.defaults)
-    if (required > 2 or (len(positional) < 2 and args.vararg is None)
-            or any(default is None for default in args.kw_defaults)):
-        raise ValidationError("generate() signature must accept exactly the runtime call generate(ctx, params)")
-
-    class YieldCheck(ast.NodeVisitor):
-        found = False
-
-        def visit_Yield(self, node):
-            self.found = True
-
-        visit_YieldFrom = visit_Yield
-
-        def visit_FunctionDef(self, node):
-            pass
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-        visit_ClassDef = visit_FunctionDef
-        visit_Lambda = visit_FunctionDef
-
-    visitor = YieldCheck()
-    for node in function.body:
-        visitor.visit(node)
-    if visitor.found:
-        raise ValidationError("generate() must execute synchronously, not return a yield generator")
-    return tree
+    raise ValidationError("generator must define at least one top-level @step_handler")
 
 
 IMPORT_PROBE = r'''

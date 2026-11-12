@@ -21,7 +21,7 @@ class ArtifactValidationTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "request with spaces"
         self.root.mkdir()
-        self.write("generator.py", "def generate(ctx, params):\n    raise RuntimeError('must not execute')\n")
+        self.write("generator.py", "from generator_server import step_handler\n@step_handler('x')\ndef handler(ctx, params):\n    raise RuntimeError('must not execute')\n")
         self.write_json("params.schema.json", {"type": "object"})
         self.write_json("params.json", {"values": [True, -1, "text", [2]]})
         self.write_json("result.draft.json", {
@@ -120,7 +120,7 @@ class ArtifactValidationTests(unittest.TestCase):
     def test_entrypoint_syntax_async_signature_and_yield_are_rejected(self):
         for source in [
             "def generate(:\n pass\n", "return 1\n", "def other(ctx, params): pass\n",
-            "async def generate(ctx, params): pass\n", "def generate(ctx): pass\n",
+            "@step_handler('x')\nasync def handler(ctx, params): pass\n", "def generate(ctx): pass\n",
             "def generate(ctx, params, required): pass\n", "def generate(ctx, params, *, required): pass\n",
             "def generate(ctx, params): yield 1\n",
         ]:
@@ -130,20 +130,20 @@ class ArtifactValidationTests(unittest.TestCase):
                     self.validate()
 
     def test_nested_yield_helper_and_optional_argument_are_accepted(self):
-        self.write("generator.py", "def generate(ctx, params, optional=None):\n"
+        self.write("generator.py", "from generator_server import step_handler\n@step_handler('x')\ndef handler(ctx, params, optional=None):\n"
                    "    def iterator():\n        yield 1\n    return None\n")
         self.validate()
 
     def test_import_errors_overwritten_entrypoint_and_resources_are_reported(self):
         for source, error in [
-            ("import missing_mcn_dependency\ndef generate(ctx, params): pass\n", "ModuleNotFoundError"),
-            ("def generate(ctx, params): pass\ngenerate = 1\n", "no generate"),
-            ("import socket\ns = socket.socket()\ndef generate(ctx, params): pass\n", "case resources"),
+            ("import missing_mcn_dependency\nfrom generator_server import step_handler\n@step_handler('x')\ndef handler(ctx, params): pass\n", "ModuleNotFoundError"),
+            ("from generator_server import step_handler\n@step_handler('x')\ndef handler(ctx, params): pass\nhandler = 1\n", "no step handlers"),
+            ("import socket\ns = socket.socket()\nfrom generator_server import step_handler\n@step_handler('x')\ndef handler(ctx, params): pass\n", "case resources"),
             ("import threading\nthreading.Thread(target=lambda: None).start()\n"
-             "def generate(ctx, params): pass\n", "start threads"),
-            ("import subprocess\nsubprocess.Popen(['true'])\ndef generate(ctx, params): pass\n", "case resources"),
+             "from generator_server import step_handler\n@step_handler('x')\ndef handler(ctx, params): pass\n", "start threads"),
+            ("import subprocess\nsubprocess.Popen(['true'])\nfrom generator_server import step_handler\n@step_handler('x')\ndef handler(ctx, params): pass\n", "case resources"),
             (f"open({str(self.root / 'side-effect')!r}, 'w').write('bad')\n"
-             "def generate(ctx, params): pass\n", "write case files"),
+             "from generator_server import step_handler\n@step_handler('x')\ndef handler(ctx, params): pass\n", "write case files"),
         ]:
             with self.subTest(error=error):
                 self.write("generator.py", source)
@@ -152,7 +152,7 @@ class ArtifactValidationTests(unittest.TestCase):
         self.assertFalse((self.root / "side-effect").exists())
 
     def test_import_probe_has_a_deadline(self):
-        self.write("generator.py", "import time\ntime.sleep(5)\ndef generate(ctx, params): pass\n")
+        self.write("generator.py", "import time\ntime.sleep(5)\nfrom generator_server import step_handler\n@step_handler('x')\ndef handler(ctx, params): pass\n")
         with self.assertRaisesRegex(ValidationError, "exceeded"):
             self.validate(import_check=True, pythonpath=str(PYTHON_ROOT), timeout=0.2)
 

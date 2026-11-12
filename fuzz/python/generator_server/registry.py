@@ -27,9 +27,9 @@ class Registry:
             raise ValueError(f"cannot import generator script: {key}")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        generate = build_dispatch(module) or getattr(module, "generate", None)
-        if not callable(generate):
-            raise ValueError(f"{key} has no generate(ctx, step_trace)")
+        generate = build_dispatch(module)
+        if generate is None:
+            raise ValueError(f"{key} has no step handlers")
         self._modules[key] = module
         self._generators[key] = generate
         self.loads += 1

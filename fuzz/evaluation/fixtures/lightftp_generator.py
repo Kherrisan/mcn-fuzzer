@@ -1,80 +1,147 @@
-"""Hand-written LightFTP environment for the five evaluation cases."""
-
-from __future__ import annotations
+"""Hand-written LightFTP step handlers for the evaluation cases."""
 
 import re
-
-from generator_server.context import Ctx, InteractionError
-
-
-def generate(ctx: Ctx, params: dict) -> None:
-    scenario = params["scenario"]
-    try:
-        reply = _read(ctx)
-        if not reply.startswith(b"220"):
-            raise InteractionError("generator", f"greeting was {reply!r}")
-        _expect(ctx, f"USER {params.get('user', 'ubuntu')}\r\n", b"331")
-        _expect(ctx, f"PASS {params.get('password', 'ubuntu')}\r\n", b"230")
-        if scenario == "control-commands":
-            _expect(ctx, "PWD\r\n", b"257")
-            _expect(ctx, "NOOP\r\n", b"200")
-        elif scenario == "passive-list":
-            host, port = _pasv(ctx)
-            _expect(ctx, "LIST\r\n", b"150")
-            data = ctx.connect(host, port)
-            ctx.recv(channel=data, max_bytes=65536)
-            data.close()
-            _read_code(ctx, b"226")
-        elif scenario == "passive-retr":
-            _expect(ctx, "TYPE I\r\n", b"200")
-            host, port = _pasv(ctx)
-            name = params.get("download", "hello.txt")
-            _expect(ctx, f"RETR {name}\r\n", b"150")
-            data = ctx.connect(host, port)
-            ctx.recv(channel=data, max_bytes=65536)
-            data.close()
-            _read_code(ctx, b"226")
-        elif scenario == "active-stor":
-            _expect(ctx, "TYPE I\r\n", b"200")
-            listener = ctx.accept("127.0.0.1", 0)
-            port = listener.port
-            octets = [127, 0, 0, 1, port // 256, port % 256]
-            _expect(ctx, "PORT " + ",".join(str(part) for part in octets) + "\r\n", b"200")
-            name = params["upload_name"]
-            _expect(ctx, f"STOR {name}\r\n", b"150")
-            data = listener.take()
-            ctx.send(b"evaluation-upload\n", channel=data)
-            data.close()
-            listener.close()
-            _read_code(ctx, b"226")
-        elif scenario != "login-quit":
-            raise InteractionError("generator", f"unknown scenario {scenario}")
-        _expect(ctx, "QUIT\r\n", b"221")
-    finally:
-        ctx.close_all()
+from generator_server import InteractionError, step_handler
 
 
-def _pasv(ctx: Ctx) -> tuple[str, int]:
-    ctx.send(b"PASV\r\n")
+def _read(ctx, expected=None):
+    reply = ctx.recv(until=b"\n", max_bytes=4096)
+    if expected is not None and not reply.startswith(expected):
+        raise InteractionError("generator", f"expected {expected!r}, got {reply!r}")
+    return reply
+
+
+def _send(ctx, text):
+    ctx.send((text + "\r\n").encode("ascii"))
+
+
+@step_handler("service greeting")
+def greeting(ctx, params):
+    _read(ctx, b"220")
+
+
+@step_handler("send USER")
+def user(ctx, params):
+    _send(ctx, "USER " + params.get("user", "ubuntu"))
+
+
+@step_handler("USER intermediate")
+def user_reply(ctx, params):
+    _read(ctx, b"331")
+
+
+@step_handler("send PASS")
+def password(ctx, params):
+    _send(ctx, "PASS " + params.get("password", "ubuntu"))
+
+
+@step_handler("login accepted")
+def login(ctx, params):
+    _read(ctx, b"230")
+
+
+@step_handler("send PWD")
+def pwd(ctx, params):
+    _send(ctx, "PWD")
+
+
+@step_handler("pathname reply")
+def pathname(ctx, params):
+    _read(ctx, b"257")
+
+
+@step_handler("send NOOP")
+def noop(ctx, params):
+    _send(ctx, "NOOP")
+
+
+@step_handler("send QUIT")
+def quit(ctx, params):
+    _send(ctx, "QUIT")
+
+
+@step_handler("ordinary command reply")
+def command_reply(ctx, params):
+    _read(ctx, b"221" if ctx.step_instance.get("name", "").lower().startswith("quit") else None)
+
+
+@step_handler("send TYPE")
+def send_type(ctx, params):
+    _send(ctx, "TYPE I")
+
+
+@step_handler("TYPE accepted")
+def type_reply(ctx, params):
+    _read(ctx, b"200")
+
+
+@step_handler("send PASV")
+def pasv(ctx, params):
+    _send(ctx, "PASV")
+
+
+@step_handler("PASV endpoint")
+def pasv_reply(ctx, params):
     reply = _read(ctx)
     match = re.search(br"\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)", reply)
     if match is None:
         raise InteractionError("generator", f"PASV reply was {reply!r}")
     numbers = [int(part) for part in match.groups()]
-    host = ".".join(str(part) for part in numbers[:4])
-    return host, numbers[4] * 256 + numbers[5]
+    ctx._eval_endpoint = (".".join(str(part) for part in numbers[:4]), numbers[4] * 256 + numbers[5])
 
 
-def _expect(ctx: Ctx, command: str, code: bytes) -> None:
-    ctx.send(command.encode("ascii"))
-    _read_code(ctx, code)
+@step_handler("send LIST")
+def list_command(ctx, params):
+    _send(ctx, "LIST")
 
 
-def _read_code(ctx: Ctx, code: bytes) -> None:
-    reply = _read(ctx)
-    if not reply.startswith(code):
-        raise InteractionError("generator", f"expected {code!r}, got {reply!r}")
+@step_handler("send RETR")
+def retr(ctx, params):
+    _send(ctx, "RETR " + params.get("download", "hello.txt"))
 
 
-def _read(ctx: Ctx) -> bytes:
-    return ctx.recv(until=b"\n", max_bytes=4096)
+@step_handler("transfer preliminary")
+def preliminary(ctx, params):
+    _read(ctx, b"150")
+
+
+@step_handler("LIST data via passive")
+def passive_data(ctx, params):
+    channel = ctx.connect(*ctx._eval_endpoint)
+    ctx.recv(channel=channel, max_bytes=65536)
+    channel.close()
+
+
+@step_handler("retrieve stream bytes via passive")
+def retrieve_data(ctx, params):
+    passive_data(ctx, params)
+
+
+@step_handler("transfer completion")
+def completion(ctx, params):
+    _read(ctx, b"226")
+
+
+@step_handler("send PORT")
+def port(ctx, params):
+    ctx._eval_listener = ctx.accept("127.0.0.1", 0)
+    number = ctx._eval_listener.port
+    _send(ctx, "PORT " + ",".join(str(part) for part in [127, 0, 0, 1, number // 256, number % 256]))
+
+
+@step_handler("PORT accepted")
+def port_reply(ctx, params):
+    _read(ctx, b"200")
+
+
+@step_handler("send STOR")
+def stor(ctx, params):
+    _send(ctx, "STOR " + params["upload_name"])
+
+
+@step_handler("store stream bytes via active")
+def active_data(ctx, params):
+    channel = ctx._eval_listener.take()
+    ctx.send(b"evaluation-upload\n", channel=channel)
+    channel.close()
+    ctx._eval_listener.close()

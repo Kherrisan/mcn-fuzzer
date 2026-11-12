@@ -41,10 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         ctx.generator_params = request.get("params") or {}
         ctx.global_context = ctx.generator_params
         trace = request.get("step_trace")
-        if trace or getattr(generate, "_mcn_dispatch", False):
-            generate(ctx, trace or [])
-        else:
-            generate(ctx, request.get("params") or {})
+        generate(ctx, trace or [])
     except Exception as exc:
         status = "error"
         exception_type = type(exc).__name__

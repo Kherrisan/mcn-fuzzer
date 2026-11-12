@@ -40,12 +40,19 @@ def _listen(handler):
 
 
 class RegistryTests(unittest.TestCase):
+    def test_legacy_generate_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "legacy.py"
+            path.write_text("def generate(ctx, params): pass\n")
+            with self.assertRaisesRegex(ValueError, "no step handlers"):
+                Registry().get(str(path))
+
     def test_import_is_cached(self):
         path = Path(tempfile.gettempdir()) / f"libaflstar_gen_once_{os.getpid()}.py"
         path.write_text(
             "COUNT = 0\n"
             "COUNT += 1\n"
-            "def generate(ctx, params):\n"
+            "from generator_server import step_handler\n@step_handler('test')\ndef handler(ctx, params):\n"
             "    return COUNT\n"
         )
         registry = Registry()
@@ -53,7 +60,8 @@ class RegistryTests(unittest.TestCase):
         second = registry.get(str(path))
         self.assertIs(first, second)
         self.assertEqual(registry.loads, 1)
-        self.assertEqual(first(None, {}), 1)
+        ctx = Ctx(Session(), "127.0.0.1", 1, 1.0)
+        first(ctx, [{"name": "one", "step": "test"}])
 
     def test_relative_path_rejected(self):
         registry = Registry()
@@ -81,6 +89,7 @@ class FtpGeneratorTests(unittest.TestCase):
             "client": 11,
             "id": 3,
             "generator": str(FTP_SCRIPT),
+            "step_trace": [{"name": "one", "step": "ftp command"}],
             "params": {"verb": "USER", "arg": "ubuntu"},
             "host": "127.0.0.1",
             "port": port,
@@ -122,6 +131,7 @@ class FtpGeneratorTests(unittest.TestCase):
             "client": 12,
             "id": 4,
             "generator": str(FTP_SCRIPT),
+            "step_trace": [{"name": "one", "step": "ftp command"}],
             "params": {"verb": "PASV", "arg": ""},
             "host": "127.0.0.1",
             "port": port,
@@ -220,20 +230,11 @@ class ResetTests(unittest.TestCase):
                 pass
 
         port = _listen(handler)
-        sessions = {}
-        run = {
-            "op": "run",
-            "client": 9,
-            "id": 1,
-            "generator": str(FTP_SCRIPT),
-            "params": {"verb": "NOOP", "arg": ""},
-            "host": "127.0.0.1",
-            "port": port,
-            "timeout_ms": 1000,
-        }
-        first = cbor2.loads(handle_payload(cbor2.dumps(run), sessions))
-        self.assertEqual(first["status"], "ok", first)
-        self.assertIsNotNone(sessions[9].endpoint)
+        session = Session()
+        sessions = {9: session}
+        ctx = Ctx(session, "127.0.0.1", port, 1.0)
+        ctx.send(b"NOOP\r\n")
+        self.assertIsNotNone(session.endpoint)
         reset = {"op": "reset", "client": 9, "id": 2}
         second = cbor2.loads(handle_payload(cbor2.dumps(reset), sessions))
         self.assertEqual(second["status"], "ok")
@@ -271,7 +272,7 @@ class BufferIsolationTests(unittest.TestCase):
         script = directory / "counter.py"
         script.write_text(
             "COUNT = 0\n"
-            "def generate(ctx, params):\n"
+            "from generator_server import step_handler\n@step_handler('test')\ndef handler(ctx, params):\n"
             "    global COUNT\n"
             "    COUNT += 1\n"
             "    open(params['out'], 'w').write(str(COUNT))\n"
@@ -284,6 +285,7 @@ class BufferIsolationTests(unittest.TestCase):
                 "client": 1,
                 "id": index + 1,
                 "generator": str(script),
+                "step_trace": [{"name": "one", "step": "test"}],
                 "params": {"out": str(out)},
                 "host": "127.0.0.1",
                 "port": 1,
@@ -310,7 +312,7 @@ class BufferIsolationTests(unittest.TestCase):
         port = _listen(handler)
         script = Path(tempfile.mkdtemp(prefix="mcn-block-")) / "block.py"
         script.write_text(
-            "def generate(ctx, params):\n"
+            "from generator_server import step_handler\n@step_handler('test')\ndef handler(ctx, params):\n"
             "    ctx.recv(max_bytes=16)\n"
         )
         request = {
@@ -318,6 +320,7 @@ class BufferIsolationTests(unittest.TestCase):
             "client": 3,
             "id": 9,
             "generator": str(script),
+            "step_trace": [{"name": "one", "step": "test"}],
             "params": {},
             "host": "127.0.0.1",
             "port": port,
@@ -344,7 +347,7 @@ class BufferIsolationTests(unittest.TestCase):
         port = _listen(handler)
         script = Path(tempfile.mkdtemp(prefix="mcn-boom-")) / "boom.py"
         script.write_text(
-            "def generate(ctx, params):\n"
+            "from generator_server import step_handler\n@step_handler('test')\ndef handler(ctx, params):\n"
             "    ctx.send(b'hello')\n"
             "    raise RuntimeError('boom')\n"
         )
@@ -353,6 +356,7 @@ class BufferIsolationTests(unittest.TestCase):
             "client": 4,
             "id": 10,
             "generator": str(script),
+            "step_trace": [{"name": "one", "step": "test"}],
             "params": {},
             "host": "127.0.0.1",
             "port": port,
@@ -556,10 +560,10 @@ class StepTraceTests(unittest.TestCase):
         script = directory / "generator.py"
         marker = directory / "seen.txt"
         script.write_text(
-            "def generate(ctx, step_trace):\n"
-            "    assert step_trace[0]['fields']['username'] == 'ubuntu'\n"
+            "from generator_server import step_handler\n@step_handler('hello')\ndef handler(ctx, params):\n"
+            "    assert ctx.step_instance['fields']['username'] == 'ubuntu'\n"
             "    assert ctx.get_global('x', 'missing') is None\n"
-            f"    open({str(marker)!r}, 'w').write(str(len(step_trace)))\n"
+            f"    open({str(marker)!r}, 'w').write('1')\n"
         )
         try:
             request = {
@@ -655,6 +659,7 @@ class ServerProcessTests(unittest.TestCase):
                         "worker_id": 7,
                         "case_id": 2,
                         "generator": str(FTP_SCRIPT),
+                        "step_trace": [{"name": "one", "step": "ftp command"}],
                         "params": {"verb": "USER", "arg": "ubuntu"},
                         "host": "127.0.0.1",
                         "port": port,

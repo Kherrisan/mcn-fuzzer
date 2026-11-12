@@ -21,17 +21,17 @@ below are relative to this SKILL.md, independent of the agent's working director
    using `importlib.metadata.version`, `inspect.signature`, `help` or installed
    source. Inventory versions describe the prepared `fuzz/.venv`; campaigns can
    configure a different interpreter. Do not install packages during synthesis.
-4. Use SDKs for valid prerequisite exchanges, authentication, crypto and assigned
-   peers. For targeted wire mutations, build/serialize a valid message and then
-   edit the bytes, or use `struct`/`construct` directly. High-level libraries may
+4. Use SDKs for requested exchanges, authentication, crypto and assigned
+   peers. For malformed wire values, use raw bytes or suitable codecs to preserve exactly
+   what the trace specifies. High-level libraries may
    reject malformed fields, repair lengths/checksums, reorder fields or hide
    intermediate steps. Never let that erase the requested behavior.
-5. If one SDK cannot express the trace, consider another listed module or a
-   bounded native-socket implementation. A missing convenience API alone does
-   not establish that a trace is impossible. Derive protocol behavior from the
-   receipt and RFC documents; do not read SUT source or assess SUT feature support
-   or expected acceptance. Report only intrinsic receipt/RFC conflicts or actual
-   generator implementation/validation failures, not predicted SUT rejection.
+5. If an SDK cannot express the requested trace, use another module or bounded
+   native sockets. Follow trace instance order, dependencies, actions and fields
+   exactly, even if malformed. Do not normalize, repair, skip or reorder them.
+   Do not read RFC documents, search the internet, or read SUT source. Read
+   Python module source only to learn how to call classes and functions, never
+   to infer protocol implementation. Report concrete implementation failures.
 
 | Protocol / benchmark target | Message and codec helpers | External peer / upstream choices |
 | --- | --- | --- |
@@ -55,7 +55,7 @@ below are relative to this SKILL.md, independent of the agent's working director
   `asyncio.run(...)` when appropriate. Bound the entire coroutine with
   `asyncio.wait_for` as well as individual I/O operations.
 - The runtime imports generator.py before forking. Import service SDKs inside
-  `generate` if they may initialize background services. Create sockets, keys,
+  the initializer or handlers if they may initialize background services. Create sockets, keys,
   event loops, threads, temporary files and SDK servers inside the worker.
 - Use byte-building libraries without raw packet transmission when talking to a
   normal TCP/UDP SUT. Scapy interface discovery can open OS sockets even during
@@ -64,7 +64,7 @@ below are relative to this SKILL.md, independent of the agent's working director
 - Ctx channels are opaque. SDKs needing a real socket, TLS wrapping or datagram
   boundaries must use their own native sockets with bounded timeouts. Do not
   access private Ctx internals or invent Channel methods.
-- Start required listeners before sending the triggering request. A dynamic port
+- Start listeners only as specified by the ordered trace. A dynamic port
   works only when it can be advertised to the SUT. Readiness and endpoint
   assignment are not supplied by the executor.
 - In `finally`, stop servers, close clients/sockets, cancel and await tasks,

@@ -29,7 +29,6 @@ pub(super) struct CampaignContext {
     campaign_dir: PathBuf,
     workspace: PathBuf,
     model: PathBuf,
-    documents_dir: PathBuf,
     python: PathBuf,
     pythonpath: PathBuf,
     generator_skill: PathBuf,
@@ -43,10 +42,6 @@ pub(super) struct CampaignContext {
 
 #[derive(Clone, Serialize)]
 struct TargetContext {
-    binary: PathBuf,
-    workdir: PathBuf,
-    cleanup_script: Option<PathBuf>,
-    args: Vec<String>,
     host: String,
     configured_port: u16,
 }
@@ -85,10 +80,6 @@ impl CampaignContext {
         Ok(Self {
             campaign_dir: absolute(&campaign.base)?,
             workspace: absolute(&campaign.generator_synthesis.output)?,
-            documents_dir: model
-                .parent()
-                .expect("absolute model path has a parent")
-                .to_path_buf(),
             model,
             python: absolute(&campaign.campaign.python)?,
             pythonpath: absolute(&campaign.campaign.pythonpath)?,
@@ -102,15 +93,6 @@ impl CampaignContext {
                 .join("server.py"),
             extra_files,
             target: TargetContext {
-                binary: absolute(&campaign.target.binary)?,
-                workdir: absolute(&campaign.target.workdir)?,
-                cleanup_script: campaign
-                    .target
-                    .cleanup_script
-                    .as_deref()
-                    .map(absolute)
-                    .transpose()?,
-                args: campaign.target.args.clone(),
                 host: campaign.target.host.clone(),
                 configured_port: campaign.target.port,
             },
@@ -214,17 +196,6 @@ impl SynthesisPromptContext {
                 })
             })
             .collect::<Vec<_>>();
-        let documents = self
-            .model
-            .document_paths()
-            .iter()
-            .map(|(rfc, path)| {
-                Ok(serde_json::json!({
-                    "rfc": rfc,
-                    "path": absolute(path)?,
-                }))
-            })
-            .collect::<Result<Vec<_>, libafl::Error>>()?;
         let ready_json = serde_json::to_string_pretty(&serde_json::json!({
             "status": "ready",
             "session": session,
@@ -239,7 +210,6 @@ impl SynthesisPromptContext {
             "protocol_name": self.model.protocol_name,
             "model_complete": self.model.complete,
             "parties": parties,
-            "documents": documents,
             "ready_json": ready_json,
         }))
         .map_err(|error| libafl::Error::serialize(format!("render initialization prompt: {error}")))
@@ -269,12 +239,6 @@ impl SynthesisPromptContext {
                 })
             })
             .collect::<Vec<_>>();
-        let documents = self
-            .model
-            .document_paths()
-            .iter()
-            .map(|(rfc, path)| Ok(serde_json::json!({"rfc": rfc, "path": absolute(path)?})))
-            .collect::<Result<Vec<_>, libafl::Error>>()?;
         let proposal_path = proposal.map(|path| absolute(path)).transpose()?;
         let result_ok_json = serde_json::json!({
             "request_id": request_id,
@@ -304,7 +268,6 @@ impl SynthesisPromptContext {
             "proposal_tool": self.campaign.proposal_tool,
             "catalog": self.campaign.catalog,
             "roles": roles,
-            "documents": documents,
             "generator_parties": self
                 .model
                 .described_parties()
@@ -464,6 +427,12 @@ extra_files = [{quoted}]
                 !prompt.contains("account=ubuntu"),
                 "file content was injected"
             );
+            assert!(!prompt.contains("Protocol document directory"));
+            assert!(!prompt.contains("SUT binary:"));
+            assert!(prompt.contains("Do not read RFC documents"));
+            assert!(prompt.contains("internet searches"));
+            assert!(prompt.contains("never infer"));
+            assert!(prompt.contains("even when malformed"));
             assert!(prompt.contains("generator_server/template.py"));
             assert!(prompt.contains("generator_server/params.schema.json"));
         }

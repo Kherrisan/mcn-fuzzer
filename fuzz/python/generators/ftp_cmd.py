@@ -5,7 +5,7 @@ Rust mutates ``verb`` and ``arg``. A 227 PASV reply opens a second TCP channel.
 
 import re
 
-from generator_server.context import Ctx
+from generator_server import Ctx, step_handler
 
 
 def _line(verb: str, arg: str) -> bytes:
@@ -26,7 +26,8 @@ def parse_pasv(reply: bytes) -> tuple[str, int]:
     return host, port
 
 
-def generate(ctx: Ctx, params: dict) -> None:
+@step_handler("ftp command")
+def handle_command(ctx: Ctx, params: dict) -> None:
     verb = params.get("verb", "NOOP")
     arg = params.get("arg", "")
     ctx.send(_line(str(verb), str(arg)))

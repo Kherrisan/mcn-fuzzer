@@ -69,7 +69,7 @@ fn write_request(
     .unwrap();
     fs::write(
         dir.join("generator.py"),
-        "def generate(ctx, params):\n    return None\n",
+        "from generator_server import step_handler\n@step_handler('hello')\ndef handler(ctx, params):\n    return None\n",
     )
     .unwrap();
     fs::write(

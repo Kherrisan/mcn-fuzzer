@@ -70,5 +70,4 @@ def build_dispatch(module):
         finally:
             ctx.step_instance = None
             ctx.close_all()
-    generate._mcn_dispatch = True
     return generate

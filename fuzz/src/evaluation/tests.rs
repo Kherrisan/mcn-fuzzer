@@ -135,7 +135,11 @@ if "REQUEST=" in prompt:
         print("session mismatch", file=sys.stderr)
         raise SystemExit(4)
     os.makedirs(out, exist_ok=True)
-    open(os.path.join(out, "generator.py"), "w").write("def generate(ctx, params):\n    return None\n")
+    proposal = field("PROPOSAL")
+    if proposal and os.path.isfile(proposal):
+        import shutil
+        shutil.copyfile(proposal, os.path.join(out, "proposal.json"))
+    open(os.path.join(out, "generator.py"), "w").write("from generator_server import step_handler\n@step_handler('greet')\ndef handler(ctx, params):\n    return None\n")
     open(os.path.join(out, "params.schema.json"), "w").write(
         '{"type":"object","additionalProperties":false,"required":["scenario"],"properties":{"scenario":{"type":"string"}}}'
     )
@@ -312,16 +316,12 @@ fn prompts_share_a_template_and_name_the_sut_owner() {
                 if let Some(source) = &resolved {
                     assert!(!prompt.contains(&source.display().to_string()));
                 }
-                assert!(prompt.contains("Do not read or search the SUT source code"));
-                assert!(prompt.contains("Protocol message semantics, order, and wire behavior"));
-                assert!(
-                    prompt.contains("EXTRA_REFERENCE_FILES")
-                        || prompt.contains("Extra reference files")
-                );
+                assert!(prompt.contains("read or search SUT source"));
+                assert!(prompt.contains("Follow the request trace instances exactly"));
+                assert!(prompt.contains("module source"));
                 assert!(prompt.contains("account=ubuntu") == false);
                 assert!(prompt.contains(&dir.join("extra.conf").display().to_string()));
-                assert!(prompt.contains("Do not assess which features the SUT implements or omits"));
-                assert!(prompt.contains("not for predicted SUT rejection"));
+                assert!(prompt.contains("even when malformed"));
                 assert!(prompt.contains(&format!(
                     "Generator module skill (read-only): {}",
                     skill.display()
@@ -485,7 +485,7 @@ fn validator_rejects_bad_artifacts_and_accepts_the_production_subset() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("generator.py"),
-        b"def generate(ctx, params):\n    return None\n",
+        b"from generator_server import step_handler\n@step_handler('greet')\ndef handler(ctx, params):\n    return None\n",
     )
     .unwrap();
     fs::write(
@@ -609,7 +609,7 @@ fn replay_classifies_sut_and_python_failures() {
     let raising = request.join("raising.py");
     fs::write(
         &raising,
-        b"def generate(ctx, params):\n    raise RuntimeError('boom')\n",
+        b"from generator_server import step_handler\n@step_handler('greet')\ndef handler(ctx, params):\n    raise RuntimeError('boom')\n",
     )
     .unwrap();
     publish_replacement(&mut task, task_path, &raising);
@@ -619,7 +619,7 @@ fn replay_classifies_sut_and_python_failures() {
     let hanging = request.join("hang.py");
     fs::write(
         &hanging,
-        b"import time\ntime.sleep(30)\ndef generate(ctx, params):\n    return None\n",
+        b"import time\ntime.sleep(30)\nfrom generator_server import step_handler\n@step_handler('greet')\ndef handler(ctx, params):\n    return None\n",
     )
     .unwrap();
     task = super::Task::load(task_path).unwrap();
@@ -630,7 +630,7 @@ fn replay_classifies_sut_and_python_failures() {
     let missing = request.join("missing.py");
     fs::write(
         &missing,
-        b"def generate(ctx, params):\n    import os\n    os._exit(0)\n",
+        b"from generator_server import step_handler\n@step_handler('greet')\ndef handler(ctx, params):\n    import os\n    os._exit(0)\n",
     )
     .unwrap();
     task = super::Task::load(task_path).unwrap();
@@ -677,7 +677,7 @@ fn replay_uses_campaign_environment_and_cleanup_script() {
     let generator = task.request_dir().join("connect.py");
     fs::write(
         &generator,
-        b"def generate(ctx, params):\n    ctx.send(b'x')\n",
+        b"from generator_server import step_handler\n@step_handler('greet')\ndef handler(ctx, params):\n    ctx.send(b'x')\n@step_handler('ask')\ndef handle_ask(ctx, params):\n    return None\n",
     )
     .unwrap();
     publish_replacement(&mut task, task_path, &generator);
@@ -692,10 +692,9 @@ fn replay_uses_campaign_environment_and_cleanup_script() {
 fn lightftp_suite_fixture(out: &Path) -> PathBuf {
     fs::create_dir_all(out).unwrap();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut suite: toml::Value = toml::from_str(
-        &fs::read_to_string(root.join("evaluation/lightftp.toml")).unwrap(),
-    )
-    .unwrap();
+    let mut suite: toml::Value =
+        toml::from_str(&fs::read_to_string(root.join("evaluation/lightftp.toml")).unwrap())
+            .unwrap();
     suite["campaign"] = toml::Value::String(
         root.join("evaluation/fixtures/lightftp/campaign.toml")
             .display()
@@ -708,8 +707,8 @@ fn lightftp_suite_fixture(out: &Path) -> PathBuf {
 
 #[test]
 fn lightftp_suite_prepares_every_case_without_rewriting_the_campaign() {
-    let campaign_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evaluation/fixtures/lightftp/campaign.toml");
+    let campaign_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("evaluation/fixtures/lightftp/campaign.toml");
     let before = fs::read(&campaign_path).unwrap();
     let out = std::env::temp_dir().join(format!("mcn-eval-ftp-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out);
@@ -1012,7 +1011,7 @@ fn late_sut_crash_is_not_a_pass() {
     let generator = task.request_dir().join("connect.py");
     fs::write(
         &generator,
-        b"def generate(ctx, params):\n    ctx.send(b'x')\n",
+        b"from generator_server import step_handler\n@step_handler('greet')\ndef handler(ctx, params):\n    ctx.send(b'x')\n@step_handler('ask')\ndef handle_ask(ctx, params):\n    return None\n",
     )
     .unwrap();
     let mut stored: serde_json::Value =
@@ -1092,7 +1091,7 @@ fn tampered_published_snapshot_is_rejected() {
     };
     fs::write(
         request.join("published/generator.py"),
-        b"def generate(ctx, params):\n    return 'changed'\n",
+        b"from generator_server import step_handler\n@step_handler('greet')\ndef handler(ctx, params):\n    return 'changed'\n",
     )
     .unwrap();
     let error = super::validate(task_path).unwrap_err();

@@ -19,7 +19,7 @@ class StandaloneTests(unittest.TestCase):
             root = Path(temporary)
             generator = root / "generator.py"
             generator.write_text(
-                "def generate(ctx, params):\n"
+                "from generator_server import step_handler\n@step_handler('test')\ndef handler(ctx, params):\n"
                 "    ctx.bytes_sent += 3\n"
                 "    raise RuntimeError(params['why'])\n",
                 encoding="utf-8",
@@ -30,6 +30,7 @@ class StandaloneTests(unittest.TestCase):
                 json.dumps(
                     {
                         "generator": str(generator),
+                        "step_trace": [{"name": "one", "step": "test"}],
                         "params": {"why": "boom"},
                         "host": "127.0.0.1",
                         "port": 9,
