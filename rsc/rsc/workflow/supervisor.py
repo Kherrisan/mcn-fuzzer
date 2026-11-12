@@ -26,7 +26,7 @@ class HcFailure(WorkflowError):
 
 
 class HcObservationTimeout(WorkflowError):
-    """Observer timeout does not prove process death or revoke an attempt."""
+    """Observer timeout does not prove process death or revoke a session."""
 
 
 class Supervisor:
@@ -157,7 +157,7 @@ class Supervisor:
         intent = {
             "name": context.terminal_name,
             "assignment": a["name"],
-            "attempt": a["attempt"],
+            "credential": (self.root / f"{a['worker']}.token").read_text().strip(),
             "started_at": time.time(),
         }
         self.state["launching"] = intent
@@ -191,6 +191,28 @@ class Supervisor:
             effort=profile["effort"],
         )
 
+    def send_ready(self, saved, prompt):
+        """Retry only HC's explicit guarantee that no input was typed."""
+        try:
+            self.hc_call("send", saved["address"], prompt)
+        except HcFailure as error:
+            if error.code != 5 or "nothing was typed" not in str(error).lower():
+                raise
+            rejected = [*saved.get("delivery_rejections", []), time.time()]
+            saved["delivery_rejections"] = rejected
+            if prompt.startswith("/rename "):
+                saved["rename_sent"] = False
+            self.save()
+            self.event("send_not_delivered", terminal=saved["address"], diagnostic=str(error))
+            if len(rejected) >= 12:
+                raise WorkflowError(
+                    "HC rejected twelve sends without typing; inspect terminal"
+                ) from error
+            return False
+        saved.pop("delivery_rejections", None)
+        self.save()
+        return True
+
     def ready(self, a):
         context = self.context(a)
         saved = self.state["terminals"][a["worker"]]
@@ -211,9 +233,9 @@ class Supervisor:
                         if not saved.get("rename_sent"):
                             saved["rename_sent"] = True
                             self.save()
-                            self.hc_call(
-                                "send", saved["address"], f"/rename {context.terminal_name}"
-                            )
+                            if not self.send_ready(saved, f"/rename {context.terminal_name}"):
+                                saved["rename_sent"] = False
+                                self.save()
                         self.wait_once(saved["address"])
                         continue
                 session = adapter.session(profile, context, started_at=saved.get("started_at"))
@@ -244,11 +266,7 @@ class Supervisor:
             self.state.pop("launching")
             self.save()
             return
-        a = next(
-            a
-            for a in assignments
-            if a["name"] == intent["assignment"] and a["attempt"] == intent["attempt"]
-        )
+        a = next(a for a in assignments if a["name"] == intent["assignment"])
         self.state["terminals"][a["worker"]] = {
             **intent,
             "address": info["address"],
@@ -259,10 +277,12 @@ class Supervisor:
 
     def step(self):
         status = self.workflow_call("tick")
+        self.recover_launch(status["assignments"])
         if status["phase"] == "published":
             return False
         if status["phase"] == "failed":
-            raise WorkflowError("deterministic review failed: " + json.dumps(status.get("errors")))
+            self.cleanup()
+            raise WorkflowError("workflow failed: " + json.dumps(status.get("errors")))
         assignments = [
             a
             for a in status["assignments"]
@@ -272,17 +292,21 @@ class Supervisor:
         for worker, saved in list(self.state["terminals"].items()):
             if saved["assignment"] not in active_names:
                 self.retire(worker)
-        self.recover_launch(assignments)
         active = [a for a in assignments if a["status"] != "submitted"]
+        limit = status.get("parallel_agents", 4) if status["phase"] == "parse" else 1
+        active = active[:limit]
         for a in active:
             if a["status"] == "failed":
                 raise WorkflowError(f"worker {a['worker']} exhausted its two retries")
             saved = self.state["terminals"].get(a["worker"])
-            if saved and (saved["assignment"], saved["attempt"]) != (a["name"], a["attempt"]):
+            if saved and (
+                saved["assignment"] != a["name"]
+                or saved["credential"] != (self.root / f"{a['worker']}.token").read_text().strip()
+            ):
                 self.retire(a["worker"])
                 saved = None
             if saved is None:
-                self.start_worker(a)  # All startup/SQLite initialization is serialized.
+                self.start_worker(a)  # Keep native session initialization serialized.
             elif not saved["ready"]:
                 self.ready(a)
         # Dispatch every ready worker before waiting on any one of them.
@@ -300,8 +324,8 @@ class Supervisor:
                     "details": info,
                 }
                 self.workflow_call(
-                    "replace_attempt",
-                    {"name": a["name"], "attempt": a["attempt"], "terminal": terminal},
+                    "restart_worker",
+                    {"name": a["name"], "terminal": terminal},
                 )
                 self.retire(a["worker"])
                 continue
@@ -319,27 +343,37 @@ class Supervisor:
                 and saved["ready"]
                 and self.observed(info) in {"idle", "done"}
             ):
-                self.workflow_call("record_send", {"name": a["name"], "attempt": a["attempt"]})
                 saved["send_turn"] = info.get("turn", 0)
+                saved["send_intent_at"] = time.time()
                 self.save()
-                self.hc_call(
-                    "send",
-                    saved["address"],
+                self.workflow_call("record_send", {"name": a["name"]})
+                delivered = self.send_ready(
+                    saved,
                     assignment_instructions(a)
                     + "\nSource catalog: "
                     + json.dumps(status["source_catalog"])
+                    + "\nImmutable source text files (shell/rg): "
+                    + json.dumps(status.get("source_files", []))
                     + "\nMCP namespace: "
                     + self.context(a).namespace,
                 )
-                self.event("assignment_sent", **a, terminal=saved["address"])
-            elif self.observed(info) in {"idle", "done"} and info.get("turn", 0) > saved.get(
-                "send_turn", 0
+                if delivered:
+                    self.event("assignment_sent", **a, terminal=saved["address"])
+                else:
+                    self.workflow_call("record_nondelivery", {"name": a["name"]})
+            elif self.observed(info) in {"idle", "done"} and (
+                info.get("turn", 0) > saved.get("send_turn", 0)
+                or (
+                    a["status"] == "sent"
+                    and time.time() - saved.get("send_intent_at", a.get("sent_at", a["created_at"]))
+                    > 10
+                )
             ):
                 # A turn ended, but no complete result was persisted.
                 # Never infer success from the final terminal text.
                 fresh = next(x for x in self.status()["assignments"] if x["name"] == a["name"])
-                if fresh["status"] != "submitted":
-                    raise WorkflowError(f"worker {a['worker']} ended its turn without submitting")
+                if fresh["status"] not in {"submitted", "pending"}:
+                    self.workflow_call("continue_worker", {"name": a["name"]})
             waiting.append(saved["address"])
         if waiting:
             self.wait_once(waiting[self.wait_index % len(waiting)])
@@ -351,7 +385,6 @@ class Supervisor:
             return
         for worker in list(self.state["terminals"]):
             self.retire(worker)
-        self.hc_call("server", "stop")
         self.state["cleanup_complete"] = True
         self.save()
 

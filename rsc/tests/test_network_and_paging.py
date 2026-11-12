@@ -3,11 +3,13 @@
 import copy
 
 import pytest
+from pydantic import ValidationError
 
 from rsc.protocol.models import CloseStep, ConnectStep, ListenStep, SendStep, validate_step
 from rsc.protocol.references import reference_errors
-from rsc.workflow.paging import PageError, compact_page, decode_compact, encode_compact, records_page
+from rsc.workflow.paging import HARD_BUDGET, PageError, records_page
 from rsc.workflow.sources import token_count
+from rsc.workflow.tools import validate_arguments
 
 
 def _records():
@@ -16,7 +18,6 @@ def _records():
     for index in range(3):
         rows.append(
             {
-                "record_id": f"r{index}",
                 "kind": "steps",
                 "value": {
                     "name": f"send {index}",
@@ -32,7 +33,6 @@ def _records():
         )
     rows.append(
         {
-            "record_id": "listen",
             "kind": "steps",
             "value": {
                 "name": "listen control",
@@ -47,66 +47,108 @@ def _records():
     return rows
 
 
-def test_compact_round_trip_keeps_nested_values_and_shared_evidence():
+def test_records_preserve_nested_values_evidence_and_input_file_metadata():
     rows = _records()
-    encoded = encode_compact(rows)
-    assert len(encoded["evidence"]) == 2
-    assert decode_compact(encoded) == rows
-    page = compact_page(rows, 0, 24000, 3)
-    assert page["format"] == "compact"
-    assert page["revision"] == 3
-    assert decode_compact(page) == rows
-    again = records_page(rows, 0, 24000, 3)
-    assert again["items"] == rows
+    before = copy.deepcopy(rows)
+    metadata = {"input_files": ["parsers/parser-1.json"]}
+    page = records_page(rows, max_tokens=24000, metadata=metadata)
+    assert page["items"] == rows == before
+    assert page["input_files"] == metadata["input_files"]
+    assert page["next_cursor"] is None
+    assert page["tokens"] == token_count(page) <= page["max_tokens"]
+    assert set(page) == {"items", "next_cursor", "max_tokens", "input_files", "tokens"}
+    assert all("id" not in row and "record_id" not in row for row in page["items"])
 
 
 def test_short_records_exceeding_fifty_fit_in_one_budget():
     rows = [
-        {"record_id": f"r{i}", "kind": "parties", "value": {"name": f"p{i}", "description": "role"}}
+        {"kind": "parties", "value": {"name": f"p{i}", "description": "role"}}
         for i in range(60)
     ]
-    page = records_page(rows, 0, 24000, 1)
+    page = records_page(rows, max_tokens=24000)
     assert page["next_cursor"] is None
     assert len(page["items"]) == 60
 
 
-def test_empty_value_round_trips_and_final_page_stays_inside_the_budget():
-    empty = {"record_id": "empty", "kind": "parties", "value": {}, "evidence": []}
-    summary = {"record_id": "sum", "kind": "parties", "name": "only"}
-    assert decode_compact(encode_compact([empty, summary])) == [empty, summary]
+def test_bounded_pages_deliver_each_complete_record_once_without_revisions():
     rows = [
         {
-            "record_id": f"r{index}",
             "kind": "parties",
-            "value": {"name": f"n{index}", "description": "x" * 40},
+            "value": {"name": f"party {index}", "description": "source-backed role " * 30},
+            "evidence": [{"batch_id": "b", "block_id": str(index)}],
+            "input_file": "parsers/parser-1.json",
         }
-        for index in range(4)
+        for index in range(7)
     ]
-    one = records_page(rows[:1], 0, 24000, 7)
-    assert one["tokens"] == token_count(one)
-    assert one["delivered_ids"] == ["r0"]
-    assert one["next_cursor"] is None
-    assert one["revision"] == 7
-    page = records_page(rows, 0, one["tokens"], 7)
-    assert page["tokens"] <= page["max_tokens"]
-    assert page["tokens"] == token_count(page)
-    assert page["delivered_ids"] == [row["record_id"] for row in page["items"]]
-    assert page["revision"] == 7
-    assert page["next_cursor"] == (None if len(page["items"]) == len(rows) else len(page["items"]))
-    with pytest.raises(PageError, match=r"requires (\d+)") as raised:
-        records_page(rows[:1], 0, 1, 7)
-    needed = int(raised.value.args[0].split("requires ", 1)[1].split(" ", 1)[0])
-    fitted = records_page(rows[:1], 0, needed, 7)
-    assert fitted["tokens"] <= needed
-    assert fitted["tokens"] == token_count(fitted)
-    with pytest.raises(PageError):
-        records_page(rows[:1], 0, needed - 1, 7)
+    metadata = {"input_files": ["parsers/parser-1.json"]}
+    before = copy.deepcopy(rows)
+    cursor, delivered, pages = 0, [], []
+    while True:
+        page = records_page(rows, cursor, 400, metadata=metadata)
+        assert page["items"]
+        assert page["tokens"] == token_count(page) <= 400
+        assert page["max_tokens"] == 400
+        assert page["input_files"] == metadata["input_files"]
+        assert not {"revision", "delivered_ids", "format"}.intersection(page)
+        assert page["items"] == rows[cursor:cursor + len(page["items"])]
+        delivered.extend(page["items"])
+        pages.append(page)
+        if page["next_cursor"] is None:
+            break
+        assert page["next_cursor"] == cursor + len(page["items"])
+        cursor = page["next_cursor"]
+    assert len(pages) > 1
+    assert delivered == rows == before
+
+
+@pytest.mark.parametrize("rows", [[], _records()])
+def test_empty_and_exhausted_pages_are_bounded(rows):
+    page = records_page(rows, cursor=len(rows), max_tokens=100)
+    assert page["items"] == []
+    assert page["next_cursor"] is None
+    assert page["tokens"] == token_count(page) <= 100
+    assert "revision" not in page
+
+
+def test_metadata_counts_toward_the_response_budget():
+    with pytest.raises(PageError, match="page metadata requires"):
+        records_page([], max_tokens=100, metadata={"input_files": ["long-path-" * 100]})
+
+
+def test_one_oversized_record_reports_a_budget_that_can_fit_it():
+    rows = [{"kind": "parties", "value": {"name": "p", "description": "detail " * 500}}]
+    with pytest.raises(PageError, match=r"single record requires (\d+) tokens") as raised:
+        records_page(rows, max_tokens=100)
+    needed = int(str(raised.value).split("requires ", 1)[1].split(" ", 1)[0])
+    fitted = records_page(rows, max_tokens=needed)
+    assert fitted["items"] == rows and fitted["next_cursor"] is None
+    assert fitted["tokens"] == token_count(fitted) <= needed
+    with pytest.raises(PageError, match="single record requires"):
+        records_page(rows, max_tokens=needed - 1)
 
 
 def test_one_oversized_record_names_the_required_budget():
-    rows = [{"record_id": "big", "kind": "parties", "value": {"name": "p", "description": "x" * 200000}}]
+    rows = [{"kind": "parties", "value": {"name": "p", "description": "x" * 200000}}]
     with pytest.raises(PageError, match="single record requires"):
-        records_page(rows, 0, 1000, 1)
+        records_page(rows, max_tokens=1000)
+
+
+@pytest.mark.parametrize("cursor", [-1, 5, True, "0", 0.5])
+def test_invalid_cursors_are_rejected(cursor):
+    with pytest.raises(PageError, match="invalid cursor"):
+        records_page(_records(), cursor=cursor)
+
+
+@pytest.mark.parametrize("budget", [0, -1, True, "100", 1.5, HARD_BUDGET + 1])
+def test_invalid_response_budgets_are_rejected(budget):
+    with pytest.raises(PageError, match="max_tokens must be"):
+        records_page(_records(), max_tokens=budget)
+
+
+def test_query_model_paging_contract_has_no_revision_argument():
+    validate_arguments("query_model", {"cursor": 0, "max_tokens": 100})
+    with pytest.raises(ValueError, match="revision"):
+        validate_arguments("query_model", {"cursor": 0, "revision": 1})
 
 
 def test_network_steps_are_unique_per_party_channel_and_action():
@@ -148,5 +190,5 @@ def test_network_steps_are_unique_per_party_channel_and_action():
     assert isinstance(validate_step(connect), ConnectStep)
     close = {**listen, "action": "close", "name": "server closes"}
     assert isinstance(validate_step(close), CloseStep)
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         SendStep.model_validate({**listen, "action": "send"})

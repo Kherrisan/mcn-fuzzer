@@ -348,7 +348,7 @@ class PiAdapter(Adapter):
             "--no-context-files",
             "--no-approve",
             "--tools",
-            f"mcp__{context.namespace}__*",
+            f"bash,read,write,mcp__{context.namespace}__*",
             "--session-dir",
             str(context.directory / "sessions"),
             "--name",
@@ -371,8 +371,8 @@ ADAPTERS = {"codex": CodexAdapter(), "pi": PiAdapter()}
 
 
 def check_profiles(roles):
-    checked = set()
+    checked = []
     for selected in roles.values():
-        if selected["fingerprint"] not in checked:
+        if selected["profile"] not in checked:
             ADAPTERS[selected["profile"]["provider"]].check(selected["profile"])
-            checked.add(selected["fingerprint"])
+            checked.append(selected["profile"])

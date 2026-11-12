@@ -1,14 +1,11 @@
 {
   "meta": {
-    "schema_version": "8.0.0",
     "protocol": "TLS 1.2 / OpenSSL s_server manually curated evaluation subset",
     "complete": false,
     "documents": [
       {
         "doc_id": "rfc5246",
         "rfc": "RFC 5246",
-        "input_sha256": "a6102891f08ad01933fdce6891c0045432b699c917db12903cfa694372b5e86a",
-        "document_sha256": "a6102891f08ad01933fdce6891c0045432b699c917db12903cfa694372b5e86a",
         "path": "../../../../rsc/tests/fixtures/profuzzbench-rfc/TLS/rfc5246.html"
       }
     ]

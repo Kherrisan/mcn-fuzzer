@@ -75,7 +75,9 @@ def run_task(args, root, socket):
         config_path = json.loads(config_record.read_text()).get("config_path")
     config = load_workflow_config(config_path)
     options = config.get("workflow", {})
-    if not (root / "workflow.sqlite").exists():
+    if (root / "workflow.sqlite").exists():
+        raise WorkflowError("old SQLite runs require their archived implementation")
+    if not (root / "state.json").exists():
         if not args.rfc or not args.protocol:
             raise WorkflowError("new task requires --rfc and --protocol")
         config["resolved_agents"] = bind_profiles(root, config, existing=False, args=args)
@@ -86,10 +88,14 @@ def run_task(args, root, socket):
             target_tokens=options.get("batch_target_tokens", 8000),
             max_tokens=options.get("batch_max_tokens", 12000),
             parse_workers=options["parse_workers"],
-            merge_workers=options["merge_workers"],
+            parse_max_workers=options["parse_max_workers"],
+            parse_context_tokens=options["parse_context_tokens"],
+            parse_fixed_tokens=options["parse_fixed_tokens"],
+            merge_context_tokens=options["merge_context_tokens"],
+            merge_fixed_tokens=options["merge_fixed_tokens"],
             max_feedback_rounds=options["max_feedback_rounds"],
         )
-        task.db.close()
+        task.store.close()
         private_json(
             config_record,
             {"config_path": str(Path(config_path).resolve()) if config_path else None},
@@ -99,7 +105,7 @@ def run_task(args, root, socket):
         try:
             config["resolved_agents"] = bind_profiles(root, config, existing=True, args=args)
         except ValueError:
-            task.db.close()
+            task.store.close()
             raise
         if args.protocol and args.protocol != task.data["protocol"]:
             raise WorkflowError("cannot change the protocol of an existing task")
@@ -109,15 +115,24 @@ def run_task(args, root, socket):
             "batch_target_tokens": task.data["target_tokens"],
             "batch_max_tokens": task.data["max_tokens"],
             "parse_workers": task.data["parse_workers"],
-            "merge_workers": task.data["merge_workers"],
-            "max_feedback_rounds": task.data.get("max_feedback_rounds", 2),
+            **{
+                key: task.data[key]
+                for key in (
+                    "parse_max_workers",
+                    "parse_context_tokens",
+                    "parse_fixed_tokens",
+                    "merge_context_tokens",
+                    "merge_fixed_tokens",
+                )
+            },
+            "max_feedback_rounds": task.data["max_feedback_rounds"],
         }
         if task.data["phase"] == "published":
             task.export()
             if not (root / "supervisor.json").exists():
-                task.db.close()
+                task.store.close()
                 return 0
-        task.db.close()
+        task.store.close()
     # Connection refusal is evidence of a dead service, unlike a timeout.
     token = (root / "coordinator.token").read_text().strip()
 

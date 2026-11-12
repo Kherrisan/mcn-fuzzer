@@ -25,12 +25,9 @@ The responder listens before the requester opens the control connection.
 
 
 def document(text=TEXT, doc_id="rfc9999"):
-    import hashlib
-
     return parse_txt(
         text,
         source_path=doc_id + ".txt",
-        input_sha256=hashlib.sha256(text.encode()).hexdigest(),
         doc_id=doc_id,
     ).document
 

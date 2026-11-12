@@ -1,14 +1,19 @@
 [workflow]
 batch_target_tokens = 8000
 batch_max_tokens = 12000
-parse_workers = 3
-merge_workers = 3
-max_feedback_rounds = 2 # Feedback corrections after the initial pass, including regrouping.
+parse_workers = "auto" # Or a positive partition count.
+parse_max_workers = 4 # Maximum concurrently active parsers.
+parse_context_tokens = 258400
+parse_fixed_tokens = 45000
+merge_context_tokens = 258400
+merge_fixed_tokens = 45000
+max_feedback_rounds = 5 # Fix/review rounds after the initial independent review.
 
 [agents]
 default_profile = "codex-luna-max"
 # parser_profile = "pi-deepseek-flash"
 # merge_profile = "codex-luna-max"
+# reviewer_profile = "codex-luna-high" # Defaults to the selected parser profile.
 
 [agents.profiles.codex-luna-max]
 provider = "codex"

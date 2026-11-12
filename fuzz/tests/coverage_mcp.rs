@@ -50,7 +50,7 @@ fn fixture(dir: &Path) -> Value {
     fs::create_dir_all(&source).unwrap();
     fs::write(source.join("a.c"), "int foo(int x) { return x ? 1 : 0; }\n").unwrap();
     let model_body = json!({
-        "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": true, "documents": []},
+        "meta": {"protocol": "demo", "complete": true, "documents": []},
         "parties": [{"name": "client", "description": "c"}, {"name": "server", "description": "s"}],
         "messages": [{"name": "hello", "associated_fields": []}],
         "channels": [{"name": "control", "description": "c", "transport": "TCP",

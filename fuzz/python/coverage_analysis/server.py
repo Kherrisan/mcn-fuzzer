@@ -222,7 +222,6 @@ def _proposal_command(args):
         graph,
         origin=str(draft.get("origin") or "autonomous"),
         session=str(draft.get("session") or ""),
-        request_id=str(draft.get("request_id") or ""),
         build=str(draft.get("build") or ""),
         snapshot=str(draft.get("snapshot") or ""),
         goal=draft.get("goal") or {},
@@ -231,13 +230,11 @@ def _proposal_command(args):
         parties=draft.get("parties") or {},
         channels=draft.get("channels") or {},
         mutations=draft.get("mutations") or [],
-        global_context=draft.get("global_context") or [],
         dependencies=draft.get("dependencies"),
     )
     proposal_mod.validate_proposal(proposal, graph, handlers)
     proposal_mod.freeze(args.output, proposal)
-    print(json.dumps({"request_id": proposal["request_id"],
-                      "output": str(args.output)}))
+    print(json.dumps({"output": str(args.output)}))
 
 
 def _validate_command(args):
@@ -248,7 +245,7 @@ def _validate_command(args):
         handlers = load_handlers(args.handlers)
     proposal = proposal_mod.read_proposal(args.proposal)
     proposal_mod.validate_proposal(proposal, graph, handlers)
-    print(json.dumps({"valid": True, "request_id": proposal["request_id"]}))
+    print(json.dumps({"valid": True}))
 
 
 def main(argv=None):

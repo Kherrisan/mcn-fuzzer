@@ -22,7 +22,7 @@ class CoverageAnalysisTests(unittest.TestCase):
             path = root / "manifest.json"
             write_manifest(path, binary, source_dir, root, ["callgraph.dot"])
             payload = load_manifest(path)
-            self.assertEqual(set(payload), {"version", "binary_sha256", "source_sha256", "graphs_sha256"})
+            self.assertEqual(set(payload), {"binary_sha256", "source_sha256", "graphs_sha256"})
             self.assertEqual(payload["source_sha256"], source_digest(source_dir))
             other = root / "other"
             other.mkdir()

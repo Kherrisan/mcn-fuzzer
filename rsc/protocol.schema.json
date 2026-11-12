@@ -365,11 +365,6 @@
     "meta": {
       "additionalProperties": false,
       "properties": {
-        "schema_version": {
-          "const": "8.0.0",
-          "title": "Schema Version",
-          "type": "string"
-        },
         "protocol": {
           "minLength": 1,
           "title": "Protocol",
@@ -389,7 +384,6 @@
         }
       },
       "required": [
-        "schema_version",
         "protocol",
         "complete",
         "documents"
@@ -464,16 +458,6 @@
           "title": "Rfc",
           "type": "string"
         },
-        "input_sha256": {
-          "minLength": 1,
-          "title": "Input Sha256",
-          "type": "string"
-        },
-        "document_sha256": {
-          "minLength": 1,
-          "title": "Document Sha256",
-          "type": "string"
-        },
         "path": {
           "minLength": 1,
           "title": "Path",
@@ -483,8 +467,6 @@
       "required": [
         "doc_id",
         "rfc",
-        "input_sha256",
-        "document_sha256",
         "path"
       ],
       "title": "Source",

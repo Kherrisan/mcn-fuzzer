@@ -65,7 +65,8 @@ def cleanup(root):
             hc("wait", terminal["address"], "--timeout", "5")
             if hc("get", terminal["address"])["state"] not in {"finished", "missing"}:
                 raise RuntimeError("terminal has not confirmed termination")
-    hc("server", "stop")
+    for terminal in saved["terminals"].values():
+        hc("rm", terminal["address"])
     write(root / "diagnostic-cleanup.json", {"complete": True, "time": time.time()})
 
 
@@ -94,12 +95,20 @@ def codex_usage(root):
                 continue
             thread, name, path, model, effort = rows[0]
             counts, truncations = None, []
+            peak_input, context_window, compactions = 0, None, 0
             with Path(path).open() as stream:
                 for line in stream:
                     event = json.loads(line)
                     payload = event.get("payload", {})
                     if payload.get("type") == "token_count" and payload.get("info"):
-                        counts = payload["info"]["total_token_usage"]
+                        info = payload["info"]
+                        counts = info["total_token_usage"]
+                        peak_input = max(
+                            peak_input, info.get("last_token_usage", {}).get("input_tokens", 0)
+                        )
+                        context_window = info.get("model_context_window", context_window)
+                    if event.get("type") == "compacted":
+                        compactions += 1
                     if payload.get("type") == "function_call_output" and any(
                         marker in str(payload.get("output", ""))
                         for marker in (
@@ -119,6 +128,9 @@ def codex_usage(root):
                 "model": model,
                 "effort": effort,
                 "token_usage": counts,
+                "peak_input_tokens": peak_input,
+                "context_window": context_window,
+                "compactions": compactions,
                 "truncated_outputs": truncations,
                 "log": str(local),
             }
@@ -135,60 +147,58 @@ def codex_usage(root):
 
 def summarize(root, returncode, timed_out, elapsed):
     from rsc.workflow.audit import audit_run
-    from rsc.workflow.metrics import result_metrics
-    from rsc.workflow.state import Workflow
 
     report = {
-        "output": str(root),
-        "exit_code": returncode,
-        "timed_out": timed_out,
-        "process_elapsed_seconds": elapsed,
-        "semantic_review": False,
-        "complete": False,
+        "output": str(root), "exit_code": returncode, "timed_out": timed_out,
+        "process_elapsed_seconds": elapsed, "semantic_review": False, "complete": False,
     }
-    if not (root / "workflow.sqlite").exists():
+    if not (root / "state.json").exists():
         return {**report, "outcome": "initialization_failed"}
-    w = Workflow(root, readonly=True)
-    try:
-        events = [json.loads(r[0]) for r in w.db.execute("SELECT body FROM events ORDER BY seq")]
-        report.update(
-            phase=w.data["phase"],
-            parse_workers=w.data["parse_workers"],
-            max_feedback_rounds=w.data.get("max_feedback_rounds", 2),
-            metrics=result_metrics(w.store, events),
-        )
-        outcome = (
-            "timeout" if timed_out else "execution_failed" if returncode else "incomplete_workflow"
-        )
-        if w.data["phase"] == "published" and not timed_out and not returncode:
-            try:
-                report["audit"] = audit_run(root)
-                report["complete"] = True
-                outcome = "published"
-            except ValueError as error:
-                report["audit"] = {"verified": False, "error": str(error)}
-                outcome = "audit_failed"
-        report["outcome"] = outcome
-        report["under_20_minutes"] = report["complete"] and elapsed < 1200
-        if (root / "supervisor.json").exists():
-            try:
-                report["codex"] = codex_usage(root)
-            except (OSError, ValueError, sqlite3.Error) as error:
-                report["codex"] = {"available": False, "error": str(error)}
-        return report
-    finally:
-        w.db.close()
+    state = json.loads((root / "state.json").read_text())
+    report["phase"] = state["phase"]
+    report["semantic_review"] = any(root.glob("reviews/*/review.json"))
+    report["review_passed"] = bool(state.get("semantic_review"))
+    for filename, key in (("parse-plan.json", "parse_plan"), ("phases.json", "metrics")):
+        if (root / filename).exists():
+            report[key] = json.loads((root / filename).read_text())
+    outcome = (
+        "timeout" if timed_out else "execution_failed" if returncode else "incomplete_workflow"
+    )
+    if state["phase"] == "published" and not timed_out and not returncode:
+        try:
+            report["audit"] = audit_run(root)
+            report["complete"] = True
+            report["semantic_review"] = True
+            protocol = json.loads((root / "protocol.json").read_text())
+            report["protocol_complete"] = protocol["meta"]["complete"]
+            report["unresolved"] = len(protocol["unresolved"])
+            outcome = "published"
+        except ValueError as error:
+            report["audit"] = {"verified": False, "error": str(error)}
+            outcome = "audit_failed"
+    report["outcome"] = outcome
+    report["under_20_minutes"] = report["complete"] and elapsed < 1200
+    if (root / "supervisor.json").exists():
+        try:
+            report["codex"] = codex_usage(root)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            report["codex"] = {"available": False, "error": str(error)}
+    return report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--parse-workers", type=int, nargs="+", default=[1, 3])
-    parser.add_argument("--max-feedback-rounds", type=int, default=2)
+    parser.add_argument("--parse-workers", nargs="+", default=["auto", "auto", "auto", "2"])
+    parser.add_argument("--max-feedback-rounds", type=int, default=5)
     parser.add_argument("--timeout", type=int, default=2400)
+    parser.add_argument("--source-snapshot", type=Path,
+                        help="reuse an earlier experiment's frozen source directory")
+    parser.add_argument("--keep-going", action="store_true",
+                        help="complete the planned repetitions even when a trial fails")
     args = parser.parse_args()
-    if any(n < 1 for n in args.parse_workers):
-        parser.error("worker counts must be positive")
+    if any(n != "auto" and (not n.isdecimal() or int(n) < 1) for n in args.parse_workers):
+        parser.error("worker counts must be auto or positive integers")
     if args.max_feedback_rounds < 1:
         parser.error("--max-feedback-rounds must be positive")
     if not 1 <= args.timeout <= 2400:
@@ -196,18 +206,23 @@ def main():
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=False)
     project = Path(__file__).resolve().parents[1]
+    origin = args.source_snapshot.resolve() if args.source_snapshot else project
+    if not (origin / "rsc/__init__.py").is_file() or not (origin / "schemas").is_dir():
+        parser.error("source snapshot must contain rsc/ and schemas/")
     source = out / "source"
     shutil.copytree(
-        project / "rsc", source / "rsc", ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
+        origin / "rsc", source / "rsc", ignore=shutil.ignore_patterns("__pycache__", "*.pyc")
     )
-    shutil.copytree(project / "schemas", source / "schemas")
-    shutil.copytree(project / "tests/fixtures/profuzzbench-rfc/FTP", out / "inputs")
+    shutil.copytree(origin / "schemas", source / "schemas")
+    inputs = (origin.parent / "inputs" if args.source_snapshot
+              else project / "tests/fixtures/profuzzbench-rfc/FTP")
+    shutil.copytree(inputs, out / "inputs")
     sys.path.insert(0, str(source))
     from rsc.agents.adapters import CodexAdapter
 
     executable = CodexAdapter.executable({"executable": "codex", "envs": []})
     config_text = (
-        "[workflow]\nparse_workers=WORKERS\nmerge_workers=3\n"
+        "[workflow]\nparse_workers=WORKERS\n"
         f"max_feedback_rounds={args.max_feedback_rounds}\n"
         "batch_target_tokens=8000\nbatch_max_tokens=12000\n\n[agents]\n"
         'default_profile="luna-high"\n\n[agents.profiles.luna-high]\nprovider="codex"\n'
@@ -219,22 +234,24 @@ def main():
         {
             "created_at": time.time(),
             "source_snapshot": str(source),
+            "source_origin": str(origin),
             "rfc_order": ["rfc959.html", "rfc3659.html"],
             "model": "gpt-6-luna",
             "effort": "high",
             "parse_workers": args.parse_workers,
-            "merge_workers": 3,
+            "merge": "single agent only for multiple parser results",
             "max_feedback_rounds": args.max_feedback_rounds,
             "runs": len(args.parse_workers),
             "deadline_seconds": args.timeout,
             "target_seconds": 1200,
-            "semantic_audit": "not performed by this runner; inspect RFC semantics separately",
+            "semantic_audit": "independent reviewer plus deterministic checks",
         },
     )
     results = []
     for number, workers in enumerate(args.parse_workers, 1):
-        config = out / f"config-{workers}.toml"
-        config.write_text(config_text.replace("WORKERS", str(workers)))
+        config = out / f"config-{number}.toml"
+        selected_workers = '"auto"' if workers == "auto" else workers
+        config.write_text(config_text.replace("WORKERS", selected_workers))
         root = out / f"ftp-{time.strftime('%m%d%H%M%S', time.gmtime())}-r{number}"
         root.mkdir()
         command = [
@@ -280,6 +297,8 @@ def main():
         results.append(result)
         write(out / "results.json", results)
         print(f"run {number} finished: {result['outcome']} in {elapsed:.1f}s", flush=True)
+        if not result["complete"] and not args.keep_going:
+            return 1  # Diagnose once instead of repeating the same paid failure.
     return 0 if all(result["complete"] for result in results) else 1
 
 

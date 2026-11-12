@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from rsc.schemas import legacy_metadata_errors
+
 from .sections import section_for_block
 
 
@@ -44,7 +46,7 @@ def validate_index(index: dict[str, Any], document: dict[str, Any] | None = None
 
     if not isinstance(index, dict):
         return ["index must be an object"]
-    errors: list[str] = []
+    errors = legacy_metadata_errors(index)
     expected = {"meta", "sections", "blocks", "references"}
     for key in sorted(expected - index.keys()):
         errors.append(f"missing key: {key}")

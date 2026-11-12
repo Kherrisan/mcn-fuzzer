@@ -28,7 +28,7 @@ def model_document():
         "condition": "start",
     }
     return {
-        "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": True,
+        "meta": {"protocol": "demo", "complete": True,
                  "documents": []},
         "parties": [{"name": "client", "description": "c"},
                     {"name": "server", "description": "s"}],
@@ -84,7 +84,7 @@ def fixture(root):
     handlers_path.write_text(json.dumps(handlers))
     cfg = root / "cfg"
     cfg.mkdir()
-    (cfg / "source-map.json").write_text(json.dumps({"version": 1, "functions": {"foo": {"blocks": {}}}}))
+    (cfg / "source-map.json").write_text(json.dumps({"functions": {"foo": {"blocks": {}}}}))
     (cfg / ".foo.dot").write_text(
         'digraph "CFG for \'foo\' function" {\n'
         '\tNodeA [shape=record,label="{entry:\\l|{<s0>T|<s1>F}}"];\n'
@@ -152,7 +152,7 @@ class CoverageTests(unittest.TestCase):
             trace = [{"name": name, "step": step, "channel": "control_1", "sender": "client_1",
                       "receiver": "server_1", "reason": "test"}
                      for name, step in [("first", "hello"), ("second", "next")]]
-            proposal = proposal_mod.build_proposal(graph, "autonomous", "s", "r", "", "",
+            proposal = proposal_mod.build_proposal(graph, "autonomous", "s", "", "",
                                                    {"reason": "test"}, trace, None, parties, channels)
             self.assertEqual(proposal["dependencies"][0]["fields"], ["transfer size"])
 
@@ -230,32 +230,17 @@ class ProposalTests(unittest.TestCase):
             parties = {"client_1": "client", "server_1": "server"}
             channels = {"control_1": {"channel": "control", "endpoints": ["client_1", "server_1"]}}
             proposal = proposal_mod.build_proposal(
-                graph, "coverage", "s", "req", "build1", "000001",
+                graph, "coverage", "s", "build1", "000001",
                 {"handler_ids": [handler_id], "reason": "reach foo"}, trace, handlers,
                 parties, channels)
             proposal_mod.validate_proposal(proposal, graph, handlers,
-                                           {"session": "s", "request_id": "req",
-                                            "build": "build1", "snapshot": "000001"})
+                                           {"session": "s", "build": "build1", "snapshot": "000001"})
             self.assertNotIn("proposal_id", proposal)
-            self.assertEqual(proposal["request_id"], "req")
-            self.assertEqual(proposal["global_context"], [])
             self.assertIn("dependencies", proposal)
             self.assertIn("mutable_fields", proposal["trace"][0])
-            with_globals = proposal_mod.build_proposal(
-                graph, "coverage", "s", "req2", "build1", "000001",
-                {"handler_ids": [handler_id], "reason": "reach foo"}, trace, handlers,
-                parties, channels, global_context=[
-                    {"name": "username", "kind": "string", "value": "ubuntu",
-                     "source": "constant"}])
-            self.assertEqual(with_globals["global_context"][0]["name"], "username")
             changed = json.loads(json.dumps(proposal))
             changed["trace"][0]["constraints"] = ["different"]
             proposal_mod.validate_proposal(changed, graph, handlers)
-            changed["request_id"] = "other"
-            with self.assertRaises(proposal_mod.ProposalError):
-                proposal_mod.validate_proposal(changed, graph, handlers,
-                                               {"session": "s", "request_id": "req",
-                                                "build": "build1", "snapshot": "000001"})
             missing_reason = json.loads(json.dumps(proposal))
             missing_reason["goal"]["reason"] = "  "
             with self.assertRaises(proposal_mod.ProposalError):
@@ -273,7 +258,7 @@ def _network_model():
         row.update(fields)
         return row
     return {
-        "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": True,
+        "meta": {"protocol": "demo", "complete": True,
                  "documents": []},
         "parties": [{"name": "client", "description": "c"},
                     {"name": "server", "description": "s"}],
@@ -301,10 +286,9 @@ def _network_model():
 
 
 class ProtocolLoadTests(unittest.TestCase):
-    def test_schema8_catalog3_loads_every_action_and_rejects_schema7(self):
+    def test_current_catalog_loads_every_action(self):
         model = _network_model()
         catalog = protocol_mod.build_catalog(model)
-        self.assertEqual(catalog["version"], 3)
         self.assertNotIn("protocol_id", catalog)
         actions = {step["action"] for step in catalog["steps"]}
         self.assertEqual(actions, {"send", "listen", "connect", "close"})
@@ -325,13 +309,32 @@ class ProtocolLoadTests(unittest.TestCase):
             self.assertEqual(context["parties"], ["server"])
             self.assertEqual(context["handlers"], [])
             self.assertIsNone(graph.view(listen["name"])["message"])
-            old = json.loads(protocol.read_text())
-            old["meta"]["schema_version"] = "7.0.0"
-            protocol.write_text(json.dumps(old))
-            with self.assertRaises(protocol_mod.ProtocolError) as raised:
-                protocol_mod.load_protocol(protocol, catalog_path)
-            self.assertIn("7.0.0", str(raised.exception))
-            self.assertIn("8.0.0", str(raised.exception))
+
+
+    def test_model_shape_validation_cannot_be_bypassed_by_omitting_version(self):
+        for invalid in (None, [], {}, {"meta": {}}, {**_network_model(), "steps": "bad"}):
+            with self.subTest(model=invalid), tempfile.TemporaryDirectory() as raw:
+                path = Path(raw) / "protocol.json"
+                path.write_text(json.dumps(invalid))
+                with self.assertRaises(protocol_mod.ProtocolError):
+                    protocol_mod.load_protocol(path)
+
+    def test_proposal_rejects_removed_version_and_request_id(self):
+        model = _network_model()
+        catalog = protocol_mod.build_catalog(model)
+        graph = protocol_mod.ProtocolGraph({"protocol_name": "demo", "model": model}, catalog)
+        base = {
+            "origin": "autonomous", "session": "s", "build": "", "snapshot": "",
+            "goal": {"handler_ids": [], "reason": "x"},
+            "parties": {}, "channels": {}, "trace": [], "mutations": [],
+            "dependencies": [],
+        }
+        for field in ("version", "request_id", "graph_revision", "global_context"):
+            with self.subTest(field=field):
+                bad = dict(base)
+                bad[field] = 1 if field != "request_id" else "r"
+                with self.assertRaisesRegex(proposal_mod.ProposalError, field):
+                    proposal_mod.validate_proposal(bad, graph, None)
 
     def test_proposal_rejects_trace_handler_ids(self):
         model = _network_model()
@@ -343,7 +346,7 @@ class ProtocolLoadTests(unittest.TestCase):
         listen = next(step["name"] for step in catalog["steps"] if step["action"] == "listen")
         with self.assertRaises(proposal_mod.ProposalError) as raised:
             proposal_mod.build_proposal(
-                graph, "autonomous", "s", "req", "", "",
+                graph, "autonomous", "s", "", "",
                 {"handler_ids": [], "reason": "open"},
                 [{"name": "listen_once", "step": listen, "channel": "control_1",
                   "party": "server_1", "handler_ids": ["h1"], "reason": "listen",

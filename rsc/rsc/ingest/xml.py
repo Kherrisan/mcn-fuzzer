@@ -10,13 +10,11 @@ def parse_xml(
     text: str,
     *,
     source_path: str,
-    input_sha256: str,
     doc_id: str,
 ) -> ParseResult:
     return parse_markup(
         text,
         format_name="xml",
         source_path=source_path,
-        input_sha256=input_sha256,
         doc_id=doc_id,
     )

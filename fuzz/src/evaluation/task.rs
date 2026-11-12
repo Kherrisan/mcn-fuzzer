@@ -21,7 +21,6 @@ use super::config::Suite;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Task {
-    pub version: u32,
     pub profile: String,
     pub provider: String,
     pub case_name: String,
@@ -201,7 +200,7 @@ pub fn prepare_instance(
         context.model().protocol_name,
         instance.display()
     ));
-    let proposal = evaluation_proposal(context.model(), &trace, &logical_session, &request_id)?;
+    let proposal = evaluation_proposal(context.model(), &trace, &logical_session)?;
     fs::write(
         instance.join("prepared/proposal.json"),
         format!(
@@ -286,7 +285,6 @@ pub fn prepare_instance(
         stages.insert(name.to_string(), StageRecord::not_run());
     }
     let task = Task {
-        version: 1,
         profile: profile_name.to_string(),
         provider: format!("{:?}", profile.provider).to_lowercase(),
         case_name: case_name.to_string(),
@@ -336,12 +334,10 @@ fn evaluation_proposal(
     model: &crate::protocol::IndexedModel,
     trace: &StepTrace,
     session: &str,
-    request: &str,
 ) -> Result<Proposal, String> {
     let mut proposal = instantiate(model, &trace.steps)?;
     proposal.origin = "autonomous".to_string();
     proposal.session = session.to_string();
-    proposal.request_id = request.to_string();
     proposal.goal.reason = "fixed evaluation trace".to_string();
     for item in &mut proposal.trace {
         item.reason = "fixed evaluation step".to_string();

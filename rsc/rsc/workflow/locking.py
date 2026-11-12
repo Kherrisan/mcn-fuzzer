@@ -3,7 +3,7 @@
 import fcntl
 from contextlib import contextmanager
 
-from .state import WorkflowError
+from .store import StoreError as WorkflowError
 
 
 @contextmanager

@@ -74,6 +74,10 @@ below are relative to this SKILL.md, independent of the agent's working director
 - Only generator.py and params.schema.json are published. Inline service glue
   in generator.py and use installed libraries; do not import this skill's audit
   script or depend on request-directory files at runtime.
+- The calling prompt points to `generator_server/template.py` and
+  `generator_server/params.schema.json`. The scaffold's imports, helpers and
+  per-target handler examples are copy references; adapt only the relevant
+  block to the proposal and do not publish the scaffold itself.
 - This skill supplements the calling prompt. Party ownership, receipt order,
   parameter representation, lifecycle, verification and result.json rules from
   that prompt still apply. Report checks performed; module imports or codec

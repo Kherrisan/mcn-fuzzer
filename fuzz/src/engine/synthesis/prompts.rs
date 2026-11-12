@@ -1,7 +1,6 @@
 //! Markdown prompt templates rendered with MiniJinja.
 
 use std::{
-    collections::BTreeSet,
     fs,
     path::{absolute, Path, PathBuf},
 };
@@ -12,7 +11,7 @@ use serde_json::Value;
 
 use crate::{
     app::config::Campaign,
-    protocol::{load_model, Binding, IndexedModel, PartyRole, StepRecord},
+    protocol::{load_model, Binding, IndexedModel, PartyRole},
 };
 
 const INITIALIZATION_TEMPLATE: &str = include_str!(concat!(
@@ -334,28 +333,6 @@ fn execution_text(mode: ExecutionMode) -> Value {
     serde_json::json!({ "summary": summary, "lifecycle": lifecycle })
 }
 
-pub(super) fn generator_parties(
-    model: &IndexedModel,
-    binding: &Binding,
-    steps: &[StepRecord],
-) -> Vec<String> {
-    let mut names = BTreeSet::new();
-    for step in steps {
-        let mut parties = step
-            .participants()
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        parties.extend(model.channel_party_names(&step.channel_name));
-        for name in parties {
-            if binding.role(&name) == PartyRole::Generator {
-                names.insert(name);
-            }
-        }
-    }
-    names.into_iter().collect()
-}
-
 pub(super) fn role_label(role: PartyRole) -> &'static str {
     match role {
         PartyRole::Sut => "sut",
@@ -404,7 +381,7 @@ mod extra_file_tests {
         fs::write(
             &model,
             serde_json::json!({
-                "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": true, "documents": []},
+                "meta": {"protocol": "demo", "complete": true, "documents": []},
                 "parties": [{"name": "client", "description": "c"}, {"name": "server", "description": "s"}],
                 "messages": [{"name": "hello", "associated_fields": []}],
                 "channels": [{"name": "control", "description": "c", "transport": "TCP",
@@ -487,6 +464,8 @@ extra_files = [{quoted}]
                 !prompt.contains("account=ubuntu"),
                 "file content was injected"
             );
+            assert!(prompt.contains("generator_server/template.py"));
+            assert!(prompt.contains("generator_server/params.schema.json"));
         }
         assert!(init.contains("EXTRA_REFERENCE_FILES"));
         let _ = fs::remove_dir_all(&dir);

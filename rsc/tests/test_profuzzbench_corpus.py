@@ -63,7 +63,6 @@ class ProfuzzbenchCorpusTests(unittest.TestCase):
                 result = parse(
                     text,
                     source_path=entry["file"],
-                    input_sha256=entry["sha256"],
                     doc_id=path.stem,
                 )
                 document = result.document
@@ -98,7 +97,6 @@ class ProfuzzbenchCorpusTests(unittest.TestCase):
         result = parse_html(
             text,
             source_path="FTP/rfc959.html",
-            input_sha256="0" * 64,
             doc_id="rfc959",
         )
         self.assertEqual(result.report["html_mode"], "legacy-pre")
@@ -112,7 +110,6 @@ class ProfuzzbenchCorpusTests(unittest.TestCase):
         result = parse_html(
             text,
             source_path="DTLS/rfc9147.html",
-            input_sha256="0" * 64,
             doc_id="rfc9147",
         )
         self.assertNotIn("html_mode", result.report)
@@ -124,7 +121,6 @@ class ProfuzzbenchCorpusTests(unittest.TestCase):
         result = parse_xml(
             text,
             source_path="DTLS/rfc9147.xml",
-            input_sha256="0" * 64,
             doc_id="rfc9147",
         )
         self.assertEqual(result.document["meta"]["format"], "xml")

@@ -110,7 +110,6 @@ def parse_legacy_html(
     html_text: str,
     *,
     source_path: str,
-    input_sha256: str,
     doc_id: str,
 ) -> ParseResult | None:
     source = SourceIndex(doc_id, html_text)
@@ -124,7 +123,6 @@ def parse_legacy_html(
     parsed = parse_txt(
         plain_text,
         source_path=source_path,
-        input_sha256=input_sha256,
         doc_id=doc_id,
     )
     document = parsed.document

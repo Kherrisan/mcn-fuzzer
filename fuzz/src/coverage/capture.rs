@@ -1653,7 +1653,7 @@ mod tests {
         let seed = dir.join("seed.json");
         std::fs::write(
             &seed,
-            format!("{{\"version\":3,\"generator\":\"{}\"}}", script.display()),
+            format!("{{\"generator\":\"{}\"}}", script.display()),
         )
         .unwrap();
         let base = GeneratorInput::from_file(&seed).unwrap();

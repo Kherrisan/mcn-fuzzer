@@ -46,7 +46,7 @@ Set `[campaign].timeout_secs` to stop the fuzz loop after a wall-clock duration.
 
 `replay` reads the corpus input file. LibAFL also writes `.metadata` sidecars; those are not generator inputs.
 
-Optional `[generator_synthesis]` synthesizes decorated step-handler scripts from a schema 8.0.0 protocol model. It is off when the section is omitted. The `run` command is the only entry that starts a campaign-private HC core; replay, accept, and benchmark do not. The core starts when synthesis or coverage analysis is enabled, and both agents share it. Profiles live under `[agents.profiles.<name>]` with `provider` set to `codex`, `claude`, or `pi`. A failed synthesis task is recorded and existing corpus entries keep fuzzing.
+Optional `[generator_synthesis]` synthesizes decorated step-handler scripts from an RSC protocol model. It is off when the section is omitted. The `run` command is the only entry that starts a campaign-private HC core; replay, accept, and benchmark do not. The core starts when synthesis or coverage analysis is enabled, and both agents share it. Profiles live under `[agents.profiles.<name>]` with `provider` set to `codex`, `claude`, or `pi`. A failed synthesis task is recorded and existing corpus entries keep fuzzing.
 
 `[generator_synthesis]` replaces the removed `[protocol_generation]` table; the
 old name is a configuration error with a migration hint, including when both
@@ -148,11 +148,10 @@ return `incompatible_data`. Coverage counts come from the frozen
 
 After a coverage snapshot is frozen, the coverage agent loads that request's
 inputs, explores the handler and reachable-function summaries, and writes a
-proposal in a graph transaction. `submit_proposal` validates step IDs, handler
-associations, trace identity, and dependencies, then freezes `proposal.json`.
-Rust rechecks identity, party binding, the ordered trace hash, and the proposal
-content hash, commits the transaction through the service, and places the
-proposal in a one-slot mailbox. `regions.json`, `priority-delta.json`,
+proposal in a graph transaction. `submit_proposal` validates step names, handler
+associations, named instances, and dependencies, then freezes `proposal.json`.
+Rust rechecks the proposal and party binding, commits the transaction through
+the service, and places the proposal in a one-slot mailbox. `regions.json`, `priority-delta.json`,
 `protocol-refined.json`, the Rust exploration graph, and trace selection are no
 longer produced or maintained by Rust.
 
@@ -181,23 +180,29 @@ after stripping `mutations` and adding `mutable_fields`, then points the prompt
 at that downstream description instead of a receipt. Coverage
 mode never generates without a proposal. Autonomous mode (analysis disabled, or
 seedless bootstrap) asks the agent to write `proposal.draft.json`, run
-`python -m coverage_analysis.server proposal` to fill IDs and validate it, and
+`python -m coverage_analysis.server proposal` to validate named instances, and
 then generate. Both modes publish `generator.py`, `params.schema.json`, `params.json`, and
 `result.json`; Rust validates the proposal, code, and initial mutable-field
 defaults in-process before publishing the generator. The proposal copy handed to
 synthesis has `mutations` stripped and replaced by per-instance
-`mutable_fields`; dependencies and `global_context` stay in the proposal. Failed or expired
+`mutable_fields`; dependencies stay in the proposal. Failed or expired
 proposals are aborted and leave existing corpus entries untouched.
 
-The synthesizer prompts are Markdown MiniJinja templates in `prompts/`. They are embedded in the fuzzer at build time, so rebuild after editing them.
+The synthesizer prompts are Markdown MiniJinja templates in `prompts/`. They are embedded in the fuzzer at build time, so rebuild after editing them. Both prompts point the agent at two read-only references: [`python/generator_server/template.py`](python/generator_server/template.py), a detailed scaffold with common imports, `ctx` helpers and one commented step-handler example for each ProfuzzGym target (DAAP, DICOM, DNS, DTLS, BFTPD, LightFTP, ProFTPD, PureFTPD, RTSP, SIP, SMTP, SSH, TLS), and [`python/generator_server/params.schema.json`](python/generator_server/params.schema.json), the empty production-compatible parameter-schema shape. The scaffold is a copy reference, not a runnable generator; only the request's `generator.py` and extended `params.schema.json` are published.
 
-Protocol, step and trace hash IDs use the first eight lowercase hexadecimal characters of SHA-256 throughout proposals, prompts, generator origins and evaluation artifacts. Trace hashing still uses full step digests before shortening its own output. RSC-generated step and diagnostic IDs likewise use eight hash characters after their kind prefix. Document/source integrity digests retain their full SHA-256 values.
+RSC protocol objects and references use names. `protocol.json` metadata contains
+only `protocol`, `complete`, and `documents`; each source document has `doc_id`,
+`rfc`, and `path`. RSC application schema versions and source hashes are absent.
+Source document/block locators and protocol payload fields such as version
+numbers or cryptographic hashes remain valid. The readers no longer branch on
+legacy schema/version markers; malformed or old shapes fail during JSON/serde
+parsing.
 
 `synthesis-init.md` establishes the campaign background, reference paths, party roles, workflow, and artifact contract. `synthesis-generation.md` supplies each proposal's task with the public Python API, prerequisite handling, SDK/mock guidance, worker lifecycle, and publication rules. Both receive the same read-only campaign context with absolute paths and execution budgets. Missing template variables fail rendering; completion JSON examples are serialized by Rust before injection.
 
-Both prompts also inject the absolute path to [the protocol module skill](skills/protocol-modules/SKILL.md) and require the agent to read it before selecting libraries. It covers all ten ProFuzzBench protocols, with message/packet codecs, upstream/server SDKs, crypto helpers, import names, installed versions and limitations. Keep the skill and its references accessible at runtime. Evaluation fingerprints the skill directory along with the prompt templates, so changing its contents requires preparing a new evaluation task.
+Both prompts also inject the absolute path to [the protocol module skill](skills/protocol-modules/SKILL.md) and require the agent to read it before selecting libraries. It covers all 13 ProfuzzGym targets (four FTP variants), with message/packet codecs, upstream/server SDKs, crypto helpers, import names, installed versions and limitations. Keep the skill and its references accessible at runtime. Evaluation fingerprints the skill directory along with the prompt templates, so changing its contents requires preparing a new evaluation task.
 
-Proposals contain the ordered trace with per-step reasons and constraints, the selected definitions, handler references, dependencies, optional global context, and document identities. Rust instantiates the proposal as a `TraceInstance` containing concrete steps and dependencies. Version 3 execution input carries the generator path, `step_trace`, dependencies, and shared `params`; proposal global context values are converted into `params`. Party and channel lists are validated in the proposal and are not stored in the input. Legacy v3 global context is migrated to params when loading a corpus entry; params-only/v2 corpus files are rejected. Each step instance carries final `fields`, explicit `omitted_fields`, dependency `inputs`, and broken-dependency metadata. At import the runtime builds a mapping from `@step_handler("model step name")` declarations; during execution it calls an optional `@global_init` once, then dispatches each instance in order to its handler with `(ctx, params)`. Params and `ctx.step_instance` are read-only; `ctx.step_name` is the current instance name. The handler resolves explicit fields, omissions, dependencies and global values, performs the step action, and uses `ctx.save_state(field, value)` and `ctx.load_state(field)` for the current instance, and `ctx.load_depending_state(field)` for bound prior values; `ctx.states` lives until the generator exits. They do not embed the full model. The skill requires the agent to run [the fixed artifact validator](skills/protocol-modules/scripts/validate_generator.py) on `result.draft.json` before atomically publishing `result.json`. The agent additionally runs its bounded import probe. Fuzzer acceptance rechecks the completion IDs, parameter schema and values, and Python syntax and entrypoint in Rust using the RustPython compiler; it does not launch Python or run the generator or SUT.
+Proposals contain the ordered trace with per-step reasons and constraints, the selected definitions, handler references, and dependencies. Rust instantiates the proposal as a `TraceInstance` containing concrete steps and dependencies. Execution input carries the generator path, `step_trace`, dependencies, and shared `params`; no execution-format version or proposal request ID is embedded. Each step instance carries final `fields`, explicit `omitted_fields`, dependency `inputs`, and broken-dependency metadata. At import the runtime builds a mapping from `@step_handler("model step name")` declarations; during execution it calls an optional `@global_init` once, then dispatches each instance in order to its handler with `(ctx, params)`. Params and `ctx.step_instance` are read-only; `ctx.step_name` is the current instance name. The handler resolves explicit fields, omissions, dependencies and global values, performs the step action, and uses `ctx.save_state(field, value)` and `ctx.load_state(field)` for the current instance, and `ctx.load_depending_state(field)` for bound prior values; `ctx.states` lives until the generator exits. They do not embed the full model. The skill requires the agent to run [the fixed artifact validator](skills/protocol-modules/scripts/validate_generator.py) on `result.draft.json` before atomically publishing `result.json`. The agent additionally runs its bounded import probe. Fuzzer acceptance rechecks the completion IDs, parameter schema and values, and Python syntax and entrypoint in Rust using the RustPython compiler; it does not launch Python or run the generator or SUT.
 
 The prepared environment is CPython 3.12 on Linux x86_64. Install its pinned dependencies into the campaign interpreter (the supplied campaigns use `.venv/bin/python`):
 
@@ -250,4 +255,4 @@ sudo ./target/release/mcn-fuzz accept --campaign targets/openssl/campaign.toml
 sudo ./target/release/mcn-fuzz replay --campaign targets/openssl/campaign.toml --input targets/openssl/corpus/<file>
 ```
 
-`generators/tls12.py` is a legacy params-only example; new synthesis generators use decorated step handlers. It rebuilds TLS lengths, then applies `version`, `cipher`, `sni`, `extensions_hex`, and `truncate`. The response reader takes the 5-byte record header and then at most 18432 body bytes. A ServerHello is `ok`. An alert is `alert`. A short close is `eof`. Connect failures stay `conn` and read deadlines stay `timeout`.
+`generators/tls12.py` is a params-only example; new synthesis generators use decorated step handlers. It rebuilds TLS lengths, then applies `version`, `cipher`, `sni`, `extensions_hex`, and `truncate`. The response reader takes the 5-byte record header and then at most 18432 body bytes. A ServerHello is `ok`. An alert is `alert`. A short close is `eof`. Connect failures stay `conn` and read deadlines stay `timeout`.

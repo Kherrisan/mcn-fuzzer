@@ -17,13 +17,12 @@ use sha2::{Digest, Sha256};
 
 use super::mutations::{self, expand_named};
 use crate::{
-    engine::input::{GlobalContextValue, ParamValue},
+    engine::input::ParamValue,
     protocol::{Binding, IndexedModel, StepRecord},
 };
 
-pub const PROPOSAL_VERSION: u32 = 2;
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ProposalGoal {
     #[serde(default)]
     pub handler_ids: Vec<String>,
@@ -99,21 +98,16 @@ impl mutations::Named for ProposalStep {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Proposal {
-    pub version: u32,
     pub origin: String,
     pub session: String,
-    pub request_id: String,
     pub build: String,
     pub snapshot: String,
-    pub graph_revision: u64,
     pub goal: ProposalGoal,
     pub parties: BTreeMap<String, String>,
     pub channels: BTreeMap<String, ProposalChannel>,
     pub trace: Vec<ProposalStep>,
     #[serde(default)]
     pub mutations: Vec<Value>,
-    #[serde(default)]
-    pub global_context: Vec<GlobalContextValue>,
     #[serde(default)]
     pub dependencies: Vec<ProposalDependency>,
 }
@@ -123,12 +117,12 @@ pub struct Proposal {
 pub struct AcceptedProposal {
     pub proposal: Proposal,
     pub path: PathBuf,
-    pub sha256: String,
+    pub request_id: String,
 }
 
 impl AcceptedProposal {
     pub fn request_id(&self) -> &str {
-        &self.proposal.request_id
+        &self.request_id
     }
 }
 
@@ -168,7 +162,6 @@ impl ProposalMailbox {
 #[derive(Clone, Debug)]
 pub struct ProposalIdentity {
     pub session: String,
-    pub request_id: String,
     pub build: String,
     pub snapshot: String,
 }
@@ -248,13 +241,10 @@ pub fn instantiate(model: &IndexedModel, steps: &[StepRecord]) -> Result<Proposa
         })
         .collect();
     Ok(Proposal {
-        version: PROPOSAL_VERSION,
         origin: "autonomous".into(),
         session: String::new(),
-        request_id: String::new(),
         build: String::new(),
         snapshot: String::new(),
-        graph_revision: 0,
         goal: ProposalGoal {
             handler_ids: Vec::new(),
             reason: String::new(),
@@ -263,7 +253,6 @@ pub fn instantiate(model: &IndexedModel, steps: &[StepRecord]) -> Result<Proposa
         channels,
         trace,
         mutations: Vec::new(),
-        global_context: Vec::new(),
         dependencies,
     })
 }
@@ -283,15 +272,11 @@ impl Proposal {
         binding: &Binding,
         expected: &ProposalIdentity,
     ) -> Result<Vec<StepRecord>, String> {
-        if self.version != PROPOSAL_VERSION {
-            return Err(format!("proposal version must be {PROPOSAL_VERSION}"));
-        }
         if self.origin != "coverage" && self.origin != "autonomous" {
             return Err("proposal origin must be coverage or autonomous".into());
         }
         for (name, actual, wanted) in [
             ("session", &self.session, &expected.session),
-            ("request_id", &self.request_id, &expected.request_id),
             ("build", &self.build, &expected.build),
             ("snapshot", &self.snapshot, &expected.snapshot),
         ] {
@@ -364,29 +349,6 @@ impl Proposal {
             |index| self.trace[index].action == "send",
             &self.mutations,
         )?;
-        let mut globals = BTreeSet::new();
-        for value in &self.global_context {
-            if value.name.trim().is_empty() || !globals.insert(value.name.clone()) {
-                return Err("global_context names must be non-empty and unique".into());
-            }
-            let source = if value.source.is_empty() {
-                "constant"
-            } else {
-                value.source.as_str()
-            };
-            if source != "constant" && source != "environment" && source != "generated" {
-                return Err(format!(
-                    "global_context {} has unknown source {}",
-                    value.name, value.source
-                ));
-            }
-            if source == "generated" && value.seed.is_none() {
-                return Err(format!(
-                    "global_context generated value {} needs a replay seed",
-                    value.name
-                ));
-            }
-        }
         for dependency in &self.dependencies {
             if !names.contains(&dependency.prior) || !names.contains(&dependency.dependent) {
                 return Err(format!(
@@ -582,7 +544,7 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let body = json!({
-            "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": true, "documents": []},
+            "meta": {"protocol": "demo", "complete": true, "documents": []},
             "parties": [
                 {"name": "client", "description": "c"},
                 {"name": "server", "description": "s"},
@@ -635,7 +597,6 @@ mod tests {
     fn identity() -> ProposalIdentity {
         ProposalIdentity {
             session: "s".into(),
-            request_id: "r".into(),
             build: "b".into(),
             snapshot: "000001".into(),
         }
@@ -645,7 +606,6 @@ mod tests {
         let mut proposal = instantiate(model, &model.steps).unwrap();
         proposal.origin = "coverage".into();
         proposal.session = "s".into();
-        proposal.request_id = "r".into();
         proposal.build = "b".into();
         proposal.snapshot = "000001".into();
         proposal.goal.reason = "reach auth".into();
@@ -704,8 +664,8 @@ mod tests {
         let error = action.validate(&model, &binding, &identity()).unwrap_err();
         assert!(error.contains("action"), "{error}");
         let raw = json!({
-            "version": 2, "origin": "coverage", "session": "s", "request_id": "r",
-            "build": "b", "snapshot": "000001", "graph_revision": 0,
+            "origin": "coverage", "session": "s",
+            "build": "b", "snapshot": "000001",
             "goal": {"handler_ids": ["h"], "reason": "g"},
             "parties": {"peer": "peer"},
             "channels": {"data": {"channel": "data", "endpoints": ["peer"]}},
@@ -719,9 +679,16 @@ mod tests {
         });
         let error = serde_json::from_value::<Proposal>(raw).unwrap_err();
         assert!(error.to_string().contains("handler_ids"), "{error}");
-        let mut old = base(&model);
-        old.version = 1;
-        assert!(old.validate(&model, &binding, &identity()).is_err());
+    }
+
+    #[test]
+    fn proposal_rejects_removed_request_id_and_version_fields() {
+        let raw = json!({
+            "origin": "coverage", "session": "s", "request_id": "r",
+            "build": "b", "snapshot": "000001"
+        });
+        let error = serde_json::from_value::<Proposal>(raw).unwrap_err();
+        assert!(error.to_string().contains("request_id"), "{error}");
     }
 
     #[test]
@@ -738,21 +705,12 @@ mod tests {
             ..identity()
         };
         proposal.validate(&model, &binding, &expected).unwrap();
-        proposal.request_id = "other".into();
-        assert!(proposal.validate(&model, &binding, &expected).is_err());
     }
 
     #[test]
-    fn global_context_and_instance_dependencies_validate() {
+    fn instance_dependencies_validate() {
         let (model, binding) = fixture();
         let mut proposal = base(&model);
-        proposal.global_context.push(GlobalContextValue {
-            name: "username".into(),
-            kind: "string".into(),
-            value: Some(ParamValue::Str("ubuntu".into())),
-            source: "constant".into(),
-            seed: None,
-        });
         proposal.dependencies.push(ProposalDependency {
             prior: "hello".into(),
             dependent: "bye".into(),
@@ -762,18 +720,9 @@ mod tests {
         });
         proposal
             .validate(&model, &binding, &identity())
-            .expect("global context and dependencies");
-        let mut bad = proposal.clone();
-        bad.dependencies[0].dependent = "missing".into();
-        assert!(bad.validate(&model, &binding, &identity()).is_err());
+            .expect("dependencies");
         let mut bad = proposal;
-        bad.global_context.push(GlobalContextValue {
-            name: "username".into(),
-            kind: String::new(),
-            value: None,
-            source: "constant".into(),
-            seed: None,
-        });
+        bad.dependencies[0].dependent = "missing".into();
         assert!(bad.validate(&model, &binding, &identity()).is_err());
     }
 
@@ -798,13 +747,10 @@ mod tests {
         let mailbox = ProposalMailbox::default();
         let make = |id: &str| AcceptedProposal {
             proposal: Proposal {
-                version: 2,
                 origin: "autonomous".into(),
                 session: "s".into(),
-                request_id: id.into(),
                 build: String::new(),
                 snapshot: String::new(),
-                graph_revision: 0,
                 goal: ProposalGoal {
                     handler_ids: vec![],
                     reason: "g".into(),
@@ -813,11 +759,10 @@ mod tests {
                 channels: BTreeMap::new(),
                 trace: vec![],
                 mutations: vec![],
-                global_context: vec![],
                 dependencies: vec![],
             },
             path: PathBuf::from(id),
-            sha256: String::new(),
+            request_id: id.into(),
         };
         mailbox.replace(make("a"));
         mailbox.replace(make("b"));

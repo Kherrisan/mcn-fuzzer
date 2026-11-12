@@ -15,8 +15,6 @@ from .metadata import build_meta
 from .spans import FOOTER_RE, Line, is_blank, span_for_lines, split_lines
 from .types import ParseResult
 
-_SCHEMA_VERSION = "0.1.0"
-
 _STRICT_HEADER_RE = re.compile(
     r"(?i)^\s*(Request for Comments|Category|Obsoletes|Updates|STD|BCP|ISSN)\s*:"
 )
@@ -77,14 +75,12 @@ class TxtParser:
         text: str,
         *,
         source_path: str,
-        input_sha256: str,
         doc_id: str,
     ) -> ParseResult:
         lines = split_lines(text)
         meta = build_meta(
             lines,
             source_path=source_path,
-            input_sha256=input_sha256,
             format="txt",
             doc_id=doc_id,
             text=text,
@@ -107,13 +103,11 @@ def parse_txt(
     text: str,
     *,
     source_path: str,
-    input_sha256: str,
     doc_id: str,
 ) -> ParseResult:
     return TxtParser().parse(
         text,
         source_path=source_path,
-        input_sha256=input_sha256,
         doc_id=doc_id,
     )
 
@@ -828,7 +822,6 @@ def _build_report(
 
     return {
         "doc_id": meta["source_id"],
-        "input_sha256": meta["input_sha256"],
         "format": meta["format"],
         "lines": len(lines),
         "sections": len(sections),

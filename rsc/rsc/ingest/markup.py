@@ -14,7 +14,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from .detect import slugify
-from .metadata import GENERATOR, SCHEMA_VERSION, detect_rfc_number
+from .metadata import GENERATOR, detect_rfc_number
 from .spans import SourceIndex
 from .types import ParseResult
 
@@ -357,7 +357,6 @@ def parse_markup(
     *,
     format_name: str,
     source_path: str,
-    input_sha256: str,
     doc_id: str,
 ) -> ParseResult:
     parser = MarkupParser(text, source_id=doc_id)
@@ -369,12 +368,10 @@ def parse_markup(
     title = _normalize_inline(" ".join(parser.title_parts)) or Path(source_path).stem
     rfc_label = f"RFC {rfc_number}" if rfc_number is not None else doc_id
     meta = {
-        "schema_version": SCHEMA_VERSION,
         "rfc": rfc_label,
         "title": title,
         "source_id": doc_id,
         "source_path": source_path,
-        "input_sha256": input_sha256,
         "format": format_name,
         "input_set": [rfc_label] if rfc_number is not None else [],
         "series": None,
@@ -397,7 +394,6 @@ def parse_markup(
         warnings.append("no sections detected")
     report = {
         "doc_id": doc_id,
-        "input_sha256": input_sha256,
         "format": format_name,
         "lines": len(text.splitlines()),
         "sections": len(parser.sections),

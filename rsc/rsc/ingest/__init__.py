@@ -8,7 +8,6 @@ from .detect import (
     decode_bytes,
     detect_format,
     discover_inputs,
-    sha256_hex,
     slugify,
     unique_doc_id,
 )
@@ -38,7 +37,6 @@ __all__ = [
     "parse_html",
     "parse_txt",
     "parse_xml",
-    "sha256_hex",
     "slugify",
     "unique_doc_id",
     "validate_document",

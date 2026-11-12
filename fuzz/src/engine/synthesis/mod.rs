@@ -381,7 +381,7 @@ impl GeneratorSynthesisStage {
         };
         let autonomous = proposal.is_none();
         let (request, output_dir, session) = if let Some(accepted) = &proposal {
-            let request = accepted.proposal.request_id.clone();
+            let request = accepted.request_id.clone();
             let output_dir = self.output.join("requests").join(&request);
             if output_dir.exists() {
                 return Err(Error::illegal_state(format!(

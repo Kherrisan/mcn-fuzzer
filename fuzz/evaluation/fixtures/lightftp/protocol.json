@@ -1,0 +1,842 @@
+{
+  "meta": {
+    "protocol": "FTP evaluation cases",
+    "complete": false,
+    "documents": []
+  },
+  "parties": [
+    {
+      "name": "user-PI",
+      "description": "initiates control connections and sends FTP commands"
+    },
+    {
+      "name": "server-PI",
+      "description": "accepts control connections and sends FTP replies"
+    },
+    {
+      "name": "user-DTP",
+      "description": "exchanges file data on a client data connection"
+    },
+    {
+      "name": "server-DTP",
+      "description": "exchanges file data on a server data connection"
+    }
+  ],
+  "messages": [
+    {
+      "name": "USER",
+      "associated_fields": [
+        {
+          "name": "username"
+        }
+      ]
+    },
+    {
+      "name": "PASS",
+      "associated_fields": []
+    },
+    {
+      "name": "QUIT",
+      "associated_fields": []
+    },
+    {
+      "name": "PORT",
+      "associated_fields": [
+        {
+          "name": "host address"
+        },
+        {
+          "name": "port"
+        }
+      ]
+    },
+    {
+      "name": "PASV",
+      "associated_fields": []
+    },
+    {
+      "name": "TYPE",
+      "associated_fields": [
+        {
+          "name": "representation type"
+        },
+        {
+          "name": "format or byte size"
+        }
+      ]
+    },
+    {
+      "name": "RETR",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "STOR",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "PWD",
+      "associated_fields": []
+    },
+    {
+      "name": "LIST",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "NOOP",
+      "associated_fields": []
+    },
+    {
+      "name": "FTP reply",
+      "associated_fields": [
+        {
+          "name": "reply code"
+        }
+      ]
+    },
+    {
+      "name": "227 Passive Mode reply",
+      "associated_fields": [
+        {
+          "name": "host address"
+        },
+        {
+          "name": "port"
+        }
+      ]
+    },
+    {
+      "name": "257 Pathname reply",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "Stream transfer bytes",
+      "associated_fields": []
+    },
+    {
+      "name": "Directory listing data",
+      "associated_fields": []
+    }
+  ],
+  "channels": [
+    {
+      "name": "control connection",
+      "description": "TCP command and reply connection",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "user-PI",
+        "server-PI"
+      ],
+      "initiator_party_name": "user-PI",
+      "acceptor_party_name": "server-PI",
+      "endpoint_sources": [
+        {
+          "party_name": "server-PI",
+          "parameter": "listening port",
+          "from": "RFC959 port L = 21"
+        },
+        {
+          "party_name": "user-PI",
+          "parameter": "local port",
+          "from": "RFC959 user port U"
+        }
+      ]
+    },
+    {
+      "name": "active data connection",
+      "description": "TCP data connection established by server-DTP",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "server-DTP",
+        "user-DTP"
+      ],
+      "initiator_party_name": "server-DTP",
+      "acceptor_party_name": "user-DTP",
+      "endpoint_sources": [
+        {
+          "party_name": "user-DTP",
+          "parameter": "listening host address",
+          "from": "PORT.host address if PORT accepted; otherwise user control host"
+        },
+        {
+          "party_name": "user-DTP",
+          "parameter": "listening port",
+          "from": "PORT.port if PORT accepted; otherwise user control port U"
+        },
+        {
+          "party_name": "server-DTP",
+          "parameter": "local port",
+          "from": "RFC959 default L-1 for active server-DTP"
+        }
+      ]
+    },
+    {
+      "name": "passive data connection",
+      "description": "TCP data connection accepted by server-DTP",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "user-DTP",
+        "server-DTP"
+      ],
+      "initiator_party_name": "user-DTP",
+      "acceptor_party_name": "server-DTP",
+      "endpoint_sources": [
+        {
+          "party_name": "server-DTP",
+          "parameter": "listening host address",
+          "from": "227 Passive Mode reply.host address after PASV"
+        },
+        {
+          "party_name": "server-DTP",
+          "parameter": "listening port",
+          "from": "227 Passive Mode reply.port after PASV"
+        },
+        {
+          "party_name": "user-DTP",
+          "parameter": "local port",
+          "from": "default U, or PORT.port if both PORT and PASV negotiated"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "name": "service greeting",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "220 when service is ready, initially or after REIN",
+      "action": "send"
+    },
+    {
+      "name": "send USER",
+      "message_name": "USER",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "send PASS",
+      "message_name": "PASS",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "send QUIT",
+      "message_name": "QUIT",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "send PORT",
+      "message_name": "PORT",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send PASV",
+      "message_name": "PASV",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send TYPE",
+      "message_name": "TYPE",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send RETR",
+      "message_name": "RETR",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send STOR",
+      "message_name": "STOR",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send PWD",
+      "message_name": "PWD",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send LIST",
+      "message_name": "LIST",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send NOOP",
+      "message_name": "NOOP",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "ordinary command reply",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "reply to a command, including positive and negative outcomes",
+      "action": "send"
+    },
+    {
+      "name": "USER intermediate",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "331 requires PASS or 332 requires ACCT",
+      "action": "send"
+    },
+    {
+      "name": "login accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "230 after USER, PASS or ACCT",
+      "action": "send"
+    },
+    {
+      "name": "TYPE accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "200 after TYPE",
+      "action": "send"
+    },
+    {
+      "name": "PORT accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "200 after PORT",
+      "action": "send"
+    },
+    {
+      "name": "PASV endpoint",
+      "message_name": "227 Passive Mode reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "227 after PASV",
+      "action": "send"
+    },
+    {
+      "name": "transfer preliminary",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "125 or 150 after a transfer command",
+      "action": "send"
+    },
+    {
+      "name": "transfer completion",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "226 after closing data connection or 250 if left open",
+      "action": "send"
+    },
+    {
+      "name": "pathname reply",
+      "message_name": "257 Pathname reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "after successful MKD or PWD",
+      "action": "send"
+    },
+    {
+      "name": "store stream bytes via active",
+      "message_name": "Stream transfer bytes",
+      "channel_name": "active data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE S; STOR replaces or creates, STOU creates unique, APPE appends or creates",
+      "action": "send"
+    },
+    {
+      "name": "retrieve stream bytes via passive",
+      "message_name": "Stream transfer bytes",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE S; RETR copies source file without changing it",
+      "action": "send"
+    },
+    {
+      "name": "LIST data via passive",
+      "message_name": "Directory listing data",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "LIST",
+      "action": "send"
+    }
+  ],
+  "step_dependencies": [
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send USER",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send USER",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to USER",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send PASS",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PASS",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to PASS",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send QUIT",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send QUIT",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to QUIT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send PORT",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PORT",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to PORT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send PASV",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PASV",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to PASV",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send TYPE",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send TYPE",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to TYPE",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send RETR",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send RETR",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to RETR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send STOR",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STOR",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to STOR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send PWD",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PWD",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to PWD",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send LIST",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send LIST",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to LIST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send NOOP",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send NOOP",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to NOOP",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send USER",
+      "dependent_step": "USER intermediate",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send USER",
+      "dependent_step": "login accepted",
+      "condition": "230 accepted directly after USER; alternative to the other login routes",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PASS",
+      "dependent_step": "login accepted",
+      "condition": "230 accepted directly after PASS; alternative to the other login routes",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send TYPE",
+      "dependent_step": "TYPE accepted",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PORT",
+      "dependent_step": "PORT accepted",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PASV",
+      "dependent_step": "PASV endpoint",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "USER intermediate",
+      "dependent_step": "send PASS",
+      "condition": "331 requests password",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send USER",
+      "dependent_step": "send PASS",
+      "condition": "PASS immediately follows USER if password required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send PORT",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send PASV",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send TYPE",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send RETR",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send STOR",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send PWD",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send LIST",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send NOOP",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send USER",
+      "dependent_step": "send USER",
+      "condition": "new USER resets prior login information; later occurrence",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send USER",
+      "condition": "new login after REIN readiness; old login flushed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TYPE accepted",
+      "dependent_step": "send RETR",
+      "condition": "if TYPE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TYPE accepted",
+      "dependent_step": "send STOR",
+      "condition": "if TYPE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TYPE accepted",
+      "dependent_step": "send LIST",
+      "condition": "if TYPE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "pathname reply",
+      "dependent_step": "send RETR",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "send RETR",
+      "dependent_step": "transfer preliminary",
+      "condition": "when RETR is accepted for data transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STOR",
+      "dependent_step": "transfer preliminary",
+      "condition": "when STOR is accepted for data transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send LIST",
+      "dependent_step": "transfer preliminary",
+      "condition": "when LIST is accepted for data transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store stream bytes via active",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store stream bytes via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "store stream bytes via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve stream bytes via passive",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve stream bytes via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "retrieve stream bytes via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "LIST data via passive",
+      "condition": "LIST accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "LIST data via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final LIST data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "LIST data via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "transfer completion",
+      "condition": "MLSD with zero entries: after empty data response and close, no entry step required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send PASS",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send PORT",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send PASV",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send TYPE",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send RETR",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send STOR",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send PWD",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send LIST",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send NOOP",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    }
+  ],
+  "unresolved": []
+}

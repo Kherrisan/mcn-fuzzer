@@ -24,11 +24,7 @@ use super::{
 struct StoredInput {
     generator: PathBuf,
     #[serde(default)]
-    version: u32,
-    #[serde(default)]
     step_trace: Vec<crate::engine::input::StepInstance>,
-    #[serde(default)]
-    global_context: Vec<crate::engine::input::GlobalContextValue>,
     #[serde(default)]
     dependencies: Vec<crate::engine::input::DependencyInstance>,
     #[serde(default)]
@@ -62,7 +58,6 @@ pub fn validate_task(task: &mut Task) -> Result<(), (String, String)> {
         .map_err(classify_validation)?;
     let stored = json!({
         "generator": validated.input.generator,
-        "version": validated.input.version,
         "step_trace": validated.input.trace.steps,
         "dependencies": validated.input.trace.dependencies,
         "params": params_json(&validated.input.params)?,
@@ -170,15 +165,11 @@ pub fn replay_task(task: &Task) -> Result<ReplayOutcome, (String, String)> {
         ));
     }
     let input_path = task.request_dir().join("input.json");
-    let mut stored: StoredInput = serde_json::from_slice(
+    let stored: StoredInput = serde_json::from_slice(
         &fs::read(&input_path)
             .map_err(|error| ("infrastructure".to_string(), error.to_string()))?,
     )
     .map_err(|error| ("infrastructure".to_string(), error.to_string()))?;
-    crate::engine::input::merge_legacy_globals(
-        &mut stored.params,
-        std::mem::take(&mut stored.global_context),
-    );
     let replay_id = format!(
         "{}",
         fs::read_dir(task.instance_dir.join("replays"))
@@ -273,7 +264,6 @@ pub fn replay_task(task: &Task) -> Result<ReplayOutcome, (String, String)> {
     let result_path = replay_dir.join("exec-result.json");
     let request = json!({
         "generator": stored.generator,
-        "version": stored.version,
         "step_trace": stored.step_trace,
         "dependencies": stored.dependencies,
         "params": params_json(&stored.params)?,

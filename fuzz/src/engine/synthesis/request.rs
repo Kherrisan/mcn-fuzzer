@@ -60,9 +60,6 @@ impl GeneratorRequest {
             if proposal.origin != "coverage" {
                 return Err("coverage synthesis needs a coverage proposal".into());
             }
-            if proposal.request_id != self.id {
-                return Err("proposal request_id does not match this synthesis request".into());
-            }
         }
         let published = self.output_dir.join("published");
         if published.exists() {
@@ -154,12 +151,7 @@ impl GeneratorRequest {
                 origin: "proposal".into(),
             })
             .collect();
-        let mut shared_params = std::collections::BTreeMap::new();
-        crate::engine::input::merge_legacy_globals(
-            &mut shared_params,
-            proposal.global_context.clone(),
-        );
-        let mut input = GeneratorInput::with_trace(generator, step_trace, shared_params);
+        let mut input = GeneratorInput::with_trace(generator, step_trace, std::collections::BTreeMap::new());
         input.trace.dependencies = dependencies;
         input.trace.validate()?;
         Ok(ValidatedGenerator {

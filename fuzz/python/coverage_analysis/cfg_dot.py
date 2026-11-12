@@ -26,7 +26,7 @@ def _ports(label):
 def load_source_map(cfg_dir):
     path = Path(cfg_dir) / "source-map.json"
     if not path.is_file():
-        return {"version": 1, "functions": {}}
+        return {"functions": {}}
     return json.loads(path.read_text())
 
 
@@ -79,7 +79,6 @@ def load_cfg_dir(cfg_dir, manifest=None):
         symbol, cfg = parse_cfg_dot(path, source_map)
         functions[symbol] = cfg
     return {
-        "version": 1,
         "functions": functions,
         "edge_count": sum(len(cfg["edges"]) for cfg in functions.values()),
         "block_count": sum(len(cfg["blocks"]) for cfg in functions.values()),

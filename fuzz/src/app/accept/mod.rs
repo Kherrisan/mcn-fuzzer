@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn accept_jobs_route_lightftp_separately_and_openssl_as_one() {
-        let lightftp = Campaign::load(Path::new("targets/lightftp/campaign.toml")).unwrap();
+        let lightftp = Campaign::load(Path::new("evaluation/fixtures/lightftp/campaign.toml")).unwrap();
         assert_eq!(accept_scenarios(&lightftp), ["main", "hang", "crash"]);
         let openssl = Campaign::load(Path::new("targets/openssl/campaign.toml")).unwrap();
         assert_eq!(accept_scenarios(&openssl), ["openssl"]);

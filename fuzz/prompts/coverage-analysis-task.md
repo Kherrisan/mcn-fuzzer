@@ -55,7 +55,7 @@ load exactly this request's inputs:
 If a tool returns `not_loaded`, load the missing dataset and retry. If it returns
 `incompatible_data`, stop and write an error result; do not mix builds.
 Pass `request_id` to every query tool after `load_profdata` so the request keeps
-reading the snapshot version it registered, even if another load happens later.
+reading the snapshot it registered, even if another load happens later.
 
 ## Explore
 
@@ -92,7 +92,7 @@ the proposal):
 ## Propose
 
 Call `submit_proposal` with parties, channels, an ordered trace of step
-instances, mutations, and optional `dependencies` and `global_context`. Instance names are semantic and stay stable if you reorder
+instances, mutations, and optional `dependencies`. Instance names are semantic and stay stable if you reorder
 the trace. `step` is the model step name. Channel endpoints are party instance
 names. Repeat a model step by adding another instance with its own name. Do not
 put handler ids on a trace item. Dependencies use instance names and may carry
@@ -103,11 +103,7 @@ and destination field names, use the source field name as the state key and let
 the handler populate the destination field using the model relation's `derive`
 when specified. A data dependency needs at least one
 key; do not bind the same key to multiple producers for one dependent instance.
-global_context is for constants, environment inputs, and
-generated values not owned by a step.
-
-{"request_id": "REQUEST",
- "origin": "coverage",
+{"origin": "coverage",
  "goal": {"handler_ids": ["handler name from show_handler_code_coverage"],
           "reason": "which handler/internal path to reach and the coverage evidence"},
  "parties": {"client_1": "client", "server_1": "server"},
@@ -119,9 +115,6 @@ generated values not owned by a step.
  "dependencies": [
    {"prior": "greet", "dependent": "login_first", "kind": "order", "condition": "",
     "fields": []}],
- "global_context": [
-   {"name": "username", "kind": "string", "value": "ubuntu",
-    "source": "constant"}],
  "mutations": [
    {"op": "field", "steps": ["login_first"], "field": "username",
     "suggestion": "explore empty and length boundaries", "evidence": "src/auth.c:120"},

@@ -79,8 +79,6 @@ def load_handlers(path):
         document = json.loads(Path(path).read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise HandlerError(f"cannot read handlers {path}: {error}") from error
-    if document.get("version") != 2:
-        raise HandlerError("handlers must have version 2")
     pending = []
     for entry in document.get("mappings") or []:
         if "step_ids" in entry:

@@ -1,166 +1,143 @@
-"""Canonical references, owned updates and cross-group conflicts."""
+"""Names, whole-model references, and source evidence replace grouped patches."""
 
 from copy import deepcopy
 
 import pytest
-from protocol_samples import base, interactions
+import test_result_workflow as h
 
-from rsc.workflow import merge
+from rsc.workflow import WorkflowError
+from rsc.workflow.store import read_json
+
+run = h.run
 
 
-def records():
-    model = base()
-    model.update(interactions(model))
-    rows = {}
-    for owner in ("parser-1", "parser-2"):
-        for kind, values in model.items():
-            if kind == "unresolved":
-                continue
-            for value in values:
-                key = f"i{len(rows) + 1}"
-                rows[key] = {
-                    "id": key,
-                    "owner": owner,
-                    "kind": kind,
-                    "value": deepcopy(value),
-                    "evidence": [{"batch_id": owner}],
-                }
-    for row in rows.values():
-        merge.bind(row, rows)
-    bins = {}
-    for key, row in rows.items():
-        if row["kind"] != "step_dependencies":
-            bins.setdefault((row["kind"], row["value"]["name"]), []).append(key)
-    groups = {
-        f"g{i}": {
-            "members": members,
-            "result": {
-                "value": deepcopy(rows[members[0]]["value"]),
-                "evidence": rows[members[0]]["evidence"],
-            },
-        }
-        for i, members in enumerate(bins.values(), 1)
+def test_same_name_inputs_are_allowed_but_one_checkpoint_is_unique(run):
+    a = h.active(run)[0]
+    payload = h.checkpoint(run, a)
+    payload["items"].append(deepcopy(payload["items"][0]))
+    with pytest.raises(WorkflowError, match="duplicate kind/name"):
+        h.submit(run, a["worker"], payload)
+    h.parsed(run)
+    page = h.call(run, "merge-1", "query_model", view="index")
+    assert len({r["input_file"] for r in page["items"]}) == 2
+    assert len(page["items"]) == 2 * len({(r["kind"], r["name"]) for r in page["items"]})
+
+
+def test_merger_preserves_source_evidence_and_dependency_conditions(run):
+    h.parsed(run)
+    h.merged(run)
+    candidate = run.checkpoint("candidate.json")
+    assert all(len(i["evidence"]) == 2 for i in candidate["items"])
+    dependencies = [i for i in candidate["items"] if i["kind"] == "step_dependencies"]
+    assert dependencies and all("name" not in i["value"] for i in dependencies)
+    h.review(run)
+    exported = read_json(run.root / "protocol.json")
+    assert exported["step_dependencies"] == [i["value"] for i in dependencies]
+
+
+def test_inconsistent_rename_gets_owner_fix_not_automatic_text_replacement(run):
+    h.parsed(run)
+    payload = run.checkpoint("parsers/parser-1.json")
+    message = next(i for i in payload["items"] if i["kind"] == "messages")
+    message["value"]["name"] += " distinct"
+    with pytest.raises(WorkflowError, match="candidate validation failed"):
+        h.submit(run, "merge-1", payload)
+    assert run.data["phase"] == "merge" and run.data["round"] == 0
+    assert h.active(run)[0]["worker"] == "merge-1"
+    assert not (run.root / "merge.json").exists()
+
+
+def test_explicit_qualified_field_reference_rename_validates(run):
+    h.parsed(run)
+    payload = run.checkpoint("parsers/parser-1.json")
+    for item in payload["items"]:
+        v = item["value"]
+        if item["kind"] == "messages":
+            v["name"] += " canonical"
+        if item["kind"] == "steps" and "message_name" in v:
+            v["message_name"] += " canonical"
+    h.submit(run, "merge-1", payload)
+    assert run.data["phase"] == "review", run.data
+
+
+def test_local_message_fix_follows_reverse_references_without_full_review(tmp_path):
+    w = h.create(tmp_path, parse_workers=1)
+    payload = h.checkpoint(w)
+    first = w.batches[0]
+    # Every model definition is supported by the first source range; the second
+    # range is unrelated and must not be reread for a local message correction.
+    assert len(w.batches) > 1
+    h.submit(w, "parser-1", payload)
+    h.review(w, [h.finding(w)])
+    fixed = w.checkpoint(h.active(w)[0]["candidate_path"])
+    message = next(i for i in fixed["items"] if i["kind"] == "messages")
+    message["value"]["associated_fields"].append({"name": "new source field"})
+    h.submit(w, "parser-1", fixed)
+    assert w.data["phase"] == "review", w.data
+    assert h.active(w)[0]["batches"] == [first["batch_id"]]
+
+
+def test_scoped_review_retains_unaffected_accepted_ambiguity(tmp_path):
+    w = h.create(tmp_path, parse_workers=1)
+    payload = h.checkpoint(w)
+    payload["unresolved"] = [{"description": "external detail absent", "object_names": []}]
+    h.submit(w, "parser-1", payload)
+    ambiguity = {
+        **h.finding(w, category="external_reference"),
+        "description": "external detail absent",
+        "batch_ids": [w.batches[-1]["batch_id"]],
     }
-    return rows, groups
+    h.review(w, [h.finding(w), ambiguity])
+    h.submit(w, "parser-1", w.checkpoint(h.active(w)[0]["candidate_path"]))
+    assert h.active(w)[0]["batches"] == [w.batches[0]["batch_id"]]
+    h.review(w)
+    assert w.data["phase"] == "published", w.data
+    result = read_json(w.root / "protocol.json")
+    assert not result["meta"]["complete"]
+    assert "external detail absent" in result["unresolved"][0]["description"]
 
 
-def group_for(rows, groups, kind, name=None):
-    return next(
-        (n, g)
-        for n, g in groups.items()
-        if rows[g["members"][0]]["kind"] == kind
-        and (name is None or rows[g["members"][0]]["value"]["name"] == name)
-    )
+def test_partial_overlap_does_not_clear_multi_range_ambiguity(tmp_path):
+    w = h.create(tmp_path, parse_workers=1)
+    h.parsed(w)
+    ambiguity = {
+        **h.finding(w, category="source_ambiguity", global_=True),
+        "description": "ambiguity spans both ranges",
+        "batch_ids": [b["batch_id"] for b in w.batches],
+    }
+    h.review(w, [h.finding(w), ambiguity])
+    h.submit(w, "parser-1", w.checkpoint(h.active(w)[0]["candidate_path"]))
+    assert h.active(w)[0]["batches"] == [w.batches[0]["batch_id"]]
+    h.review(w)
+    assert not read_json(w.root / "protocol.json")["meta"]["complete"]
+    assert "ambiguity spans both ranges" in w.data["unresolved"][0]["description"]
 
 
-def test_ambiguous_foreign_reference_collapses_and_dependency_has_owner():
-    rows, groups = records()
-    dep = next(r for r in rows.values() if r["kind"] == "step_dependencies")
-    dep.update(owner="parser-3", refs={})
-    merge.bind(dep, rows)
-    assert dep["refs"]['["dependent_step"]']["id"] is None
-    name, g = group_for(rows, groups, "steps", "send response")
-    g["result"]["dependencies"] = [
-        {"id": dep["id"], "value": deepcopy(dep["value"]), "evidence": dep["evidence"]}
+def test_changed_dependency_reviews_both_field_carrier_sources(tmp_path):
+    w = h.create(tmp_path, parse_workers=1)
+    payload = h.checkpoint(w)
+    second = w.batches[-1]
+    request = next(i for i in payload["items"] if i["value"].get("name") == "send request")
+    request["evidence"] = [
+        {"batch_id": second["batch_id"], "block_id": second["segments"][0]["block_id"]}
     ]
-    g["result"]["dependencies"][0]["value"]["condition"] = "reply with the original token"
-    candidate, table, errors = merge.integrate(rows, groups)
-    assert not errors
-    assert candidate[dep["id"]]["value"]["dependent_step"] == "send response"
-    assert any(u["id"] == dep["id"] and u["group"] == name for u in table["updates"])
+    h.submit(w, "parser-1", payload)
+    h.review(w, [h.finding(w)])
+    fixed = w.checkpoint(h.active(w)[0]["candidate_path"])
+    edge = next(i for i in fixed["items"] if i["kind"] == "step_dependencies")
+    edge["value"]["field_relations"][0]["prior_field"] = "Session"
+    h.submit(w, "parser-1", fixed)
+    assert w.data["phase"] == "review", w.data
+    assert second["batch_id"] in h.active(w)[0]["batches"]
 
 
-def test_rename_rewrites_references_and_preserves_distinct_dependency_conditions():
-    rows, groups = records()
-    for g in groups.values():
-        g["result"]["value"]["name"] += " canonical"
-    candidate, table, errors = merge.integrate(rows, groups)
-    assert not errors
-    deps = [r for r in candidate.values() if r["kind"] == "step_dependencies"]
-    assert len(deps) == 4
-    assert {r["value"]["dependent_step"] for r in deps} == {
-        "send request canonical",
-        "send response canonical",
-    }
-    assert len(table["deletions"]) == len(rows) // 2
-
-
-def test_prose_patch_conflict_and_evidence_are_preserved():
-    rows, groups = records()
-    party_name, party = group_for(rows, groups, "parties", "requester")
-    other_name, other = group_for(rows, groups, "messages", "request")
-    key = party["members"][0]
-    patch = {
-        "id": key,
-        "path": ["description"],
-        "before": rows[key]["value"]["description"],
-        "after": "new description",
-        "evidence": [{"batch_id": "supplementary"}],
-    }
-    other["result"]["text_updates"] = [patch]
-    candidate, _, errors = merge.integrate(rows, groups)
-    assert not errors
-    assert patch["evidence"][0] in candidate[key]["evidence"]
-    party["result"]["value"]["description"] = "incompatible canonical description"
-    _, _, errors = merge.integrate(rows, groups)
-    conflict = next(e for e in errors if e["type"] == "write_conflict")
-    assert set(conflict["groups"]) == {party_name, other_name}
-
-
-def test_foreign_dependency_and_bad_prose_paths_rejected():
-    rows, groups = records()
-    name, group = group_for(rows, groups, "parties")
-    dep = next(r for r in rows.values() if r["kind"] == "step_dependencies")
-    with pytest.raises(ValueError, match="owned"):
-        merge.validate_proposals(rows, groups, name, {"dependencies": [dep]})
-    with pytest.raises(ValueError, match="path"):
-        merge.validate_proposals(
-            rows,
-            groups,
-            name,
-            {
-                "text_updates": [
-                    {
-                        "id": group["members"][0],
-                        "path": ["missing", "description"],
-                        "before": "",
-                        "after": "bad",
-                    }
-                ]
-            },
-        )
-
-
-def test_separate_same_name_groups_remain_a_conflict():
-    rows, groups = records()
-    _, group = group_for(rows, groups, "parties", "requester")
-    member = group["members"].pop()
-    groups["extra"] = {"members": [member], "result": deepcopy(group["result"])}
-    _, _, errors = merge.integrate(rows, groups)
-    assert any(e["type"] == "same_name" and "extra" in e["groups"] for e in errors)
-
-
-def test_qualified_fields_follow_ambiguous_step_and_message_merges():
-    rows, groups = records()
-    for row in rows.values():
-        if row["kind"] == "step_dependencies":
-            row.update(owner="parser-3", refs={})
-            merge.bind(row, rows)
-            for side, endpoint in [
-                ("prior_field", "prior_step"),
-                ("dependent_field", "dependent_step"),
-            ]:
-                prefix = row["value"][endpoint].removeprefix("send ") + "."
-                for relation in row["value"]["field_relations"]:
-                    relation[side] = prefix + relation[side]
-    for group in groups.values():
-        if rows[group["members"][0]]["kind"] == "messages":
-            group["result"]["value"]["name"] += " canonical"
-    candidate, _, errors = merge.integrate(rows, groups)
-    assert not errors
-    assert all(
-        " canonical." in relation["prior_field"]
-        for row in candidate.values()
-        if row["kind"] == "step_dependencies"
-        for relation in row["value"]["field_relations"]
+def test_new_unassociated_unresolved_issue_requires_full_review(tmp_path):
+    w = h.create(tmp_path, parse_workers=1)
+    h.parsed(w)
+    h.review(w, [h.finding(w)])
+    fixed = w.checkpoint(h.active(w)[0]["candidate_path"])
+    fixed["unresolved"].append(
+        {"description": "unknown global source constraint", "object_names": []}
     )
+    h.submit(w, "parser-1", fixed)
+    assert h.active(w)[0]["batches"] == [b["batch_id"] for b in w.batches]

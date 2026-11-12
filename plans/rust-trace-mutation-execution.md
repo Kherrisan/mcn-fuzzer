@@ -192,3 +192,13 @@ resume_conn:
 - generator status：`ok = 10030`、`timeout = 1862`、`generator = 528`、`dependency = 102`。`dependency` 来自显式 `omitted_fields` 的实例，符合“缺省不补回”的语义。
 - 首个 synthesis candidate baseline 在 15:21:48 执行一次且未进入 corpus；corpus 首个 trace 已经是带 mutation dependency 的副本。
 - 本轮真实运行验证了 block duplicate、唯一实例名、mutation-origin order dependency、TraceInstance v3 持久化和 coverage replay；未验证 data dependency 的真实 SUT 路径。
+
+## 后续清理：移除版本、哈希去重与只写字段
+
+- 执行输入不再携带 `version`；`step_trace` 结构不匹配时由 serde 解析直接失败。
+- Proposal 移除 `version`、`request_id`、`graph_revision`、`global_context`；请求 ID 只保存在 `AcceptedProposal`、result.json 和目录/日志中。
+- protocol model 移除 `schema_version`、文档 hash 字段和 legacy 元数据拒绝逻辑；模型形状不匹配由 JSON/serde 解析报错。
+- coverage replay 不再计算 `GeneratorInput` 指纹，不再维护 `collected`/`contributed` 集合；每次枚举当前 corpus/solutions，case ID 使用 `corpus:<id>` / `solution:<id>`。
+- 删除 `CoverageCaseId`、`input_fingerprint`、`coverage_sha256`、`AcceptedProposal.sha256`、`SourceCoverageProgress.attribution` 等无消费者的字段/计算。
+- 保留 build fingerprint 和 evaluation source/execution digest，因为它们仍有实际读取和一致性校验用途。
+- 当前验证：Rust `141 passed`，Python `64 passed`，`coverage_mcp` 1 passed；`cargo check --all-targets`、`cargo build --release` 通过。

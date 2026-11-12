@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 from typing import Any
 
@@ -15,9 +14,8 @@ _BCP_RE = re.compile(r"(?i)\bBCP\s*([0-9]{1,4})\b")
 _BRACKET_RFC_RE = re.compile(r"(?i)\[RFC\s*([0-9]{1,5})\]")
 
 
-def _reference_id(block_id: str, ref_type: str, raw: str, start: int, end: int) -> str:
-    digest = hashlib.sha1(f"{block_id}|{ref_type}|{raw}|{start}|{end}".encode()).hexdigest()[:10]
-    return f"ref-{ref_type}-{digest}"
+def _reference_id(block_id: str, ref_type: str, start: int, end: int) -> str:
+    return f"ref-{ref_type}-{block_id}-{start}-{end}"
 
 
 def _resolve_section(
@@ -72,7 +70,7 @@ def extract_references(
             seen.add(key)
             references.append(
                 {
-                    "reference_id": _reference_id(block_id, ref_type, raw, start, end),
+                    "reference_id": _reference_id(block_id, ref_type, start, end),
                     "from_block": block_id,
                     "ref_type": ref_type,
                     "raw": raw,

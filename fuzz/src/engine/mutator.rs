@@ -78,7 +78,7 @@ where
     }
 }
 
-/// Stack 2..=64 field/step edits. Traces take precedence over legacy params.
+/// Stack 2..=64 field/step edits. Traces take precedence over params.
 pub fn mutate_generator<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
     if input.trace.steps.is_empty() && input.params.is_empty() {
         return MutationResult::Skipped;

@@ -1,12 +1,14 @@
 """Source ownership and optimal locality on independently enumerated partitions."""
 
+import json
 from copy import deepcopy
 from itertools import combinations, pairwise
 from random import Random
+from types import SimpleNamespace
 
 import pytest
 
-from rsc.workflow.partition import partition_batches, source_weight
+from rsc.workflow.partition import partition_batches, plan_parsers, source_capacity, source_weight
 from rsc.workflow.sources import build_batches, token_count, validate_batches
 
 
@@ -125,3 +127,62 @@ def test_long_unicode_paragraph_has_exact_coverage_and_bounded_delivery():
 def test_empty_document_does_not_create_assignments():
     with pytest.raises(ValueError, match="no source text"):
         build_batches(document([(["1"], " \n ")]))
+
+
+def test_automatic_partitions_respect_capacity_and_queue_separate_contexts():
+    batches = [batch(i, 29, str(i // 2)) for i in range(10)]
+    result = plan_parsers(batches, parse_context_tokens=160, parse_fixed_tokens=0,
+                          parse_max_workers=2)
+    assert result["capacity_tokens"] == 60
+    assert len(result["partitions"]) == 5
+    assert result["parallel_agents"] == 2
+    assert all(p["source_tokens"] <= 60 for p in result["partitions"])
+    assert [b for p in result["partitions"] for b in p["batch_ids"]] == [
+        b["batch_id"] for b in batches]
+
+
+def test_manual_count_is_honored_with_context_warning():
+    result = plan_parsers([batch(1, 50), batch(2, 50)], parse_workers=1,
+                          parse_context_tokens=160, parse_fixed_tokens=0)
+    assert len(result["partitions"]) == result["parallel_agents"] == 1
+    assert result["warnings"]
+
+
+def test_capacity_cannot_be_relaxed_for_chapter_locality():
+    batches = [batch(1, 9, "1"), batch(2, 9, "2"), batch(3, 1, "2")]
+    with pytest.raises(ValueError, match="capacity"):
+        partition_batches(batches, 1, capacity=15)
+    assert all(sum(source_weight(b) for b in batches if b["batch_id"] in group) <= 15
+               for group in partition_batches(batches, 2, capacity=15))
+
+
+def test_oversized_source_batch_needs_preprocessing_split():
+    with pytest.raises(ValueError, match="split"):
+        plan_parsers([batch(1, 100)], parse_context_tokens=160, parse_fixed_tokens=0)
+
+
+def test_context_budget_and_default_single_partition():
+    assert source_capacity() == 74400
+    assert plan_parsers([batch(1, 100)])["parallel_agents"] == 1
+    with pytest.raises(ValueError, match="overhead"):
+        source_capacity(100, 80)
+
+
+def test_prepare_splits_to_capacity_and_restores_searchable_source(tmp_path, monkeypatch):
+    from rsc.workflow import sources
+
+    doc = document([(["chapter"], "source words " * 400)])["rfc"]
+    original = tmp_path / "input.json"
+    original.write_text(json.dumps(doc))
+    item = SimpleNamespace(status="ok", document_path=original, doc_id="RFC959")
+    monkeypatch.setattr(sources, "ingest_path", lambda *args: SimpleNamespace(documents=[item]))
+    root = tmp_path / "task"
+    for _ in range(2):
+        documents, batches = sources.prepare(root, [str(original)], 8000, 12000,
+                                            capacity_tokens=256)
+        validate_batches(documents, batches, 256)
+        assert all(source_weight(b) <= 256 for b in batches)
+        text = root / "sources/text/source-001.txt"
+        assert "[RFC959/b0] chapter" in text.read_text()
+        assert doc["blocks"][0]["text"] in text.read_text()
+        assert text.stat().st_mode & 0o222 == 0

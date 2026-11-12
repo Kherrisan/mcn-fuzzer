@@ -45,7 +45,7 @@ def export_graphs(callgraph, cfg_dir, manifest_path, output_dir):
     graphs = read_graphs(callgraph, cfg_dir)
     if _dot_digest(callgraph, cfg_dir) != manifest["graphs_sha256"]:
         raise ValueError("callgraph/CFG inputs changed during conversion")
-    metadata = {"version": 1, "graphs_sha256": manifest["graphs_sha256"],
+    metadata = {"graphs_sha256": manifest["graphs_sha256"],
                 "source_sha256": manifest["source_sha256"]}
     documents = {"callgraph.json": {**metadata, "functions": graphs["functions"], "edges": graphs["edges"]},
                  "cfg.json": {**metadata, "functions": graphs["cfgs"]}}
@@ -64,8 +64,6 @@ def load_graphs(callgraph_json, cfg_json, manifest):
     callgraph = json.loads(Path(callgraph_json).read_text())
     cfg = json.loads(Path(cfg_json).read_text())
     for name, document in (("callgraph.json", callgraph), ("cfg.json", cfg)):
-        if document.get("version") != 1:
-            raise ValueError(f"{name} must have version 1")
         for field in ("source_sha256", "graphs_sha256"):
             if document.get(field) != manifest[field]:
                 raise ValueError(f"{name} {field} does not match the build manifest")

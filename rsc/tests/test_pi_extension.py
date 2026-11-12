@@ -37,11 +37,12 @@ extension({ registerMcpServer:(name,cfg)=>assert.equal(cfg.exposure,'direct'),
  on:(name,fn)=>hooks.set(name,fn), getThinkingLevel:()=> 'high' });
 await hooks.get('before_agent_start')({},ctx);
 const text = 'HEAD\\n' + '数据中段\\n'.repeat(6000) + '\\nTAIL';
-let event = { toolName:'mcp__rsc_test__read_batch', content:[{type:'text',text:'truncated'}],
+let event = { toolName:'mcp__rsc_test__read_source_batches',
+ content:[{type:'text',text:'truncated'}],
  structuredContent:{ content:[{type:'text',text}], isError:false } };
 if (process.argv[3]) {
  const {convertMcpResult} = await import(pathToFileURL(process.argv[3]));
- const native = await convertMcpResult('rsc_test','read_batch',event.structuredContent,
+ const native = await convertMcpResult('rsc_test','read_source_batches',event.structuredContent,
    {saveOutput:async()=>'/tmp/not-read-by-extension'});
  assert.notEqual(native.content[0].text,text);
  event = {...native,toolName:event.toolName};

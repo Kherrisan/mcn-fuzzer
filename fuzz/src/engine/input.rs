@@ -48,11 +48,9 @@ pub struct PendingCapture {
     pub persist_us: Arc<Mutex<u128>>,
 }
 
-/// Version of the concrete step-trace execution input.
-pub const STEP_TRACE_VERSION: u32 = 3;
-
 /// One concrete step instance selected by Rust for execution.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StepInstance {
     /// Unique instance name inside this trace.
     pub name: String,
@@ -71,8 +69,8 @@ pub struct StepInstance {
     pub receiver: Option<String>,
     #[serde(default)]
     pub party: Option<String>,
-    /// Final field values decided by Rust. Missing means use dependency/global
-    /// context in the generator.
+    /// Final field values decided by Rust. Missing means the generator should
+    /// use dependency bindings or defaults.
     #[serde(default)]
     pub fields: BTreeMap<String, ParamValue>,
     /// Fields explicitly removed by Rust; distinct from "not overridden".
@@ -88,6 +86,7 @@ pub struct StepInstance {
 
 /// One concrete dependency connecting two step instances.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DependencyInstance {
     pub prior: String,
     pub dependent: String,
@@ -103,6 +102,7 @@ pub struct DependencyInstance {
 
 /// The mutable concrete trace and its instance-level dependencies.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TraceInstance {
     #[serde(default, rename = "step_trace")]
     pub steps: Vec<StepInstance>,
@@ -188,46 +188,10 @@ impl TraceInstance {
     }
 }
 
-/// A value available once per testcase, independent of any step instance.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct GlobalContextValue {
-    pub name: String,
-    #[serde(default)]
-    pub kind: String,
-    #[serde(default)]
-    pub value: Option<ParamValue>,
-    /// `constant`, `environment`, or `generated`.
-    #[serde(default)]
-    pub source: String,
-    /// Deterministic seed for generated values, replayed with the input.
-    #[serde(default)]
-    pub seed: Option<u64>,
-}
-
-impl GlobalContextValue {
-    pub fn as_param(&self) -> Option<&ParamValue> {
-        self.value.as_ref()
-    }
-}
-
-/// Migrate old shared values into params; explicit params take precedence.
-pub(crate) fn merge_legacy_globals(
-    params: &mut BTreeMap<String, ParamValue>,
-    globals: Vec<GlobalContextValue>,
-) {
-    for entry in globals {
-        params
-            .entry(entry.name)
-            .or_insert(entry.value.unwrap_or(ParamValue::Null));
-    }
-}
-
 /// Script path plus the concrete step trace passed to `generate(ctx, step_trace)`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GeneratorInput {
-    /// Execution-input format version. Legacy inputs without it are rejected.
-    #[serde(default = "default_version")]
-    pub version: u32,
     /// Path of the generator script. Relative paths are resolved at load time.
     pub generator: PathBuf,
     /// Concrete step and dependency instances.
@@ -241,17 +205,10 @@ pub struct GeneratorInput {
     pending: Option<PendingCapture>,
 }
 
-fn default_version() -> u32 {
-    STEP_TRACE_VERSION
-}
-
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct GeneratorFile {
-    #[serde(default)]
-    version: Option<u32>,
     generator: String,
-    #[serde(default)]
-    global_context: Vec<GlobalContextValue>,
     #[serde(flatten)]
     trace: TraceInstance,
     #[serde(default)]
@@ -262,7 +219,6 @@ impl GeneratorInput {
     /// Build a generator input.
     pub fn new(generator: PathBuf, params: BTreeMap<String, ParamValue>) -> Self {
         Self {
-            version: STEP_TRACE_VERSION,
             generator,
             trace: TraceInstance::default(),
             params,
@@ -277,7 +233,6 @@ impl GeneratorInput {
         params: BTreeMap<String, ParamValue>,
     ) -> Self {
         Self {
-            version: STEP_TRACE_VERSION,
             generator,
             trace: TraceInstance {
                 steps: step_trace,
@@ -286,17 +241,6 @@ impl GeneratorInput {
             params,
             pending: None,
         }
-    }
-
-    /// Old corpus entries without a version are intentionally not inferred.
-    pub fn require_current_version(&self) -> Result<(), Error> {
-        if self.version != STEP_TRACE_VERSION {
-            return Err(Error::illegal_argument(format!(
-                "generator input version {} is not supported; re-run synthesis for step_trace version {}",
-                self.version, STEP_TRACE_VERSION
-            )));
-        }
-        Ok(())
     }
 
     /// Attach a capture that `to_file` will export. The scheduled parent input is not this value.
@@ -328,7 +272,6 @@ impl GeneratorInput {
             worker_id,
             case_id,
             generator: self.generator.display().to_string(),
-            version: self.version,
             step_trace: &self.trace.steps,
             dependencies: &self.trace.dependencies,
             params: &self.params,
@@ -352,7 +295,6 @@ struct RunRequest<'a> {
     worker_id: u64,
     case_id: u64,
     generator: String,
-    version: u32,
     step_trace: &'a [StepInstance],
     dependencies: &'a [DependencyInstance],
     params: &'a BTreeMap<String, ParamValue>,
@@ -414,8 +356,7 @@ impl GeneratorResponse {
 
 impl PartialEq for GeneratorInput {
     fn eq(&self, other: &Self) -> bool {
-        self.version == other.version
-            && self.generator == other.generator
+        self.generator == other.generator
             && self.trace == other.trace
             && self.params == other.params
     }
@@ -425,7 +366,6 @@ impl Eq for GeneratorInput {}
 
 impl Hash for GeneratorInput {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.version.hash(state);
         self.generator.hash(state);
         self.trace.hash(state);
         self.params.hash(state);
@@ -482,25 +422,10 @@ impl Input for GeneratorInput {
             )));
         }
         let generator = resolve_generator(path, Path::new(&parsed.generator))?;
-        let version = parsed.version.ok_or_else(|| {
-            Error::illegal_argument(format!(
-                "generator seed {} is legacy params-only input; re-run synthesis for step_trace version {STEP_TRACE_VERSION}",
-                path.display()
-            ))
-        })?;
-        if version != STEP_TRACE_VERSION {
-            return Err(Error::illegal_argument(format!(
-                "generator seed {} uses input version {version}; re-run synthesis for step_trace version {STEP_TRACE_VERSION}",
-                path.display()
-            )));
-        }
-        let mut params = parsed.params;
-        merge_legacy_globals(&mut params, parsed.global_context);
         Ok(GeneratorInput {
-            version,
             generator,
             trace: parsed.trace,
-            params,
+            params: parsed.params,
             pending: None,
         })
     }
@@ -547,6 +472,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unknown_input_fields_are_parse_errors() {
+        let dir = std::env::temp_dir().join(format!("mcn-input-strict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("gen.py"), "def generate(ctx, params):\n    pass\n").unwrap();
+        let seed = dir.join("old.json");
+        std::fs::write(
+            &seed,
+            r#"{"version":3,"generator":"gen.py","params":{"user":"ubuntu"}}"#,
+        )
+        .unwrap();
+        let error = GeneratorInput::from_file(&seed).unwrap_err();
+        assert!(format!("{error:?}").contains("version"), "{error:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn json_seed_roundtrips_and_resolves_a_relative_script() {
         let dir = std::env::temp_dir().join(format!("mcn-input-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -556,7 +498,7 @@ mod tests {
         let seed = dir.join("seeds").join("one.json");
         std::fs::write(
             &seed,
-            r#"{"version":3,"generator":"../gen.py","params":{"user":"ubuntu","tries":2,"ok":true}}"#,
+            r#"{"generator":"../gen.py","params":{"user":"ubuntu","tries":2,"ok":true}}"#,
         )
         .unwrap();
         let input = GeneratorInput::from_file(&seed).unwrap();
@@ -575,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn step_trace_and_params_roundtrip_and_legacy_is_rejected() {
+    fn step_trace_and_params_roundtrip() {
         let dir = std::env::temp_dir().join(format!("mcn-step-input-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -609,37 +551,16 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(saved.get("parties").is_none());
         assert!(saved.get("channels").is_none());
-        assert!(saved.get("global_context").is_none());
         let body = input
             .run_request(1, 2, 3, 4, "127.0.0.1", 21, 1000, 1000)
             .unwrap();
         let request: serde_json::Value = ciborium::de::from_reader(body.as_slice()).unwrap();
         assert!(request.get("parties").is_none());
         assert!(request.get("channels").is_none());
-        assert!(request.get("global_context").is_none());
         assert_eq!(request["params"]["username"], "ubuntu");
         let again = GeneratorInput::from_file(&path).unwrap();
         assert_eq!(again, input);
         assert_eq!(again.trace.steps[0].name, "hello_1");
-        let old_path = dir.join("old-v3.json");
-        let mut old = saved;
-        old["global_context"] = serde_json::json!([
-            {"name": "username", "value": "old", "source": "constant"},
-            {"name": "unset", "value": null, "source": "environment"}
-        ]);
-        old["parties"] = serde_json::json!([]);
-        old["channels"] = serde_json::json!([]);
-        std::fs::write(&old_path, serde_json::to_vec(&old).unwrap()).unwrap();
-        let migrated = GeneratorInput::from_file(&old_path).unwrap();
-        assert_eq!(
-            migrated.params["username"],
-            ParamValue::Str("ubuntu".into())
-        );
-        assert_eq!(migrated.params["unset"], ParamValue::Null);
-        let legacy = dir.join("legacy.json");
-        std::fs::write(&legacy, r#"{"generator":"gen.py","params":{}}"#).unwrap();
-        let error = GeneratorInput::from_file(&legacy).unwrap_err();
-        assert!(format!("{error:?}").contains("legacy"), "{error:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -653,7 +574,7 @@ mod tests {
         let seed = dir.join("one.json");
         std::fs::write(
             &seed,
-            format!("{{\"version\":3,\"generator\":\"{}\"}}", script.display()),
+            format!("{{\"generator\":\"{}\"}}", script.display()),
         )
         .unwrap();
         let input = GeneratorInput::from_file(&seed).unwrap();

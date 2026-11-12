@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 import pytest
@@ -21,7 +20,6 @@ def gold_model(name):
     doc = parse_html(
         source.read_text(),
         source_path=gold["rfc_fixture"],
-        input_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
         doc_id=source.stem,
     ).document
     values = {**gold["objects"], **gold["interactions"]}

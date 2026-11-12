@@ -8,7 +8,6 @@ from pathlib import Path
 
 from .spans import Line
 
-SCHEMA_VERSION = "0.1.0"
 GENERATOR = "rsc-ingest/0.1.0"
 
 _REQUEST_RE = re.compile(r"(?i)Request for Comments:\s*(\d{1,5})")
@@ -181,7 +180,6 @@ def build_meta(
     lines: list[Line],
     *,
     source_path: str | Path,
-    input_sha256: str,
     format: str,
     doc_id: str,
     text: str,
@@ -194,12 +192,10 @@ def build_meta(
     updates = _rfc_list(_field(lines, "Updates"))
     obsoletes = _rfc_list(_field(lines, "Obsoletes"))
     return {
-        "schema_version": SCHEMA_VERSION,
         "rfc": rfc_label,
         "title": extract_title(lines, source_path),
         "source_id": doc_id,
         "source_path": str(source_path),
-        "input_sha256": input_sha256,
         "format": format,
         "input_set": [rfc_label] if rfc_number is not None else [],
         "series": series,

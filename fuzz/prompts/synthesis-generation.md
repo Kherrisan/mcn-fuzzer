@@ -23,7 +23,7 @@ apply those operations. A step instance's `mutable_fields` declares fields the
 generator may fill, including fields the model does not list. Keep each
 instance's field values separate. Do not drop a step to make the script validate.
 Read the proposal at {{ proposal }} before implementing. Use its ordered step
-instances, party and channel instances, dependencies, global_context,
+instances, party and channel instances, dependencies,
 mutable_fields, per-step reasons and constraints. The proposal is the downstream description: it has already been stripped of
 mutation operations and contains `mutable_fields` for each trace instance. The
 proposal takes precedence over memories of previous requests. Do not construct a receipt.
@@ -46,6 +46,8 @@ The synthesis budget is {{ campaign.budgets.generation_secs }} seconds.
 - Generator module skill (read-only): {{ campaign.generator_skill }}
 - Artifact validator: {{ campaign.generator_validator }}
 - Public API source: {{ campaign.pythonpath }}/generator_server/context.py
+- Generator scaffold (read-only): {{ campaign.pythonpath }}/generator_server/template.py
+- Empty params schema template (read-only): {{ campaign.pythonpath }}/generator_server/params.schema.json
 - Import lifecycle: {{ campaign.pythonpath }}/generator_server/registry.py
 - Forked worker lifecycle: {{ campaign.pythonpath }}/generator_server/worker.py
 - SUT binary: {{ campaign.target.binary }}
@@ -109,18 +111,18 @@ exercises a real SUT interaction, using CATALOG step names and the binding in
 CATALOG. Do not request a receipt or call a Rust selector.
 
 1. Write {{ proposal_draft }} as JSON with these fields:
-   {"origin":"autonomous","session":"{{ session }}","request_id":"{{ request_id }}",
+   {"origin":"autonomous","session":"{{ session }}",
     "build":"","snapshot":"","goal":{"handler_ids":[],"reason":"autonomous goal"},
     "parties":{"client_1":"client"},
     "channels":{"control_1":{"channel":"control","endpoints":["client_1","server_1"]}},
     "trace":[{"name":"login_first","step":"exact step name","channel":"control_1",
               "sender":"client_1","receiver":"server_1","reason":"why","constraints":[]}],
-    "dependencies":[], "global_context":[], "mutations":[]}
+    "dependencies":[], "mutations":[]}
    Party and channel keys are instance names. Each maps to a model party or
    channel name. Channel endpoints are party instance names. Each trace item
    names one step instance and points `step` at the model step name. Repeat a
    model step by adding another instance with its own name. Instance names
-   must not contain `:[]`. Use the exact request id and session above.
+   must not contain `:[]`. Use the exact session above.
 2. Run this exact command to fill action, condition, and message and validate:
    "{{ campaign.python }}" "{{ proposal_tool }}" proposal \
      --protocol "{{ campaign.model }}" --catalog "{{ catalog }}" \
@@ -167,9 +169,7 @@ claiming it was verified.
    the destination field. Inspect each relevant model or catalog field relation's
    `derive`: apply the described computation in the dependent handler; an empty
    or absent `derive` means direct reuse. Dependency `fields` lists state keys,
-   not the computation. Use proposal.global_context for constants,
-   environment inputs, and generated values that do not depend on a step. If a
-   prerequisite is unclear, query the relevant steps and step_dependencies from
+   not the computation. If a prerequisite is unclear, query the relevant steps and step_dependencies from
    the model path or CATALOG. Do not dump the complete model into the conversation.
    Conditions are not unconditional edges: an optional delay reply need not occur
    when a service is already ready. Handle cycles/self-dependencies as conditions
@@ -183,6 +183,27 @@ claiming it was verified.
    commands, or a prediction that the SUT will reject the interaction.
 5. Choose installed SDKs or implement peers with the public I/O API/native
    sockets. Implement, check, and publish the artifacts below.
+
+# Reference scaffold and params schema
+
+Read these two reference files before writing handlers:
+
+- `{{ campaign.pythonpath }}/generator_server/template.py` — a detailed
+  scaffold with common imports, field/state helpers, listener/connection
+  patterns, and one commented `@step_handler` example for every ProfuzzGym
+  target: DAAP, DICOM, DNS, DTLS, BFTPD, LightFTP, ProFTPD, PureFTPD, RTSP,
+  SIP, SMTP, SSH, and TLS. It shows the actual `ctx` API: `ctx.send`,
+  `ctx.recv`, `ctx.connect`, `ctx.accept`, `ctx.save_state`,
+  `ctx.load_state`, `ctx.load_depending_state`, `ctx.step_instance`,
+  `ctx.step_name`, and cleanup. Copy only the relevant pattern and replace
+  placeholder step names and fields; do not copy all examples.
+- `{{ campaign.pythonpath }}/generator_server/params.schema.json` — the empty
+  production-compatible schema shape (`type`, `properties`, `required`,
+  `additionalProperties`). Copy it and add only the initial mutable-field
+  properties and defaults required by the proposal.
+
+These files are read-only references, not artifacts to publish. The proposal
+still determines the exact steps and fields.
 
 # Module and entrypoint
 

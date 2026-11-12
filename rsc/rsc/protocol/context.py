@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -13,13 +11,8 @@ from rsc.index import RSCIndex, build_structural_index
 from rsc.schemas import validate_instance, validator
 
 
-def document_digest(document: dict) -> str:
-    return hashlib.sha256(
-        json.dumps(document, sort_keys=True, ensure_ascii=False).encode()
-    ).hexdigest()
-
-
 def load_batch(root: Path, schemas_dir: Path) -> dict[str, dict]:
+    root = root.expanduser().resolve()
     batch = read_json(root / "batch.json")
     errors = validate_instance(validator("batch", schemas_dir), batch)
     if errors:
@@ -39,8 +32,8 @@ def load_batch(root: Path, schemas_dir: Path) -> dict[str, dict]:
         if errors:
             raise ValueError(f"{entry['doc_id']}: " + "; ".join(errors[:5]))
         meta = document["meta"]
-        if meta["source_id"] != entry["doc_id"] or meta["input_sha256"] != entry["input_sha256"]:
-            raise ValueError(f"batch identity/checksum mismatch: {entry['doc_id']}")
+        if meta["source_id"] != entry["doc_id"]:
+            raise ValueError(f"batch source identity mismatch: {entry['doc_id']}")
         blocks = document["blocks"]
         if not blocks or len({b["block_id"] for b in blocks}) != len(blocks):
             raise ValueError(f"empty document or duplicate block IDs: {entry['doc_id']}")

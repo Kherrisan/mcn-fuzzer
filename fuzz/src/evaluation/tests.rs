@@ -16,7 +16,7 @@ fn write_model(dir: &Path, steps: &str) -> PathBuf {
     fs::write(
         &path,
         format!(
-            r#"{{"meta":{{"schema_version":"8.0.0","protocol":"demo","complete":false,"documents":[{{"doc_id":"d","rfc":"RFC 1","input_sha256":"aa","document_sha256":"bb","path":"doc.json"}}]}},"parties":[{{"name":"user","description":"u"}},{{"name":"server","description":"s"}}],"messages":[{{"name":"m","associated_fields":[]}}],"channels":[{{"name":"control","description":"c","transport":"TCP","connection":"connection_oriented","endpoint_party_names":["user","server"],"initiator_party_name":"user","acceptor_party_name":"server","endpoint_sources":[]}}],"steps":[{steps}],"step_dependencies":[],"unresolved":[]}}"#
+            r#"{{"meta":{{"protocol":"demo","complete":false,"documents":[{{"doc_id":"d","rfc":"RFC 1","path":"doc.json"}}]}},"parties":[{{"name":"user","description":"u"}},{{"name":"server","description":"s"}}],"messages":[{{"name":"m","associated_fields":[]}}],"channels":[{{"name":"control","description":"c","transport":"TCP","connection":"connection_oriented","endpoint_party_names":["user","server"],"initiator_party_name":"user","acceptor_party_name":"server","endpoint_sources":[]}}],"steps":[{steps}],"step_dependencies":[],"unresolved":[]}}"#
         ),
     )
     .unwrap();
@@ -689,14 +689,31 @@ fn replay_uses_campaign_environment_and_cleanup_script() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+fn lightftp_suite_fixture(out: &Path) -> PathBuf {
+    fs::create_dir_all(out).unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut suite: toml::Value = toml::from_str(
+        &fs::read_to_string(root.join("evaluation/lightftp.toml")).unwrap(),
+    )
+    .unwrap();
+    suite["campaign"] = toml::Value::String(
+        root.join("evaluation/fixtures/lightftp/campaign.toml")
+            .display()
+            .to_string(),
+    );
+    let path = out.join("suite.toml");
+    fs::write(&path, toml::to_string(&suite).unwrap()).unwrap();
+    path
+}
+
 #[test]
 fn lightftp_suite_prepares_every_case_without_rewriting_the_campaign() {
-    let suite = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evaluation/lightftp.toml");
     let campaign_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("targets/lightftp/campaign.toml");
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evaluation/fixtures/lightftp/campaign.toml");
     let before = fs::read(&campaign_path).unwrap();
     let out = std::env::temp_dir().join(format!("mcn-eval-ftp-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out);
+    let suite = lightftp_suite_fixture(&out);
     let tasks = super::prepare(&Options {
         suite,
         profiles: vec!["codex".into()],
@@ -740,9 +757,9 @@ fn lightftp_suite_prepares_every_case_without_rewriting_the_campaign() {
 
 #[test]
 fn handwritten_lightftp_generators_replay() {
-    let suite = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("evaluation/lightftp.toml");
     let out = std::env::temp_dir().join(format!("mcn-eval-ftp-run-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out);
+    let suite = lightftp_suite_fixture(&out);
     let tasks = super::prepare(&Options {
         suite,
         profiles: vec!["codex".into()],

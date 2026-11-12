@@ -114,8 +114,7 @@ def serve(root, path):
         workflow = Workflow(root)
         workflow.store.write_credentials()
         marker.write_text(json.dumps({"socket": str(path), "pid": os.getpid()}))
-        if workflow.data["phase"] == "published":
-            workflow.export()
+        workflow.advance()
         bound_inode = None
         try:
             with TaskServer(path, workflow) as service:
@@ -132,7 +131,7 @@ def serve(root, path):
         finally:
             if bound_inode is not None and path.exists() and path.stat().st_ino == bound_inode:
                 path.unlink()
-            workflow.db.close()
+            workflow.store.close()
 
 
 def stdio(path, token_file, catalog="phase"):
@@ -175,7 +174,14 @@ def stdio(path, token_file, catalog="phase"):
                 try:
                     value = rpc("call", name=params["name"], arguments=params.get("arguments", {}))
                     result = {
-                        "content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}]
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    value, ensure_ascii=False, separators=(",", ":")
+                                ),
+                            }
+                        ]
                     }
                 except WorkflowError as error:
                     # Success and error payloads use the same JSON encoding, so code-mode
@@ -203,7 +209,11 @@ def stdio(path, token_file, catalog="phase"):
                 continue
             emit({"jsonrpc": "2.0", "id": msg["id"], "result": result})
             if method == "tools/call":
-                names = [t["name"] for t in rpc("list")]
+                try:
+                    names = [t["name"] for t in rpc("list")]
+                except WorkflowError:
+                    # A completed owner may already have a new Fix credential.
+                    names = []
                 if names != last_tools:
                     emit({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
                     last_tools = names

@@ -13,8 +13,8 @@ use std::{
 use libafl::{inputs::Input, Error};
 
 use super::{
-    build_fingerprint, input_fingerprint, load_checkpoint, replay_pending, resume_or_refuse,
-    BatchReport, BatchTimings, CaseLocation, CoverageCaseId, CoverageSummary, OutputLock,
+    build_fingerprint, load_checkpoint, replay_pending, resume_or_refuse,
+    BatchReport, BatchTimings, CaseLocation, CoverageSummary, OutputLock,
     PendingCase, Resume, SourceCoverageProgress,
 };
 use crate::{app::config::Campaign, engine::input::GeneratorInput};
@@ -246,10 +246,7 @@ pub(super) fn replay_directory_once(
 fn pending_cases(batch: &[SavedInput]) -> Result<Vec<PendingCase>, Error> {
     let mut pending = Vec::with_capacity(batch.len());
     for (index, saved) in batch.iter().enumerate() {
-        let id = CoverageCaseId {
-            kind: "corpus".to_string(),
-            fingerprint: input_fingerprint(&saved.input)?,
-        };
+        let id = format!("corpus:{index}");
         pending.push(PendingCase {
             location: CaseLocation {
                 id: id.clone(),
@@ -375,7 +372,7 @@ mod tests {
         touch(&script, "def generate(ctx, params):\n    return None\n");
         touch(
             &dir.join(".hidden.json"),
-            "{\"version\":3,\"generator\":\"gen.py\",\"params\":{}}\n",
+            "{\"generator\":\"gen.py\",\"params\":{}}\n",
         );
         touch(&dir.join("skip.metadata"), "{}");
         touch(&dir.join("skip.pcap"), "pcap");
@@ -385,19 +382,19 @@ mod tests {
         touch(
             &earlier,
             &format!(
-                "{{\"version\":3,\"generator\":\"{}\",\"params\":{{\"n\":1}}}}\n",
+                "{{\"generator\":\"{}\",\"params\":{{\"n\":1}}}}\n",
                 script.display()
             ),
         );
         sleep(Duration::from_millis(20));
         touch(
             &later,
-            "{\"version\":3,\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n",
+            "{\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n",
         );
         let same = dir.join("c.json");
         touch(
             &same,
-            "{\"version\":3,\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n",
+            "{\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n",
         );
         let selected = select_inputs(&dir).unwrap();
         let names: Vec<_> = selected.iter().map(|item| item.name.clone()).collect();
@@ -405,10 +402,6 @@ mod tests {
         assert!(selected[0].modified_unix <= selected[1].modified_unix);
         assert!(selected[0].input.generator.ends_with("gen.py"));
         assert!(selected[1].input.generator.ends_with("gen.py"));
-        assert_eq!(
-            input_fingerprint(&selected[1].input).unwrap(),
-            input_fingerprint(&selected[2].input).unwrap()
-        );
         let bad = dir.join("bad.json");
         touch(&bad, "not-json");
         let error = select_inputs(&dir).unwrap_err();

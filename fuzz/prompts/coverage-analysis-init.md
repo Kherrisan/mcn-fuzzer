@@ -71,7 +71,7 @@ STEPS={{ steps }}
 4. For an unmatched inbound message, check the dispatcher and format-handling
    path, then record the missing evidence. Do not force a mapping. Do not compute
    uncovered regions, dependencies, priorities, or refined models here.
-5. Construct handlers.json, then check valid JSON, version/session, exactly one
+5. Construct handlers.json, then check valid JSON, session, exactly one
    row per inbound message, no duplicate symbols within a row, nonempty
    symbol/location/evidence for handlers, and a nonempty reason for every empty
    handlers array. Publish ready.json only after these checks pass.
@@ -80,7 +80,7 @@ STEPS={{ steps }}
 
 Write OUTPUT_DIR/handlers.json using this schema:
 
-{"version":2,"session":"SESSION above","mappings":[{"message":"exact message name","handlers":[{"symbol":"exact source function symbol","location":"source/path.c:line","evidence":"one short sentence citing the decisive dispatch branch or call site","uncertain":false}],"step_names":["exact step names from STEPS"],"reason":null}]}
+{"session":"SESSION above","mappings":[{"message":"exact message name","handlers":[{"symbol":"exact source function symbol","location":"source/path.c:line","evidence":"one short sentence citing the decisive dispatch branch or call site","uncertain":false}],"step_names":["exact step names from STEPS"],"reason":null}]}
 
 Include each inbound message exactly once. For unmatched inbound messages use
 handlers: [] and a concise source-backed reason; this does not make the protocol

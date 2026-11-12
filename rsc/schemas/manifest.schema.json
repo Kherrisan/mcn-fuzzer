@@ -5,17 +5,9 @@
   "description": "Run-level provenance for one RSC pipeline execution.",
   "type": "object",
   "properties": {
-    "schema_version": {
-      "type": "string",
-      "minLength": 1
-    },
     "rfc": {
       "type": "string",
       "minLength": 1
-    },
-    "input_sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
     },
     "created_at": {
       "type": "string",
@@ -48,9 +40,7 @@
     }
   },
   "required": [
-    "schema_version",
     "rfc",
-    "input_sha256",
     "created_at",
     "rsc_version",
     "argv",
@@ -88,12 +78,6 @@
           ]
         },
         "schema": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "sha256": {
           "type": [
             "string",
             "null"

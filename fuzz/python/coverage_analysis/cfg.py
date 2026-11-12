@@ -83,7 +83,7 @@ def source_map(ir):
             if symbol and symbol.startswith("llvm."):
                 continue
             block["calls"].append({"target": symbol, "location": loc})
-    return {"version": 1, "functions": functions}
+    return {"functions": functions}
 
 
 def write_source_map(bitcode, cfg_dir, llvm_dis="llvm-dis-18"):

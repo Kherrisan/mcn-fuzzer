@@ -12,7 +12,7 @@ from test_result_workflow import run as run
 from rsc.workflow.server import TaskServer, request
 
 
-def test_six_tools_real_bridge_and_no_receipts(run, tmp_path):
+def test_five_tools_real_bridge_and_no_receipts(run, tmp_path):
     sock = tmp_path / "mcp.sock"
     token_path = run.root / "parser-1.token"
     token = token_path.read_text().strip()
@@ -24,10 +24,10 @@ def test_six_tools_real_bridge_and_no_receipts(run, tmp_path):
             names = {t["name"] for t in listed}
             assert names == {
                 "read_source_batches",
-                "search_source",
                 "query_model",
                 "submit_parse_result",
-                "submit_clustering_result",
+                "submit_model_result",
+                "submit_review_result",
             }
             for name in (
                 "claim_assignment",
@@ -35,6 +35,8 @@ def test_six_tools_real_bridge_and_no_receipts(run, tmp_path):
                 "advance_phase",
                 "workflow_status",
                 "submit_merge_result",
+                "submit_model_result",
+                "submit_review_result",
             ):
                 with pytest.raises(ValueError, match="forbidden"):
                     request(sock, {"op": "call", "token": token, "name": name, "arguments": {}})

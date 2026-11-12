@@ -1,4 +1,4 @@
-"""Strict published protocol types for the version 8 contract."""
+"""Strict published protocol types for the published contract."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from .rules import (
     NETWORK_ACTION_RULES,
 )
 
-PROTOCOL_VERSION = "8.0.0"
 NonEmpty = Annotated[str, Field(min_length=1)]
 ObjectKind = Literal["parties", "messages", "channels", "steps", "step_dependencies"]
 Phase = Literal["objects", "interactions"]
@@ -57,7 +56,9 @@ class EndpointSource(StrictModel):
     parameter: NonEmpty
     from_: NonEmpty = Field(
         alias="from",
-        description="Field name, constant, or a short source phrase identifying the endpoint source.",
+        description=(
+            "Field name, constant, or a short source phrase identifying the endpoint source."
+        ),
     )
 
     model_config = ConfigDict(
@@ -98,7 +99,9 @@ class Channel(StrictModel):
 class SendStep(StrictModel):
     """One directional protocol message, including protocol termination messages."""
 
-    name: NonEmpty = Field(description="Unique step name. Dependencies and proposals use this name.")
+    name: NonEmpty = Field(
+        description="Unique step name. Dependencies and proposals use this name."
+    )
     action: Literal["send"] = Field(description=NETWORK_ACTION_RULES)
     channel_name: NonEmpty
     condition: str = Field(
@@ -115,7 +118,9 @@ class SendStep(StrictModel):
 class ListenStep(StrictModel):
     """The party starts listening and can accept connections. This is not an accept event."""
 
-    name: NonEmpty = Field(description="Unique step name. Dependencies and proposals use this name.")
+    name: NonEmpty = Field(
+        description="Unique step name. Dependencies and proposals use this name."
+    )
     action: Literal["listen"] = Field(description=NETWORK_ACTION_RULES)
     channel_name: NonEmpty
     condition: str = Field(
@@ -130,7 +135,9 @@ class ListenStep(StrictModel):
 class ConnectStep(StrictModel):
     """The party actively opens the transport connection."""
 
-    name: NonEmpty = Field(description="Unique step name. Dependencies and proposals use this name.")
+    name: NonEmpty = Field(
+        description="Unique step name. Dependencies and proposals use this name."
+    )
     action: Literal["connect"] = Field(description=NETWORK_ACTION_RULES)
     channel_name: NonEmpty
     condition: str = Field(
@@ -145,7 +152,9 @@ class ConnectStep(StrictModel):
 class CloseStep(StrictModel):
     """The party closes the transport connection. This is not a protocol termination message."""
 
-    name: NonEmpty = Field(description="Unique step name. Dependencies and proposals use this name.")
+    name: NonEmpty = Field(
+        description="Unique step name. Dependencies and proposals use this name."
+    )
     action: Literal["close"] = Field(description=NETWORK_ACTION_RULES)
     channel_name: NonEmpty
     condition: str = Field(
@@ -175,7 +184,9 @@ class FieldRelation(StrictModel):
     )
     derive: str = Field(
         default="",
-        description="How the dependent field is computed from the prior field; empty means direct reuse.",
+        description=(
+            "How the dependent field is computed from the prior field; empty means direct reuse."
+        ),
     )
 
 
@@ -206,13 +217,10 @@ class ProtocolModel(StrictModel):
 class Source(StrictModel):
     doc_id: NonEmpty
     rfc: NonEmpty
-    input_sha256: NonEmpty
-    document_sha256: NonEmpty
     path: NonEmpty
 
 
 class ProtocolMeta(StrictModel):
-    schema_version: Literal["8.0.0"]
     protocol: NonEmpty
     complete: bool
     documents: Annotated[list[Source], Field(min_length=1)]

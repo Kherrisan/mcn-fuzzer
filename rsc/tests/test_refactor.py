@@ -26,13 +26,16 @@ class ArtifactAndStageTests(unittest.TestCase):
                 (inputs / name).write_bytes(fixture.read_bytes())
             out = root / "out"
             dry = ingest_path(inputs, IngestOptions(out_dir=out, dry_run=True))
-            self.assertEqual([row.status for row in dry.documents], ["planned", "unchanged"])
+            self.assertEqual([row.status for row in dry.documents], ["planned", "planned"])
             self.assertFalse(out.exists())
             for force in (False, True):
                 result = ingest_path(inputs, IngestOptions(out_dir=out, force=force))
-                self.assertEqual([row.status for row in result.documents], ["ok", "unchanged"])
+                self.assertEqual([row.status for row in result.documents], ["ok", "ok"])
                 self.assertEqual(result.documents[0].counts, result.documents[1].counts)
-                self.assertEqual(result.documents[0].doc_id, result.documents[1].doc_id)
+                self.assertEqual(
+                    [row.doc_id for row in result.documents],
+                    ["rfc9999", "rfc9999-second.txt"],
+                )
 
     def test_ingest_failed_files_keep_identity_and_allow_later_files(self) -> None:
         fixture = Path(__file__).parent / "fixtures/rfc/sample-rfc.txt"
@@ -54,7 +57,10 @@ class ArtifactAndStageTests(unittest.TestCase):
             with patch("rsc.ingest.pipeline._parse", side_effect=ValueError("parse failed")):
                 result = ingest_path(inputs, IngestOptions(out_dir=root / "parse-failure"))
             self.assertEqual([row.status for row in result.documents], ["failed", "failed"])
-            self.assertEqual(result.documents[0].doc_id, result.documents[1].doc_id)
+            self.assertEqual(
+                [row.doc_id for row in result.documents],
+                ["rfc9999", "rfc9999-second.txt"],
+            )
             self.assertEqual(result.documents[0].error, "ValueError: parse failed")
             self.assertIsNotNone(result.documents[0].document_path)
 

@@ -7,7 +7,6 @@ from pathlib import Path
 from coverage_analysis.mutations import MutationError, validate_mutations
 from coverage_analysis.protocol import ProtocolError
 
-VERSION = 2
 ORIGINS = {"coverage", "autonomous"}
 TRACE_FIELDS = {
     "name", "step", "action", "condition", "message",
@@ -160,34 +159,6 @@ def _mutable_fields(values):
     return out
 
 
-def _global_context(values, validate=False):
-    if not isinstance(values, list):
-        raise ProposalError("global_context must be an array")
-    out = []
-    seen = set()
-    for item in values:
-        if not isinstance(item, dict):
-            raise ProposalError("global_context entries must be objects")
-        name = str(item.get("name") or "").strip()
-        if not name or name in seen:
-            raise ProposalError(f"global_context name {name!r} must be non-empty and unique")
-        seen.add(name)
-        source = str(item.get("source") or "constant")
-        if source not in {"constant", "environment", "generated"}:
-            raise ProposalError(f"global_context {name} has unknown source {source}")
-        seed = item.get("seed")
-        if source == "generated" and (not isinstance(seed, int) or isinstance(seed, bool)):
-            raise ProposalError(f"global_context generated value {name} needs an integer seed")
-        out.append({
-            "name": name,
-            "kind": str(item.get("kind") or ""),
-            "value": item.get("value"),
-            "source": source,
-            "seed": seed,
-        })
-    return out
-
-
 def _dependencies(values, names):
     if not isinstance(values, list):
         raise ProposalError("dependencies must be an array")
@@ -231,9 +202,9 @@ def _dependencies(values, names):
     return out
 
 
-def build_proposal(graph, origin, session, request_id, build, snapshot,
+def build_proposal(graph, origin, session, build, snapshot,
                    goal, trace, handlers, parties, channels, mutations=None,
-                   graph_revision=None, global_context=None, dependencies=None):
+                   dependencies=None):
     if origin not in ORIGINS:
         raise ProposalError(f"origin must be one of {sorted(ORIGINS)}")
     trace = _as_list(trace, "trace")
@@ -296,22 +267,17 @@ def build_proposal(graph, origin, session, request_id, build, snapshot,
                 "kind": "data" if relations else "order",
                 "fields": list(dict.fromkeys(str(rel.get("prior_field") or "") for rel in relations)),
             })
-    globals_value = _global_context(global_context or [])
     dependencies = _dependencies(dependencies or [], _instances(trace))
     return {
-        "version": VERSION,
         "origin": origin,
         "session": session,
-        "request_id": request_id,
         "build": build,
         "snapshot": snapshot,
-        "graph_revision": int(graph.revision if graph_revision is None else graph_revision),
         "goal": {"handler_ids": goal_handlers, "reason": str(goal["reason"])},
         "parties": parties or {},
         "channels": channels or {},
         "trace": normalized,
         "mutations": list(mutations or []),
-        "global_context": globals_value,
         "dependencies": dependencies,
     }
 
@@ -319,11 +285,14 @@ def build_proposal(graph, origin, session, request_id, build, snapshot,
 def validate_proposal(proposal, graph, handlers, request=None):
     if not isinstance(proposal, dict):
         raise ProposalError("proposal must be an object")
-    if proposal.get("version") != VERSION:
-        raise ProposalError("proposal version must be 2")
+    allowed = {"origin", "session", "build", "snapshot", "goal", "parties",
+               "channels", "trace", "mutations", "dependencies"}
+    unknown = sorted(set(proposal) - allowed)
+    if unknown:
+        raise ProposalError(f"unknown proposal fields: {', '.join(unknown)}")
     if proposal.get("origin") not in ORIGINS:
         raise ProposalError("proposal origin is invalid")
-    for field in ("session", "request_id", "build", "snapshot"):
+    for field in ("session", "build", "snapshot"):
         if not str(proposal.get(field) or "").strip() and proposal.get(field) != "":
             # build and snapshot may be empty for autonomous drafts before a campaign request.
             if field in {"build", "snapshot"} and proposal.get("origin") == "autonomous":
@@ -331,7 +300,7 @@ def validate_proposal(proposal, graph, handlers, request=None):
             if not str(proposal.get(field) or "").strip():
                 raise ProposalError(f"proposal.{field} is required")
     if request is not None:
-        for field in ("session", "request_id", "build", "snapshot"):
+        for field in ("session", "build", "snapshot"):
             if field in {"build", "snapshot"} and request.get(field) in (None, "") and proposal.get("origin") == "autonomous":
                 continue
             if str(proposal.get(field)) != str(request.get(field)):
@@ -357,7 +326,6 @@ def validate_proposal(proposal, graph, handlers, request=None):
     names = _instances(trace)
     for item in trace:
         _mutable_fields(item.get("mutable_fields") or [])
-    _global_context(proposal.get("global_context") or [], validate=True)
     _dependencies(proposal.get("dependencies") or [], names)
     known_handlers = set(handlers.by_id) if handlers else set()
     for handler in goal.get("handler_ids") or []:

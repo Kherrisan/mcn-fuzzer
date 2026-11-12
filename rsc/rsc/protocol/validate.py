@@ -9,11 +9,9 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 from rsc.artifacts import read_json
-from rsc.schemas import validate_instance
+from rsc.schemas import resolve_schemas_dir, validate_instance, validator
 
-from .context import document_digest
 from .contract import COLLECTIONS, DEFINITIONS, protocol_schema
-from .models import PROTOCOL_VERSION
 from .references import reference_errors
 
 
@@ -78,28 +76,26 @@ def prune_invalid(
 
 
 def validate_protocol(model: dict, documents: dict[str, dict], schemas_dir=None) -> list[str]:
-    if (
-        isinstance(model, dict)
-        and isinstance(model.get("meta"), dict)
-        and model["meta"].get("schema_version") != PROTOCOL_VERSION
-    ):
-        actual = model["meta"].get("schema_version")
-        return [f"protocol schema_version is {actual}, expected {PROTOCOL_VERSION}"]
     errors = validate_instance(Draft202012Validator(protocol_schema(schemas_dir)), model)
     if errors:
         return errors
     expected = {source["doc_id"] for source in model["meta"]["documents"]}
     if expected != set(documents) or len(expected) != len(model["meta"]["documents"]):
         errors.append("source document set does not match meta.documents")
+    source_check = validator("document", resolve_schemas_dir(schemas_dir))
     for source in model["meta"]["documents"]:
         doc = documents.get(source["doc_id"])
+        if doc is None:
+            continue
+        source_errors = validate_instance(source_check, doc)
+        if source_errors:
+            errors.extend(f"{source['doc_id']}: {error}" for error in source_errors)
+            continue
         if doc and (
-            document_digest(doc) != source["document_sha256"]
-            or doc["meta"]["input_sha256"] != source["input_sha256"]
-            or doc["meta"]["source_id"] != source["doc_id"]
+            doc["meta"]["source_id"] != source["doc_id"]
             or doc["meta"]["rfc"] != source["rfc"]
         ):
-            errors.append(f"source identity/checksum mismatch: {source['doc_id']}")
+            errors.append(f"source identity mismatch: {source['doc_id']}")
     errors.extend(
         f"{key}: {error}"
         for key, values in object_errors(model, documents, schemas_dir).items()
@@ -123,13 +119,6 @@ def validate_protocol_file(path: str | Path, schemas_dir=None) -> list[str]:
     path = Path(path).expanduser()
     try:
         model = read_json(path)
-        if (
-            isinstance(model, dict)
-            and isinstance(model.get("meta"), dict)
-            and model["meta"].get("schema_version") != PROTOCOL_VERSION
-        ):
-            actual = model["meta"].get("schema_version")
-            return [f"protocol schema_version is {actual}, expected {PROTOCOL_VERSION}"]
         errors = validate_instance(Draft202012Validator(protocol_schema(schemas_dir)), model)
         if errors:
             return errors

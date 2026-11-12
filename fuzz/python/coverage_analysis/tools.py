@@ -108,7 +108,6 @@ TOOLS = [
               "parties": {"type": "object"},
               "channels": {"type": "object"},
               "mutations": {"type": "array"},
-              "global_context": {"type": "array"},
               "dependencies": {"type": "array", "items": _schema({
                   "prior": {"type": "string"}, "dependent": {"type": "string"},
                   "kind": {"type": "string", "enum": ["order", "data", "resource", "state"]},

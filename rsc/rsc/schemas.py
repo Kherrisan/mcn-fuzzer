@@ -111,8 +111,39 @@ def format_error(error: Any) -> str:
     return f"{path}: {error.message}"
 
 
+REMOVED_METADATA = frozenset({
+    "schema_version", "input_sha256", "document_sha256", "source_hash",
+    "sha256", "hash", "digest", "fingerprint", "profile_fingerprint",
+})
+
+
+def legacy_metadata_errors(value: Any, path: str = "$") -> list[str]:
+    """Reject legacy app metadata, leaving source text and protocol payloads alone."""
+
+    if not isinstance(value, dict):
+        return []
+    containers = [(path, value)]
+    meta = value.get("meta")
+    if isinstance(meta, dict):
+        containers.append((f"{path}.meta", meta))
+        sources = meta.get("documents")
+        if isinstance(sources, list):
+            containers.extend((f"{path}.meta.documents[{i}]", row) for i, row in enumerate(sources))
+    for key in ("documents", "stages"):
+        rows = value.get(key)
+        if isinstance(rows, list):
+            containers.extend((f"{path}.{key}[{i}]", row) for i, row in enumerate(rows))
+    return [
+        f"{location}.{key}: legacy metadata is unsupported; regenerate in the new format"
+        for location, container in containers if isinstance(container, dict)
+        for key in sorted(REMOVED_METADATA.intersection(container))
+    ]
+
+
 def validate_instance(validator: Any, instance: Any) -> list[str]:
-    return [format_error(error) for error in validator.iter_errors(instance)]
+    return legacy_metadata_errors(instance) or [
+        format_error(error) for error in validator.iter_errors(instance)
+    ]
 
 
 def validate_rows(

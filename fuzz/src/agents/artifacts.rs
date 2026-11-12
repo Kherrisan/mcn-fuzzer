@@ -1,10 +1,7 @@
 //! File-based protocol shared by coding agents and their background workers.
 
 use serde_json::Value;
-use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeMap,
-    fs,
+use std::{fs,
     path::Path,
     thread,
     time::{Duration, Instant},
@@ -25,34 +22,6 @@ pub(crate) fn check_identity(value: &Value, fields: &[(&str, &str)]) -> Result<(
         }
     }
     Ok(())
-}
-
-/// Protect tool-generated inputs from agent edits while a request is running.
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ArtifactSeal(BTreeMap<String, String>);
-
-impl ArtifactSeal {
-    pub(crate) fn capture(directory: &Path, names: &[&str]) -> Result<Self, String> {
-        names
-            .iter()
-            .map(|name| Ok(((*name).to_owned(), digest(&directory.join(name))?)))
-            .collect::<Result<_, _>>()
-            .map(Self)
-    }
-
-    pub(crate) fn verify(&self, directory: &Path) -> Result<(), String> {
-        for (name, expected) in &self.0 {
-            if digest(&directory.join(name))? != *expected {
-                return Err(format!("{name} no longer matches the tool output"));
-            }
-        }
-        Ok(())
-    }
-}
-
-fn digest(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|error| format!("reading {}: {error}", path.display()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 /// Wait for `path` during `budget`. If it is still absent, wait `grace` more.

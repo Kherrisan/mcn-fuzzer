@@ -58,12 +58,15 @@ pub fn write_catalog(
         })
         .collect();
     let documents: Vec<_> = model
-        .document_paths()
+        .documents
         .iter()
-        .map(|(rfc, path)| json!({"rfc": rfc, "path": path}))
+        .map(|doc| {
+            json!({
+                "doc_id": doc.doc_id, "rfc": doc.rfc, "path": model.model_dir().join(&doc.path)
+            })
+        })
         .collect();
     let catalog = json!({
-        "version": 3,
         "protocol_name": model.protocol_name,
         "binding": binding,
         "parties": model.party_names(),
@@ -100,7 +103,7 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let model = json!({
-            "meta": {"schema_version":"8.0.0", "protocol":"demo", "complete":true, "documents":[]},
+            "meta": {"protocol":"demo", "complete":true, "documents":[{"doc_id":"source", "rfc":"RFC 1", "path":"source.json"}]},
             "parties": [{"name":"client", "description":"c"}, {"name":"server", "description":"s"}],
             "messages": [{"name":"msg", "associated_fields":[{"name":"seq"}]}],
             "channels": [{"name":"control", "description":"c", "transport":"TCP",
@@ -137,6 +140,12 @@ mod tests {
         assert_eq!(
             catalog["dependencies"][0]["field_relations"][1]["derive"],
             ""
+        );
+        assert_eq!(catalog["documents"][0]["doc_id"], "source");
+        assert_eq!(catalog["documents"][0]["rfc"], "RFC 1");
+        assert_eq!(
+            catalog["documents"][0]["path"],
+            dir.join("source.json").to_str().unwrap()
         );
         fs::remove_dir_all(dir).unwrap();
     }

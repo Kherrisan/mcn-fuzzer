@@ -22,7 +22,6 @@ from rsc.ingest import (
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "rfc"
 SCHEMAS = Path(__file__).resolve().parents[1] / "schemas"
-ZERO_SHA = "0" * 64
 
 
 def _read_fixture(name: str) -> str:
@@ -43,7 +42,6 @@ class TxtParserTests(unittest.TestCase):
         self.result = parse_txt(
             self.text,
             source_path="sample-rfc.txt",
-            input_sha256=ZERO_SHA,
             doc_id="rfc9999",
         )
         self.document = self.result.document
@@ -144,7 +142,6 @@ class TxtParserTests(unittest.TestCase):
         result = parse_txt(
             text,
             source_path="indented.txt",
-            input_sha256=ZERO_SHA,
             doc_id="indented",
         )
         self.assertEqual(
@@ -175,7 +172,6 @@ class TxtParserTests(unittest.TestCase):
         result = parse_txt(
             text,
             source_path="duplicate.txt",
-            input_sha256=ZERO_SHA,
             doc_id="duplicate",
         )
         self.assertEqual(
@@ -199,7 +195,6 @@ class Tls13FixtureTests(unittest.TestCase):
         cls.result = parse_txt(
             cls.text,
             source_path="rfc8446.txt",
-            input_sha256=ZERO_SHA,
             doc_id="rfc8446",
         )
         cls.document = cls.result.document
@@ -290,7 +285,6 @@ class MarkupParserTests(unittest.TestCase):
         result = parse_html(
             text,
             source_path="terms.html",
-            input_sha256=ZERO_SHA,
             doc_id="terms",
         )
         paragraphs = [
@@ -313,7 +307,6 @@ class MarkupParserTests(unittest.TestCase):
         result = parse_html(
             text,
             source_path="sample-rfc.html",
-            input_sha256=ZERO_SHA,
             doc_id="sample",
         )
         document = result.document
@@ -339,7 +332,6 @@ class MarkupParserTests(unittest.TestCase):
         result = parse_xml(
             text,
             source_path="sample-rfc.xml",
-            input_sha256=ZERO_SHA,
             doc_id="rfc9999",
         )
         document = result.document
@@ -392,7 +384,7 @@ class IngestPipelineTests(unittest.TestCase):
             nested = corpus / "nested"
             nested.mkdir()
             shutil.copy(FIXTURES / "sample-rfc.xml", nested / "sample.xml")
-            # Same RFC number and different content -> a hash-suffixed doc_id.
+            # Same RFC number and different paths -> path-suffixed doc_id.
             variant = (FIXTURES / "sample-rfc.txt").read_text(encoding="utf-8")
             (corpus / "variant.txt").write_text(
                 variant.replace("fixture for RSC", "variant for RSC"),
@@ -445,14 +437,14 @@ class IngestPipelineTests(unittest.TestCase):
             )
             self.assertEqual(len(deep.documents), 2)
 
-    def test_unchanged_and_force(self) -> None:
+    def test_rerun_reparses_and_force(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "out"
             options = IngestOptions(out_dir=out)
             first = ingest_path(FIXTURES / "sample-rfc.txt", options)
             self.assertEqual(first.documents[0].status, "ok")
             second = ingest_path(FIXTURES / "sample-rfc.txt", options)
-            self.assertEqual(second.documents[0].status, "unchanged")
+            self.assertEqual(second.documents[0].status, "ok")
             forced = ingest_path(
                 FIXTURES / "sample-rfc.txt",
                 IngestOptions(out_dir=out, force=True),

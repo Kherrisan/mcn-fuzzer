@@ -52,7 +52,6 @@ class DocumentResult:
     input_path: Path
     relative_path: str
     format: str
-    input_sha256: str
     status: str
     document_path: Path | None = None
     report_path: Path | None = None
@@ -72,7 +71,6 @@ class DocumentResult:
             "doc_id": self.doc_id,
             "input_path": self.relative_path,
             "format": self.format,
-            "input_sha256": self.input_sha256,
             "status": self.status,
             "document": relative(self.document_path),
             "report": relative(self.report_path),

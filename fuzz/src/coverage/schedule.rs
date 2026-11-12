@@ -36,7 +36,6 @@ use crate::{
 };
 
 type Client = AgentClient<CoverageInit, AnalysisRequest>;
-type Outcome = AgentOutcome<(), PreparedProposal>;
 
 const INIT_PROMPT: &str = include_str!("../../prompts/coverage-analysis-init.md");
 const TASK_PROMPT: &str = include_str!("../../prompts/coverage-analysis-task.md");
@@ -50,7 +49,6 @@ enum Phase {
 
 struct CoverageInit {
     ready: SessionInit,
-    campaign: Box<Campaign>,
     model: IndexedModel,
     binding: Binding,
     handlers_path: PathBuf,
@@ -81,9 +79,6 @@ fn inbound_messages(model: &IndexedModel, binding: &Binding) -> BTreeSet<String>
 /// Validate the initialized mapping and freeze an accepted copy for the service.
 fn accept_handlers(context: &CoverageInit, output_dir: &Path) -> Result<(), String> {
     let value = read_json(&output_dir.join("handlers.json"))?;
-    if value.get("version").and_then(Value::as_u64) != Some(2) {
-        return Err("handlers.json must have version 2".into());
-    }
     let mappings = value
         .get("mappings")
         .and_then(Value::as_array)
@@ -225,7 +220,6 @@ impl AgentTask for AnalysisRequest {
 struct Inflight {
     request: String,
     snapshot: u64,
-    output_dir: PathBuf,
 }
 
 /// Stage that polls MCP analysis without blocking the mutational loop.
@@ -463,7 +457,6 @@ impl CoverageAnalysisStage {
                         output_dir,
                         session: self.session.clone(),
                     },
-                    campaign: Box::new(self.campaign.clone()),
                     model: model.clone(),
                     binding: self.binding.clone(),
                     handlers_path: self.handlers_path.clone(),
@@ -599,7 +592,6 @@ impl CoverageAnalysisStage {
         self.inflight = Some(Inflight {
             request: request.clone(),
             snapshot,
-            output_dir,
         });
         self.log_event(
             "analysis_dispatched",
@@ -639,7 +631,7 @@ impl CoverageAnalysisStage {
                 let accepted = AcceptedProposal {
                     proposal: proposal.proposal.clone(),
                     path: proposal.path.clone(),
-                    sha256: proposal.sha256.clone(),
+                    request_id: inflight.request.clone(),
                 };
                 let replaced = self.mailbox.replace(accepted);
                 self.log_event(
@@ -649,7 +641,7 @@ impl CoverageAnalysisStage {
                         "snapshot": inflight.snapshot,
                         "goal_handlers": proposal.proposal.goal.handler_ids,
                         "steps": proposal.proposal.trace.iter().map(|step| step.name.clone()).collect::<Vec<_>>(),
-                        "replaced": replaced.map(|item| item.proposal.request_id),
+                        "replaced": replaced.map(|item| item.request_id),
                         "commit": committed,
                     }),
                 );

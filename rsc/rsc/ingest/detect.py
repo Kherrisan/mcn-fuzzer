@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fnmatch
-import hashlib
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -30,10 +29,6 @@ class IngestError(ValueError):
 class DecodedInput:
     text: str
     encoding: str
-
-
-def sha256_hex(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 def slugify(value: str) -> str:
@@ -145,22 +140,15 @@ def discover_inputs(input_path: str | Path, options: IngestOptions) -> list[Inpu
     return inputs
 
 
-def unique_doc_id(base: str, digest: str, used: dict[str, str]) -> str:
-    """Return a stable, collision-free document ID.
-
-    ``used`` maps an existing doc_id to the input sha256 that produced it.  The
-    same content reused under the same base ID is allowed; different content
-    gets a short hash suffix.
-    """
+def unique_doc_id(base: str, source_path: str, used: set[str]) -> str:
+    """Name a source document, using its path to disambiguate repeated RFC labels."""
 
     base = slugify(base).lower()
-    if base not in used or used[base] == digest:
-        used[base] = digest
-        return base
-    candidate = f"{base}-{digest[:8]}"
+    candidate = base
+    suffix = slugify(source_path).lower()
     index = 2
-    while candidate in used and used[candidate] != digest:
-        candidate = f"{base}-{digest[:8]}-{index}"
+    while candidate in used:
+        candidate = f"{base}-{suffix}" if index == 2 else f"{base}-{suffix}-{index}"
         index += 1
-    used[candidate] = digest
+    used.add(candidate)
     return candidate

@@ -5,13 +5,12 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+from rsc.schemas import legacy_metadata_errors
 from rsc.version import __version__
 
 from .references import extract_references, reference_key
 from .sections import build_section_index, section_for_block
 from .validate import validate_index
-
-INDEX_VERSION = "1.0.0"
 
 
 class StructuralIndexError(ValueError):
@@ -27,6 +26,8 @@ def build_structural_index(
 
     if not isinstance(document, dict) or not isinstance(document.get("meta"), dict):
         raise StructuralIndexError("document and document.meta are required")
+    if errors := legacy_metadata_errors(document):
+        raise StructuralIndexError("; ".join(errors))
     meta = document["meta"]
     sections, by_path, _ = build_section_index(document)
     raw_blocks = document.get("blocks", [])
@@ -59,9 +60,7 @@ def build_structural_index(
         )
     index = {
         "meta": {
-            "schema_version": INDEX_VERSION,
             "rfc": str(meta.get("rfc") or "RFC unknown"),
-            "input_sha256": str(meta.get("input_sha256") or ("0" * 64)),
             "generated_at": generated_at or datetime.now(UTC).isoformat(),
             "generator": f"rsc-structural-index/{__version__}",
         },

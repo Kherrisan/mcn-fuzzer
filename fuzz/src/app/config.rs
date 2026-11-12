@@ -923,7 +923,7 @@ pythonpath = "pp"
     fn openssl_campaign_uses_explicit_runtime_paths() {
         let campaign =
             Campaign::load(Path::new("targets/openssl/campaign.toml")).expect("openssl campaign");
-        let placeholders = campaign.placeholders(4433);
+        let _placeholders = campaign.placeholders(4433);
         assert!(campaign.target.args.iter().any(|arg| arg == "-naccept"));
         assert!(campaign
             .target
@@ -1038,7 +1038,7 @@ pythonpath = "pp"
         let path = dir.join("protocol.json");
         std::fs::write(
             &path,
-            br#"{"meta":{"schema_version":"8.0.0","protocol":"p","complete":false,"documents":[{"doc_id":"d","rfc":"RFC 1","input_sha256":"a","document_sha256":"b","path":"doc.json"}]},"parties":[{"name":"alpha","description":"a"},{"name":"beta","description":"b"},{"name":"gamma","description":"c"}],"messages":[{"name":"m","associated_fields":[]}],"channels":[{"name":"c","description":"c","transport":"TCP","connection":"connection_oriented","endpoint_party_names":["alpha","beta"],"initiator_party_name":"alpha","acceptor_party_name":"beta","endpoint_sources":[]}],"steps":[{"name":"s","action": "send", "message_name":"m","channel_name":"c","sender_name":"alpha","receiver_name":"beta","condition":"go"}],"step_dependencies":[],"unresolved":[]}"#,
+            br#"{"meta":{"protocol":"p","complete":false,"documents":[{"doc_id":"d","rfc":"RFC 1","path":"doc.json"}]},"parties":[{"name":"alpha","description":"a"},{"name":"beta","description":"b"},{"name":"gamma","description":"c"}],"messages":[{"name":"m","associated_fields":[]}],"channels":[{"name":"c","description":"c","transport":"TCP","connection":"connection_oriented","endpoint_party_names":["alpha","beta"],"initiator_party_name":"alpha","acceptor_party_name":"beta","endpoint_sources":[]}],"steps":[{"name":"s","action": "send", "message_name":"m","channel_name":"c","sender_name":"alpha","receiver_name":"beta","condition":"go"}],"step_dependencies":[],"unresolved":[]}"#,
         )
         .unwrap();
         path

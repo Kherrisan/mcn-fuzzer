@@ -15,7 +15,7 @@ pub mod schedule;
 mod sut_output;
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::HashSet,
     fs::{self, File},
     io::Write,
     os::fd::{AsRawFd, OwnedFd},
@@ -59,27 +59,11 @@ const BUILD_FLAGS: &str = "\
 -O2 -g -fno-lto -fprofile-instr-generate -fcoverage-mapping \
 -fprofile-update=atomic -mllvm -runtime-counter-relocation AFL_LLVM_ONLY_FSRV=1";
 
-/// Stable id: corpus kind plus the input fingerprint.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct CoverageCaseId {
-    /// `corpus` or `solution`.
-    pub kind: String,
-    /// SHA-256 of the canonical input and the generator source.
-    pub fingerprint: String,
-}
-
-impl CoverageCaseId {
-    /// Wire form stored in sets and checkpoints.
-    pub fn key(&self) -> String {
-        format!("{}:{}", self.kind, self.fingerprint)
-    }
-}
-
-/// Where a saved input lives. Corpus ids are not stable across restarts.
+/// Where a saved input lives.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CaseLocation {
-    /// Stable id.
-    pub id: CoverageCaseId,
+    /// `corpus:<id>` or `solution:<id>`.
+    pub id: String,
     /// LibAFL id observed in this process.
     pub corpus_id: usize,
     /// On-disk file name when LibAFL recorded one.
@@ -137,36 +121,12 @@ impl CoverageSummary {
 /// What a finished batch is allowed to commit.
 #[derive(Clone, Debug)]
 pub struct BatchDecision {
-    /// Cases successfully collected before this attempt.
-    pub collected_before: BTreeSet<String>,
-    /// Contribution set before this attempt.
-    pub contributed_before: BTreeSet<String>,
-    /// Cases collected in this batch.
+    /// Cases replayed in this batch.
     pub succeeded: Vec<String>,
     /// Coverage counts increased.
     pub summary_grew: bool,
     /// Index, export, and snapshot publish all finished.
     pub publish_ok: bool,
-}
-
-/// Collected ids after a batch. A failed publish does not advance them.
-pub fn next_collected(decision: &BatchDecision) -> BTreeSet<String> {
-    if !decision.publish_ok {
-        return decision.collected_before.clone();
-    }
-    let mut out = decision.collected_before.clone();
-    out.extend(decision.succeeded.iter().cloned());
-    out
-}
-
-/// Contribution ids. Only a published batch that grew coverage adds every valid case.
-pub fn next_contributed(decision: &BatchDecision) -> BTreeSet<String> {
-    if !decision.publish_ok || !decision.summary_grew {
-        return decision.contributed_before.clone();
-    }
-    let mut out = decision.contributed_before.clone();
-    out.extend(decision.succeeded.iter().cloned());
-    out
 }
 
 /// Replacing a raw profile is refused while its forkserver is still alive.
@@ -200,10 +160,6 @@ pub fn coverage_child_env(
 /// Progress restored from a checkpoint and stored in the LibAFL state.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SourceCoverageProgress {
-    /// Cases whose profiles were published.
-    pub collected: BTreeSet<String>,
-    /// Cases in a batch that increased some coverage count.
-    pub contributed: BTreeSet<String>,
     /// Summary of the last published export.
     pub last_summary: CoverageSummary,
     /// Latest snapshot number. Zero means nothing has been published.
@@ -212,15 +168,12 @@ pub struct SourceCoverageProgress {
     pub fingerprint: String,
     /// Replay executions. This is not the main fuzz execution counter.
     pub replay_executions: u64,
-    /// `attribution` is always `batch`.
-    pub attribution: String,
 }
 
 impl SourceCoverageProgress {
     fn new(fingerprint: &str) -> Self {
         Self {
             fingerprint: fingerprint.to_string(),
-            attribution: "batch".to_string(),
             ..Self::default()
         }
     }
@@ -406,10 +359,9 @@ where
     if let Some(saved) = load_checkpoint(&root) {
         if saved.fingerprint == fingerprint && saved.snapshot >= progress.snapshot {
             progress = saved;
-            progress.attribution = "batch".to_string();
         }
     }
-    let pending = pending_cases(state, &progress.collected)?;
+    let pending = pending_cases(state)?;
     if pending.is_empty() {
         return Ok(());
     }
@@ -444,25 +396,24 @@ struct BatchTimings {
 }
 
 struct PendingCase {
-    id: CoverageCaseId,
+    id: String,
     location: CaseLocation,
     input: GeneratorInput,
 }
 
-fn pending_cases<S>(state: &S, collected: &BTreeSet<String>) -> Result<Vec<PendingCase>, Error>
+fn pending_cases<S>(state: &S) -> Result<Vec<PendingCase>, Error>
 where
     S: HasCorpus<GeneratorInput> + HasSolutions<GeneratorInput>,
 {
     let mut cases = Vec::new();
-    collect_corpus(state.corpus(), "corpus", collected, &mut cases)?;
-    collect_corpus(state.solutions(), "solution", collected, &mut cases)?;
+    collect_corpus(state.corpus(), "corpus", &mut cases)?;
+    collect_corpus(state.solutions(), "solution", &mut cases)?;
     Ok(cases)
 }
 
 fn collect_corpus<C>(
     corpus: &C,
     kind: &str,
-    collected: &BTreeSet<String>,
     out: &mut Vec<PendingCase>,
 ) -> Result<(), Error>
 where
@@ -474,13 +425,7 @@ where
         let input = borrowed.load_input(corpus)?.clone();
         let filename = borrowed.filename().clone();
         drop(borrowed);
-        let case_id = CoverageCaseId {
-            kind: kind.to_string(),
-            fingerprint: input_fingerprint(&input)?,
-        };
-        if collected.contains(&case_id.key()) {
-            continue;
-        }
+        let case_id = format!("{kind}:{}", id.0);
         out.push(PendingCase {
             location: CaseLocation {
                 id: case_id.clone(),
@@ -492,29 +437,6 @@ where
         });
     }
     Ok(())
-}
-
-fn input_fingerprint(input: &GeneratorInput) -> Result<String, Error> {
-    let mut canonical = serde_json::to_vec(&InputView {
-        version: input.version,
-        generator: input.generator.display().to_string(),
-        step_trace: &input.trace.steps,
-        dependencies: &input.trace.dependencies,
-        params: &input.params,
-    })
-    .map_err(|error| Error::serialize(format!("coverage input fingerprint: {error}")))?;
-    let source = fs::read(&input.generator).unwrap_or_default();
-    canonical.extend(sha256_bytes(&source).into_bytes());
-    Ok(sha256_bytes(&canonical))
-}
-
-#[derive(Serialize)]
-struct InputView<'a> {
-    version: u32,
-    generator: String,
-    step_trace: &'a [crate::engine::input::StepInstance],
-    dependencies: &'a [crate::engine::input::DependencyInstance],
-    params: &'a BTreeMap<String, crate::engine::input::ParamValue>,
 }
 
 fn replay_pending(
@@ -558,14 +480,14 @@ fn replay_pending(
         match session.replay(case, main_forkserver, main_generator) {
             Ok(outcome) if profile_usable(&work_raw) => {
                 succeeded.push(RecordedCase {
-                    id: case.id.key(),
+                    id: case.id.clone(),
                     location: case.location.clone(),
                     exit_kind: outcome.exit_kind,
                 });
                 if outcome.stop_batch {
                     failures.push(format!(
                         "{} ended the coverage batch on a timeout streak; servers were not restarted",
-                        case.id.key()
+                        &case.id
                     ));
                     break;
                 }
@@ -573,14 +495,14 @@ fn replay_pending(
             Ok(outcome) => {
                 failures.push(format!(
                     "{} profile missing after {}",
-                    case.id.key(),
+                    &case.id,
                     outcome.exit_kind
                 ));
                 failed = true;
                 break;
             }
             Err(error) => {
-                failures.push(format!("{}: {error:?}", case.id.key()));
+                failures.push(format!("{}: {error:?}", &case.id));
                 failed = true;
                 break;
             }
@@ -643,8 +565,6 @@ fn replay_pending(
     let snapshot_json = detailed.then_some(summary_output.as_str());
     let grew = summary.grew_from(progress.last_summary);
     let decision = BatchDecision {
-        collected_before: progress.collected.clone(),
-        contributed_before: progress.contributed.clone(),
         succeeded: succeeded.iter().map(|case| case.id.clone()).collect(),
         summary_grew: grew,
         publish_ok: false,
@@ -689,21 +609,14 @@ fn replay_pending(
     );
     if !publish_ok {
         return Err(Error::unknown(
-            "source coverage snapshot was not published; collected set was not advanced"
+            "source coverage snapshot was not published"
                 .to_string(),
         ));
     }
-    let committed = BatchDecision {
-        publish_ok: true,
-        ..decision
-    };
     let mut updated = progress.clone();
-    updated.collected = next_collected(&committed);
-    updated.contributed = next_contributed(&committed);
     updated.last_summary = summary;
     updated.snapshot = snapshot;
     updated.replay_executions = replay_executions;
-    updated.attribution = "batch".to_string();
     updated.fingerprint = fingerprint.to_string();
     let failure = if failed {
         let message = failures.join("; ");
@@ -836,7 +749,7 @@ impl CoverageSession {
     ) -> Result<ReplayOutcome, Error> {
         let case_no = self
             .log
-            .case_start(&case.id.key(), case.location.filename.as_deref())?;
+            .case_start(&&case.id, case.location.filename.as_deref())?;
         let result = self.replay_inner(&case.input, main_forkserver, main_generator);
         let mut outcome = match &result {
             Ok(outcome) => outcome.exit_kind.clone(),
@@ -848,7 +761,7 @@ impl CoverageSession {
                 Err(error) => outcome.push_str(&format!("; cleanup failed: {error:?}")),
             }
         }
-        if let Err(error) = self.log.case_end(case_no, &case.id.key(), &outcome) {
+        if let Err(error) = self.log.case_end(case_no, &&case.id, &outcome) {
             return Err(Error::unknown(format!(
                 "SUT log case_end marker failed after {outcome}: {error:?}"
             )));
@@ -1704,10 +1617,8 @@ fn publish_snapshot(
     copy_dir(work_raw, &incoming.join("checkpoint").join("raw"))?;
     timings.persist = persist_at.elapsed();
     let metadata = serde_json::json!({
-        "attribution": "batch",
         "case_ids": succeeded.iter().map(|case| &case.id).collect::<Vec<_>>(),
         "locations": succeeded.iter().map(|case| &case.location).collect::<Vec<_>>(),
-        "contributed_ids": next_contributed(&BatchDecision { publish_ok: true, ..decision.clone() }),
         "coverage_delta": {
             "functions": summary.functions.saturating_sub(previous.functions),
             "lines": summary.lines.saturating_sub(previous.lines),
@@ -1749,18 +1660,9 @@ fn publish_snapshot(
             .map_err(|error| Error::serialize(format!("coverage metadata: {error}")))?,
     )?;
     let mut checkpoint_progress = SourceCoverageProgress::new(fingerprint);
-    checkpoint_progress.collected = next_collected(&BatchDecision {
-        publish_ok: true,
-        ..decision.clone()
-    });
-    checkpoint_progress.contributed = next_contributed(&BatchDecision {
-        publish_ok: true,
-        ..decision.clone()
-    });
     checkpoint_progress.last_summary = *summary;
     checkpoint_progress.snapshot = snapshot;
     checkpoint_progress.replay_executions = replay_executions;
-    checkpoint_progress.attribution = "batch".to_string();
     fs::write(
         incoming.join("checkpoint").join("progress.json"),
         serde_json::to_vec_pretty(&checkpoint_progress)
@@ -1879,7 +1781,6 @@ impl Drop for OutputLock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::input::ParamValue;
     use flate2::read::ZlibDecoder;
     use libafl::corpus::CorpusId;
     use std::{collections::BTreeMap, io::Read};
@@ -1888,35 +1789,6 @@ mod tests {
         let mut log = SutLog::open(dir, "test-batch").unwrap();
         log.batch_start().unwrap();
         log
-    }
-
-    #[test]
-    fn batch_growth_attributes_every_valid_case_and_a_failed_publish_does_not() {
-        let decision = BatchDecision {
-            collected_before: BTreeSet::from(["corpus:old".to_string()]),
-            contributed_before: BTreeSet::new(),
-            succeeded: vec!["corpus:a".to_string(), "solution:b".to_string()],
-            summary_grew: true,
-            publish_ok: true,
-        };
-        let collected = next_collected(&decision);
-        assert!(collected.contains("corpus:a") && collected.contains("solution:b"));
-        assert_eq!(
-            next_contributed(&decision),
-            BTreeSet::from(["corpus:a".to_string(), "solution:b".to_string()])
-        );
-        let held = BatchDecision {
-            publish_ok: false,
-            ..decision.clone()
-        };
-        assert_eq!(next_collected(&held), decision.collected_before);
-        assert!(next_contributed(&held).is_empty());
-        let counts_only = BatchDecision {
-            summary_grew: false,
-            ..decision
-        };
-        assert!(next_contributed(&counts_only).is_empty());
-        assert!(next_collected(&counts_only).contains("corpus:a"));
     }
 
     #[test]
@@ -1946,30 +1818,6 @@ mod tests {
             .iter()
             .any(|(key, value)| key == "__AFL_SHM_ID" && value == "cov-id"));
         assert!(coverage_child_env("same", "same", "x").is_err());
-    }
-
-    #[test]
-    fn corpus_and_solution_ids_stay_distinct_for_the_same_input() {
-        let dir = std::env::temp_dir().join(format!("mcn-cov-id-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("gen.py");
-        fs::write(&script, b"def generate(ctx, params):\n    pass\n").unwrap();
-        let input = GeneratorInput::new(
-            script,
-            BTreeMap::from([("mode".to_string(), ParamValue::Str("quit".to_string()))]),
-        );
-        let fingerprint = input_fingerprint(&input).unwrap();
-        let corpus = CoverageCaseId {
-            kind: "corpus".to_string(),
-            fingerprint: fingerprint.clone(),
-        };
-        let solution = CoverageCaseId {
-            kind: "solution".to_string(),
-            fingerprint,
-        };
-        assert_ne!(corpus.key(), solution.key());
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2011,7 +1859,7 @@ mod tests {
             fs::write(
                 corpus.join(name),
                 format!(
-                    "{{\"version\":3,\"generator\":\"{}\",\"params\":{{\"n\":{n}}}}}\n",
+                    "{{\"generator\":\"{}\",\"params\":{{\"n\":{n}}}}}\n",
                     script.display()
                 ),
             )
@@ -2046,15 +1894,13 @@ mod tests {
     }
 
     #[test]
-    fn published_snapshot_zlib_matches_profdata_and_records_batch_attribution() {
+    fn published_snapshot_zlib_matches_profdata_and_records_batch_case_ids() {
         let dir = std::env::temp_dir().join(format!("mcn-cov-snap-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("work-raw")).unwrap();
         fs::write(dir.join("work-raw").join("a.profraw"), b"raw-bytes").unwrap();
         fs::write(dir.join("coverage.profdata.tmp"), b"profdata-bytes").unwrap();
         let decision = BatchDecision {
-            collected_before: BTreeSet::new(),
-            contributed_before: BTreeSet::new(),
             succeeded: vec!["corpus:abc".to_string()],
             summary_grew: true,
             publish_ok: false,
@@ -2062,10 +1908,7 @@ mod tests {
         let recorded = RecordedCase {
             id: "corpus:abc".to_string(),
             location: CaseLocation {
-                id: CoverageCaseId {
-                    kind: "corpus".to_string(),
-                    fingerprint: "abc".to_string(),
-                },
+                id: "corpus:1".to_string(),
                 corpus_id: CorpusId(1).0,
                 filename: Some("one".to_string()),
             },
@@ -2111,7 +1954,6 @@ mod tests {
             &fs::read_to_string(dir.join("snapshots/000001/metadata.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(metadata["attribution"], "batch");
         assert_eq!(metadata["case_ids"][0], "corpus:abc");
         assert_eq!(metadata["coverage_delta"]["lines"], 3);
         assert_eq!(metadata["coverage_delta"]["functions"], 0);
@@ -2127,8 +1969,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(progress.replay_executions, 3);
-        assert!(progress.collected.contains("corpus:abc"));
-        let _ = fs::remove_dir_all(&dir);
+                let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2167,8 +2008,6 @@ mod tests {
         fs::write(dir.join("raw").join("seed.profraw"), b"raw-bytes").unwrap();
         fs::write(dir.join("coverage.profdata.tmp"), b"profdata-bytes").unwrap();
         let decision = BatchDecision {
-            collected_before: BTreeSet::from(["corpus:old".to_string()]),
-            contributed_before: BTreeSet::from(["corpus:old".to_string()]),
             succeeded: vec!["corpus:old".to_string()],
             summary_grew: true,
             publish_ok: false,
@@ -2176,10 +2015,7 @@ mod tests {
         let recorded = RecordedCase {
             id: "corpus:old".to_string(),
             location: CaseLocation {
-                id: CoverageCaseId {
-                    kind: "corpus".to_string(),
-                    fingerprint: "old".to_string(),
-                },
+                id: "corpus:1".to_string(),
                 corpus_id: 1,
                 filename: None,
             },
@@ -2208,10 +2044,6 @@ mod tests {
             &test_sut_log(&dir),
         )
         .unwrap();
-        let committed = load_checkpoint(&dir).unwrap();
-        assert!(committed.collected.contains("corpus:old"));
-        assert!(!committed.collected.contains("corpus:new"));
-
         let empty = dir.join("empty-raw");
         fs::create_dir_all(&empty).unwrap();
         assert!(merge_raw("llvm-profdata-18", &empty, &dir.join("should-not-matter")).is_err());
@@ -2245,9 +2077,7 @@ mod tests {
         )
         .is_err());
         let after = load_checkpoint(&dir).unwrap();
-        assert_eq!(after.collected, committed.collected);
         assert_eq!(after.snapshot, 1);
-        assert_eq!(next_collected(&decision), committed.collected);
         assert_eq!(
             fs::read(dir.join("current.profdata")).unwrap(),
             b"profdata-bytes"
@@ -2268,16 +2098,15 @@ mod tests {
         let mut solutions = InMemoryCorpus::new();
         corpus.add(Testcase::new(input.clone())).unwrap();
         solutions.add(Testcase::new(input)).unwrap();
-        let collected = BTreeSet::new();
         let mut cases = Vec::new();
-        collect_corpus(&corpus, "corpus", &collected, &mut cases).unwrap();
-        collect_corpus(&solutions, "solution", &collected, &mut cases).unwrap();
+        collect_corpus(&corpus, "corpus", &mut cases).unwrap();
+        collect_corpus(&solutions, "solution", &mut cases).unwrap();
         assert_eq!(cases.len(), 2);
         assert_eq!(cases[0].location.corpus_id, cases[1].location.corpus_id);
         assert_eq!(cases[0].location.corpus_id, 0);
-        assert_ne!(cases[0].id.key(), cases[1].id.key());
-        assert!(cases[0].id.key().starts_with("corpus:"));
-        assert!(cases[1].id.key().starts_with("solution:"));
+        assert_ne!(cases[0].id, cases[1].id);
+        assert!(cases[0].id.starts_with("corpus:"));
+        assert!(cases[1].id.starts_with("solution:"));
         let _ = fs::remove_dir_all(&dir);
     }
 

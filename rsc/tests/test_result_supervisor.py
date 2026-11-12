@@ -85,7 +85,7 @@ def supervisor(w):
                 "args": [],
             },
         }
-        for role in ("parser", "merge")
+        for role in ("parser", "merge", "reviewer")
     }
     s.config = {"workflow": {"batch_max_tokens": 12000}, "resolved_agents": s.roles}
     s.retry_worker, s.wait_index = None, 0
@@ -96,10 +96,14 @@ def supervisor(w):
     return s
 
 
+def pending(w):
+    for a in helpers.active(w):
+        w.store.update_assignment(a["name"], status="pending")
+
+
 def test_serial_initialization_fair_dispatch_and_no_claim_tool(run):
     s = supervisor(run)
-    # Fixture already recorded sends; create fake live assignments for this dispatcher.
-    run.db.execute("UPDATE assignments SET status='pending'")
+    pending(run)
     assert s.step()
     calls = s.hc_call.calls
     launches = [i for i, c in enumerate(calls) if c[0] == "run"]
@@ -115,29 +119,180 @@ def test_serial_initialization_fair_dispatch_and_no_claim_tool(run):
     ) == len(sends)
 
 
-def test_confirmed_death_replaces_only_owned_attempt(run):
+def test_confirmed_death_replaces_only_owned_session(run):
     s = supervisor(run)
-    run.db.execute("UPDATE assignments SET status='pending'")
+    pending(run)
     s.step()
+    old = helpers.who(run, "parser-1")
     saved = s.state["terminals"]["parser-1"]
     s.hc_call.terminals[saved["address"]]["state"] = "finished"
     s.step()
     a = run.store.assignment(saved["assignment"])
-    assert a["attempt"] == 2 and a["status"] == "pending"
-    assert run.store.assignments()[1]["attempt"] == 1
+    assert len(a["failures"]) == 1 and a["status"] == "pending"
+    assert not run.store.assignments()[1]["failures"]
+    import pytest
+
+    with pytest.raises(ValueError, match="stale"):
+        run.call(old, "query_model", {})
 
 
-def test_cluster_restores_parser_native_session_and_does_not_redispatch_parse(run):
-    s = supervisor(run)
-    run.db.execute("UPDATE assignments SET status='pending'")
+def test_fix_restores_original_parser_native_session(tmp_path):
+    w = helpers.create(tmp_path, parse_workers=1)
+    s = supervisor(w)
+    pending(w)
     s.step()
     original_thread = s.state["sessions"]["parser-1"]["id"]
-    helpers.parsed(run)
-    # The real supervisor owns send intent; the extraction helper recorded it for unit calls.
-    run.db.execute("UPDATE assignments SET status='pending' WHERE phase='cluster'")
+    helpers.parsed(w)
+    pending(w)
+    s.step()
+    assert s.state["sessions"]["reviewer-1"]["id"] != original_thread
+    helpers.review(w, [helpers.finding(w)])
+    pending(w)
     s.step()
     assert s.state["sessions"]["parser-1"]["id"] == original_thread
     sent = [c for c in s.hc_call.calls if c[0] == "send" and not c[2].startswith("/rename")]
-    assert len(sent) == 3
-    assert "submit_clustering_result" in sent[-1][2]
-    assert "parser-2" not in s.state["terminals"]
+    assert len(sent) == 3 and "submit_model_result" in sent[-1][2]
+    assert "reviewer-1" not in s.state["terminals"]
+
+
+def test_parser_launch_concurrency_is_bounded(run):
+    s = supervisor(run)
+    run.store.settings_update(parallel_agents=1)
+    pending(run)
+    s.step()
+    assert len(s.state["terminals"]) == 1
+    a = helpers.active(run)[0]
+    helpers.submit(run, a["worker"], helpers.checkpoint(run, a))
+    s.step()
+    assert set(s.state["terminals"]) == {"parser-2"}
+
+
+def test_early_reviewer_final_gets_bounded_same_session_continuations(tmp_path):
+    w = helpers.create(tmp_path, parse_workers=1)
+    helpers.parsed(w)
+    s = supervisor(w)
+    pending(w)
+    s.step()
+    saved = s.state["terminals"]["reviewer-1"]
+    terminal = s.hc_call.terminals[saved["address"]]
+    original_thread = s.state["sessions"]["reviewer-1"]["id"]
+    for count in range(2):
+        terminal.update(status={"state": "done"}, turn=terminal["turn"] + 1)
+        s.step()
+        assert len(helpers.active(w)[0]["continuations"]) == count + 1
+        s.step()
+        assert s.state["sessions"]["reviewer-1"]["id"] == original_thread
+        sent = [c for c in s.hc_call.calls if c[0] == "send"][-1]
+        assert "previous turn ended" in sent[2]
+    assert len([c for c in s.hc_call.calls if c[0] == "run"]) == 1
+    terminal.update(status={"state": "done"}, turn=terminal["turn"] + 1)
+    s.step()
+    assert w.data["phase"] == "failed"
+    assert not (w.root / "protocol.json").exists()
+
+
+def test_live_observation_failure_never_replaces_session(run):
+    from rsc.workflow.supervisor import HcObservationTimeout
+
+    s = supervisor(run)
+    pending(run)
+    s.step()
+    original = s.state["terminals"].copy()
+    s.observe = lambda worker: (_ for _ in ()).throw(HcObservationTimeout("observer unavailable"))
+    assert s.step()
+    assert s.state["terminals"] == original
+    assert all(not a["failures"] for a in run.store.assignments())
+
+
+def test_crash_after_record_send_recovers_without_duplicate_live_agent(run, monkeypatch):
+    import pytest
+
+    s = supervisor(run)
+    pending(run)
+    original_call = s.workflow_call
+
+    def crash_after_send(name, arguments=None):
+        result = original_call(name, arguments)
+        if name == "record_send":
+            raise OSError("coordinator crashed after recording send")
+        return result
+
+    s.workflow_call = crash_after_send
+    with pytest.raises(OSError, match="coordinator crashed"):
+        s.step()
+    s.state = json.loads(s.path.read_text())
+    assert s.state["terminals"]["parser-1"]["send_intent_at"]
+    s.workflow_call = original_call
+    monkeypatch.setattr(time, "time", lambda: 9999999999)
+    s.step()
+    assert helpers.active(run)[0]["status"] == "pending"
+    s.step()
+    assert len([c for c in s.hc_call.calls if c[0] == "run"]) == 2
+    sends = [c for c in s.hc_call.calls if c[0] == "send" and not c[2].startswith("/rename")]
+    assert len(sends) == 2
+
+
+def test_definite_startup_nondelivery_retries_rename_and_assignment(run):
+    from rsc.workflow.supervisor import HcFailure
+
+    s = supervisor(run)
+    pending(run)
+    hc = s.hc_call
+    rejected = set()
+
+    def settle(*args, **kwargs):
+        if args[0] == "send":
+            kind = "rename" if args[2].startswith("/rename") else "assignment"
+            if kind not in rejected:
+                rejected.add(kind)
+                raise HcFailure("send", 5, "still starting; nothing was typed; check hc read")
+        return hc(*args, **kwargs)
+
+    s.hc_call = settle
+    s.step()
+    assert rejected == {"rename", "assignment"}
+    first = helpers.active(run)[0]
+    assert first["status"] == "pending" and not first.get("continuations")
+    s.step()
+    assert helpers.active(run)[0]["status"] == "sent"
+    assert len([c for c in hc.calls if c[0] == "run"]) == 2
+    assert any(c[0] == "wait" for c in hc.calls)
+    assert len([c for c in hc.calls if c[0] == "send" and not c[2].startswith("/rename")]) == 2
+
+
+def test_uncertain_send_error_does_not_reset_dispatch_or_rename(run):
+    import pytest
+
+    from rsc.workflow.supervisor import HcFailure
+
+    s = supervisor(run)
+    pending(run)
+    hc = s.hc_call
+
+    def uncertain(*args, **kwargs):
+        if args[0] == "send":
+            raise HcFailure("send", 5, "connection lost; delivery is uncertain")
+        return hc(*args, **kwargs)
+
+    s.hc_call = uncertain
+    with pytest.raises(HcFailure, match="uncertain"):
+        s.step()
+    assert s.state["terminals"]["parser-1"]["rename_sent"]
+    assert len([c for c in hc.calls if c[0] == "run"]) == 1
+
+
+def test_hard_failure_retires_owned_workers_but_preserves_core(run):
+    import pytest
+
+    s = supervisor(run)
+    pending(run)
+    s.step()
+    run.store.settings_update(merge_context_tokens=1000)
+    for a in helpers.active(run):
+        helpers.submit(run, a["worker"], helpers.checkpoint(run, a))
+    assert run.data["phase"] == "failed"
+    with pytest.raises(ValueError, match="workflow failed"):
+        s.step()
+    assert s.state["cleanup_complete"]
+    assert all(t["state"] == "finished" for t in s.hc_call.terminals.values())
+    assert not any(c[:2] == ("server", "stop") for c in s.hc_call.calls)

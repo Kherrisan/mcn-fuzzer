@@ -1,8 +1,11 @@
 """Native API usage remains distinct from workflow payloads."""
 import json
 import sqlite3
+
 import pytest
-from scripts.benchmark_parallel_rsc import cleanup, codex_usage
+
+from scripts.benchmark_parallel_rsc import cleanup, codex_usage, summarize
+
 
 @pytest.mark.parametrize("saved_id", [False, True])
 def test_codex_usage_filters_campaign_and_native_session_and_uses_final_counters(
@@ -21,7 +24,11 @@ def test_codex_usage_filters_campaign_and_native_session_and_uses_final_counters
                     "type": "event_msg",
                     "payload": {
                         "type": "token_count",
-                        "info": {"total_token_usage": counts},
+                        "info": {
+                            "total_token_usage": counts,
+                            "last_token_usage": {"input_tokens": 50},
+                            "model_context_window": 258400,
+                        },
                     },
                 }
             )
@@ -60,6 +67,9 @@ def test_codex_usage_filters_campaign_and_native_session_and_uses_final_counters
     result = codex_usage(root)
     assert result["available"] and result["total"] == usage
     assert result["workers"]["parser-1"]["model"] == "gpt-6-luna"
+    assert result["workers"]["parser-1"]["peak_input_tokens"] == 50
+    assert result["workers"]["parser-1"]["context_window"] == 258400
+    assert result["workers"]["parser-1"]["compactions"] == 0
     assert (root / "agents/parser-1/codex-session.jsonl").read_text() == rollout.read_text()
 
 
@@ -71,3 +81,14 @@ def test_diagnostic_cleanup_refuses_another_campaign_namespace(tmp_path):
     (root / "supervisor.json").write_text(json.dumps({"hc_env": {"XDG_RUNTIME_DIR": str(runtime)}}))
     with pytest.raises(RuntimeError, match="another root"):
         cleanup(root)
+
+
+def test_failed_review_is_reported_as_performed_but_not_passed(tmp_path):
+    (tmp_path / "state.json").write_text(json.dumps({"phase": "failed"}))
+    review = tmp_path / "reviews/round-1/review.json"
+    review.parent.mkdir(parents=True)
+    review.write_text(json.dumps({"findings": [{"category": "correctable"}]}))
+    result = summarize(tmp_path, 2, False, 1000)
+    assert result["semantic_review"] is True
+    assert result["review_passed"] is False
+    assert not result["complete"] and not result["under_20_minutes"]

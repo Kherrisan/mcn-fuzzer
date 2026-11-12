@@ -86,7 +86,6 @@ def graphs_digest(root, relative_paths):
 
 def write_manifest(path, binary, source_dir, graph_root, graph_paths):
     payload = {
-        "version": 1,
         "binary_sha256": sha256_file(binary),
         "source_sha256": source_digest(source_dir),
         "graphs_sha256": graphs_digest(graph_root, graph_paths),
@@ -101,9 +100,9 @@ def write_manifest(path, binary, source_dir, graph_root, graph_paths):
 
 def load_manifest(path):
     payload = json.loads(Path(path).read_text())
-    expected = {"version", "binary_sha256", "source_sha256", "graphs_sha256"}
-    if set(payload) != expected or payload.get("version") != 1:
-        raise ValueError("manifest must contain version plus binary, source, and graphs digests")
+    expected = {"binary_sha256", "source_sha256", "graphs_sha256"}
+    if set(payload) != expected:
+        raise ValueError("manifest must contain binary, source, and graphs digests")
     return payload
 
 

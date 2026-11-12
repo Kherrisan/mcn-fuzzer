@@ -131,7 +131,6 @@ class ProtocolGraph:
                           "condition": attrs.get("condition", ""),
                           "field_relations": list(attrs.get("field_relations") or [])})
         return {
-            "version": 2,
             "revision": self.revision,
             "request_id": request_id,
             "nodes": nodes,
@@ -139,8 +138,6 @@ class ProtocolGraph:
         }
 
     def apply_checkpoint(self, checkpoint):
-        if checkpoint.get("version") != 2:
-            raise ProtocolError("graph checkpoint must have version 2")
         for node in checkpoint.get("nodes") or []:
             step = self.resolve(node["step"])
             self.graph.nodes[step]["annotations"] = list(node.get("annotations") or [])
@@ -154,24 +151,44 @@ class ProtocolGraph:
         self.revision = int(checkpoint.get("revision") or self.revision)
 
 
+def _validate_protocol_shape(model):
+    collections = {"parties", "messages", "channels", "steps", "step_dependencies", "unresolved"}
+    if not isinstance(model, dict) or set(model) != {"meta", *collections}:
+        raise ProtocolError("protocol must contain meta and the current named object collections")
+    meta = model["meta"]
+    if not isinstance(meta, dict) or set(meta) != {"protocol", "complete", "documents"}:
+        raise ProtocolError("protocol meta must contain only protocol, complete, documents")
+    if not isinstance(meta["protocol"], str) or not meta["protocol"]:
+        raise ProtocolError("protocol meta.protocol must be a nonempty string")
+    if type(meta["complete"]) is not bool or not isinstance(meta["documents"], list):
+        raise ProtocolError("protocol meta requires a boolean complete and a documents array")
+    for source in meta["documents"]:
+        if (not isinstance(source, dict) or set(source) != {"doc_id", "rfc", "path"}
+                or any(not isinstance(value, str) or not value for value in source.values())):
+            raise ProtocolError("protocol documents require nonempty doc_id, rfc, path only")
+    for kind in collections:
+        if not isinstance(model[kind], list) or any(not isinstance(row, dict) for row in model[kind]):
+            raise ProtocolError(f"protocol {kind} must be an array of objects")
+        for row in model[kind]:
+            if kind in {"parties", "messages", "channels", "steps"}:
+                if not isinstance(row.get("name"), str) or not row["name"]:
+                    raise ProtocolError(f"protocol {kind} require nonempty names")
+
+
 def load_protocol(protocol_path, catalog_path=None, checkpoint_path=None):
     path = Path(protocol_path)
     try:
         model = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise ProtocolError(f"cannot read protocol model {path}: {error}") from error
-    meta = model.get("meta") or {}
-    actual = meta.get("schema_version")
-    if actual != "8.0.0":
-        raise ProtocolError(f"protocol schema_version is {actual}, expected 8.0.0")
+    _validate_protocol_shape(model)
+    meta = model["meta"]
     base = {"protocol_name": meta.get("protocol", ""), "model": model}
     if catalog_path:
         try:
             catalog = json.loads(Path(catalog_path).read_text())
         except (OSError, json.JSONDecodeError) as error:
             raise ProtocolError(f"cannot read catalog {catalog_path}: {error}") from error
-        if catalog.get("version") != 3:
-            raise ProtocolError(f"catalog version is {catalog.get('version')}, expected 3")
         if not catalog.get("steps"):
             raise ProtocolError("catalog has no steps")
         model_steps = {step.get("name"): step for step in model.get("steps") or []}
@@ -198,6 +215,7 @@ def load_protocol(protocol_path, catalog_path=None, checkpoint_path=None):
 def build_catalog(model, protocol_id=None):
     """Fallback catalog when Rust did not write one (offline tests only)."""
     del protocol_id
+    _validate_protocol_shape(model)
     steps = []
     for raw in model.get("steps") or []:
         action = raw.get("action") or "send"
@@ -220,7 +238,6 @@ def build_catalog(model, protocol_id=None):
             "field_relations": raw.get("field_relations") or [],
         })
     return {
-        "version": 3,
         "protocol_name": (model.get("meta") or {}).get("protocol", ""),
         "binding": {},
         "parties": [party.get("name") for party in model.get("parties") or []],

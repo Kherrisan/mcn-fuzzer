@@ -1,4 +1,4 @@
-"""Versioned protocol contract and extraction schemas (no provider dependencies)."""
+"""Protocol contract and extraction schemas (no provider dependencies)."""
 
 from __future__ import annotations
 

@@ -38,6 +38,8 @@ OUTPUT_DIR={{ output_dir }}
 - Generator module skill (read-only): {{ campaign.generator_skill }}
 - Artifact validator: {{ campaign.generator_validator }}
 - Public I/O API source: {{ campaign.pythonpath }}/generator_server/context.py
+- Generator scaffold (read-only): {{ campaign.pythonpath }}/generator_server/template.py
+- Empty params schema template (read-only): {{ campaign.pythonpath }}/generator_server/params.schema.json
 - Import/worker lifecycle sources: {{ campaign.pythonpath }}/generator_server/registry.py
   and {{ campaign.pythonpath }}/generator_server/worker.py
 - Initialization budget: {{ campaign.budgets.initialization_secs }} seconds.
@@ -76,6 +78,13 @@ should be taken from them. Reading these explicit files is allowed and does not
 violate the SUT source restriction. They are read-only; do not modify them.
 
 Read the public API and lifecycle sources and inspect the model's structure now.
+Read the generator scaffold at {{ campaign.pythonpath }}/generator_server/template.py
+and the empty params schema at
+{{ campaign.pythonpath }}/generator_server/params.schema.json. The scaffold
+contains common imports, field/state helpers, listener patterns, and one
+commented handler example for each of the 13 ProfuzzGym targets; use it as a
+copy reference, not as a file to publish. The schema file is the empty
+production-compatible shape to extend with the proposal's initial fields.
 Read the generator module skill at {{ campaign.generator_skill }} now. Use its
 protocol map to read only the references relevant to this campaign. Prefer its
 installed codecs, cryptographic primitives, and peer/server SDKs over rebuilding

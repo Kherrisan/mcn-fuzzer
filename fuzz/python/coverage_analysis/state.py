@@ -84,6 +84,7 @@ class State:
         self.committed = None
         self.committed_checkpoint = None
         self.committed_proposal = None
+        self.committed_request_id = None
         self.graph_revision = 0
         self.alias_diagnostics = []
 
@@ -125,8 +126,6 @@ class State:
             manifest = json.loads(Path(path).read_text())
         except (OSError, json.JSONDecodeError) as error:
             raise StateError("incompatible_data", f"cannot read manifest {path}: {error}")
-        if manifest.get("version") != 1:
-            raise StateError("incompatible_data", "manifest must have version 1")
         return manifest
 
     def _bind(self, request_id, key, loaded):
@@ -166,7 +165,7 @@ class State:
         build = str(metadata.get("fingerprint") or snapshot.parent.name)
         identity = {"build": build, "snapshot": snapshot.name,
                     "binary": metadata.get("binary"), "binary_sha256": metadata.get("binary_sha256"),
-                    "coverage_sha256": digest}
+                    }
         loaded = self._store("coverage", data, digest, identity)
         if self.latest.get("callgraph"):
             self.alias_diagnostics = coverage.build_aliases(
@@ -310,7 +309,6 @@ class State:
             graph,
             origin=str(payload.get("origin") or "coverage"),
             session=request.session,
-            request_id=request.request_id,
             build=request.build,
             snapshot=f"{request.snapshot:06}",
             goal=payload.get("goal") or {},
@@ -319,9 +317,7 @@ class State:
             parties=payload.get("parties") or {},
             channels=payload.get("channels") or {},
             mutations=payload.get("mutations") or [],
-            global_context=payload.get("global_context") or [],
             dependencies=payload.get("dependencies"),
-            graph_revision=graph.revision,
         )
         proposal_mod.validate_proposal(proposal, graph, handlers, request.identity())
         path = proposal_mod.freeze(request.output_dir / "proposal.json", proposal)
@@ -340,8 +336,6 @@ class State:
         graph = self.txn_graph(request_id)
         if request.proposal is None:
             raise StateError("no_proposal", "no proposal was submitted for this request")
-        if request.proposal.get("request_id") != request_id:
-            raise StateError("mismatch", "proposal does not belong to this request")
         path = request.output_dir / "proposal.json"
         if not path.is_file() or sha256_file(path) != proposal_sha256:
             raise StateError("mismatch", "frozen proposal bytes do not match")
@@ -353,6 +347,7 @@ class State:
         self.committed = graph
         self.committed_checkpoint = graph.checkpoint(request_id)
         self.committed_proposal = request.proposal
+        self.committed_request_id = request_id
         request.committed = True
         self._persist_commit()
         return {"request_id": request_id,
@@ -379,6 +374,5 @@ class State:
                            "digest": loaded.digest, **loaded.identity}
                           if loaded else {"loaded": False})
         state["graph_revision"] = self.graph_revision
-        state["committed_proposal"] = (
-            self.committed_proposal["request_id"] if self.committed_proposal else None)
+        state["committed_proposal"] = self.committed_request_id
         return state

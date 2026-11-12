@@ -1,0 +1,38 @@
+[target]
+binary = "../../../targets/lightftp/build/fftp"
+source_dir = "../../../targets/lightftp/build-cov/LightFTP/Source"
+workdir = "../../../targets/lightftp/work"
+cleanup_script = "../../../targets/lightftp/cleanup.sh"
+host = "127.0.0.1"
+port = 0
+map_size = 65536
+
+[timeouts]
+connect_ms = 2000
+io_ms = 1000
+case_ms = 10000
+exit_grace_ms = 5000
+
+[campaign]
+seeds = "../../../targets/lightftp/seeds"
+corpus = "../../../targets/lightftp/corpus"
+crashes = "../../../targets/lightftp/crashes"
+python = "../../../.venv/bin/python"
+pythonpath = "../../../python"
+
+[generator_synthesis]
+enabled = true
+model = "protocol.json"
+profile = "codex"
+init_timeout_secs = 300
+extra_files = ["../../../targets/lightftp/fftp.conf"]
+
+[parties]
+sut = ["server-PI", "server-DTP"]
+generator = ["user-PI", "user-DTP"]
+
+[agents.profiles.codex]
+provider = "codex"
+executable = "/bin/true"
+model = "test-model"
+effort = "high"

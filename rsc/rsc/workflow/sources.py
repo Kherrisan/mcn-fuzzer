@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from itertools import groupby
 from pathlib import Path
@@ -10,12 +9,6 @@ from pathlib import Path
 import tiktoken
 
 from rsc.ingest import IngestOptions, ingest_path
-
-
-def digest(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(value, ensure_ascii=False, sort_keys=True).encode()
-    ).hexdigest()
 
 
 def render(batch: dict) -> str:
@@ -152,7 +145,13 @@ def validate_batches(documents: dict, batches: list, maximum: int) -> None:
                 raise ValueError("source coverage incomplete")
 
 
-def prepare(root: Path, paths: list[str], target: int, maximum: int) -> tuple[dict, list]:
+def prepare(root: Path, paths: list[str], target: int, maximum: int,
+            *, capacity_tokens: int | None = None) -> tuple[dict, list]:
+    if capacity_tokens is not None:
+        maximum = min(maximum, capacity_tokens)
+        target = min(target, maximum)
+        if maximum < 128:
+            raise ValueError("context capacity is too small for source batch metadata")
     documents = {}
     for index, path in enumerate(paths):
         result = ingest_path(path, IngestOptions(out_dir=root / "sources" / str(index)))
@@ -165,4 +164,18 @@ def prepare(root: Path, paths: list[str], target: int, maximum: int) -> tuple[di
             documents[item.doc_id] = doc
     if not documents:
         raise ValueError("no RFC documents")
+    text_root = root / "sources" / "text"
+    text_root.mkdir(parents=True, exist_ok=True)
+    for index, (doc_id, document) in enumerate(documents.items(), 1):
+        # Stable locators are embedded in searchable text; no digest is needed.
+        lines = [f"Document: {doc_id}"]
+        for block in sorted(document["blocks"], key=lambda b: b["order"]):
+            lines.extend([f"\n[{doc_id}/{block['block_id']}] {' / '.join(block['section_path'])}",
+                          block["text"]])
+        path = text_root / f"source-{index:03d}.txt"
+        temporary = path.with_suffix(".tmp")
+        temporary.unlink(missing_ok=True)
+        temporary.write_text("\n".join(lines), encoding="utf-8")
+        temporary.chmod(0o444)
+        temporary.replace(path)
     return documents, build_batches(documents, target, maximum)

@@ -26,9 +26,7 @@ SPAN = {
     "end_line": 1,
 }
 META = {
-    "schema_version": "0.1.0",
     "rfc": "RFC 8446",
-    "input_sha256": "0" * 64,
 }
 
 DOCUMENT = {
@@ -69,9 +67,7 @@ INDEX = {
 }
 
 MANIFEST = {
-    "schema_version": "0.1.0",
     "rfc": "RFC 8446",
-    "input_sha256": "0" * 64,
     "created_at": "2026-01-01T00:00:00Z",
     "rsc_version": "0.1.0",
     "argv": ["rsc", "run"],
@@ -79,7 +75,6 @@ MANIFEST = {
 }
 
 BATCH = {
-    "schema_version": "0.1.0",
     "batch_id": "batch-test",
     "input_root": "/tmp/rfc",
     "created_at": "2026-01-01T00:00:00Z",
@@ -90,7 +85,6 @@ BATCH = {
             "doc_id": "rfc9999",
             "input_path": "rfc9999.txt",
             "format": "txt",
-            "input_sha256": "0" * 64,
             "status": "ok",
             "document": "rfc9999/document.json",
             "report": "rfc9999/ingest-report.json",

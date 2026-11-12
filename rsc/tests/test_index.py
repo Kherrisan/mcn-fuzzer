@@ -93,11 +93,9 @@ def make_document() -> dict[str, object]:
 
     return {
         "meta": {
-            "schema_version": "0.1.0",
             "rfc": "RFC 9999",
             "title": "Synthetic Protocol",
             "source_id": "rfc9999",
-            "input_sha256": "a" * 64,
             "generator": "test",
         },
         "sections": sections,
@@ -268,9 +266,7 @@ class StructuralIndexTests(unittest.TestCase):
     def test_empty_document(self) -> None:
         document = {
             "meta": {
-                "schema_version": "0.1.0",
                 "rfc": "RFC 0000",
-                "input_sha256": "a" * 64,
                 "generator": "test",
             },
             "sections": [],
@@ -301,7 +297,6 @@ class ProFuzzBenchStructuralTests(unittest.TestCase):
         parsed = parse(
             text,
             source_path=entry["file"],
-            input_sha256=entry["sha256"],
             doc_id=Path(entry["file"]).stem,
         )
         return build_structural_index(parsed.document, generated_at="x")

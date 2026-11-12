@@ -1,4 +1,4 @@
-//! Schema 8.0.0 protocol models and name indexes.
+//! Published protocol models and name indexes.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -103,7 +103,6 @@ struct ModelFile {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Meta {
-    schema_version: String,
     protocol: String,
     complete: bool,
     documents: Vec<SourceDoc>,
@@ -114,8 +113,6 @@ struct Meta {
 pub(crate) struct SourceDoc {
     pub(crate) doc_id: String,
     pub(crate) rfc: String,
-    pub(crate) input_sha256: String,
-    pub(crate) document_sha256: String,
     pub(crate) path: String,
 }
 
@@ -520,15 +517,9 @@ pub fn load_model(path: &Path) -> Result<IndexedModel, ModelError> {
         .map_err(|error| ModelError::new(format!("protocol model is not JSON: {error}")))?;
     let file: ModelFile = serde_json::from_value(snapshot.clone()).map_err(|error| {
         ModelError::new(format!(
-            "protocol model does not match schema 8.0.0: {error}"
+            "protocol model does not match the current schema: {error}"
         ))
     })?;
-    if file.meta.schema_version != "8.0.0" {
-        return Err(ModelError::new(format!(
-            "protocol schema_version is {}, expected 8.0.0",
-            file.meta.schema_version
-        )));
-    }
     let mut parties = BTreeMap::new();
     for party in &file.parties {
         if parties.insert(party.name.clone(), party.clone()).is_some() {

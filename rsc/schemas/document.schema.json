@@ -8,12 +8,10 @@
     "meta": {
       "type": "object",
       "properties": {
-        "schema_version": {"type": "string", "minLength": 1},
         "rfc": {"type": "string", "minLength": 1},
         "title": {"type": "string", "minLength": 1},
         "source_id": {"type": "string", "minLength": 1},
         "source_path": {"type": "string", "minLength": 1},
-        "input_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "format": {"enum": ["txt", "html", "xml", "pdf"]},
         "input_set": {"type": "array", "items": {"type": "string"}},
         "series": {"type": ["string", "null"]},
@@ -25,12 +23,10 @@
         "generator": {"type": "string"}
       },
       "required": [
-        "schema_version",
         "rfc",
         "title",
         "source_id",
         "source_path",
-        "input_sha256",
         "format"
       ],
       "additionalProperties": false

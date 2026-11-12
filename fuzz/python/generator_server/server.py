@@ -98,9 +98,7 @@ def _run(table: dict[int, Session], request: dict, client: int, request_id: int)
         if step_trace or getattr(generate, "_mcn_dispatch", False):
             generate(ctx, _plain_step_trace(step_trace or []))
         else:
-            # Direct unit tests still exercise the old in-process API. Rust
-            # corpus inputs without a versioned step_trace are rejected before
-            # they reach this server.
+            # Direct generator tests may still exercise the parameter-only API.
             generate(ctx, _plain_params(params))
     finally:
         ctx.close_extra()

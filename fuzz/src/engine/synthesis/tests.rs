@@ -17,7 +17,7 @@ fn fixture() -> (crate::protocol::IndexedModel, Binding, PathBuf) {
     ));
     fs::create_dir_all(&dir).unwrap();
     let body = json!({
-        "meta": {"schema_version": "8.0.0", "protocol": "demo", "complete": true, "documents": []},
+        "meta": {"protocol": "demo", "complete": true, "documents": []},
         "parties": [{"name": "client", "description": "c"}, {"name": "server", "description": "s"}],
         "messages": [{"name": "hello", "associated_fields": []}],
         "channels": [{"name": "control", "description": "c", "transport": "TCP",
@@ -55,7 +55,6 @@ fn write_request(
     let mut proposal = instantiate(model, &model.steps).unwrap();
     proposal.origin = origin.to_string();
     proposal.session = session.to_string();
-    proposal.request_id = request.to_string();
     proposal.goal.reason = "goal".into();
     if origin == "coverage" {
         proposal.goal.handler_ids = vec!["handle_hello".into()];
@@ -144,24 +143,6 @@ fn accepted_input_carries_step_trace_and_mutable_field_defaults() {
             default: None,
             source: "proposal".into(),
         });
-    proposal
-        .global_context
-        .push(crate::engine::input::GlobalContextValue {
-            name: "username".into(),
-            kind: "string".into(),
-            value: Some(crate::engine::input::ParamValue::Str("shared".into())),
-            source: "constant".into(),
-            seed: None,
-        });
-    proposal
-        .global_context
-        .push(crate::engine::input::GlobalContextValue {
-            name: "unset".into(),
-            kind: String::new(),
-            value: None,
-            source: "environment".into(),
-            seed: None,
-        });
     fs::write(
         dir.join("proposal.json"),
         serde_json::to_vec_pretty(&proposal).unwrap(),
@@ -175,22 +156,10 @@ fn accepted_input_carries_step_trace_and_mutable_field_defaults() {
     fs::write(dir.join("params.json"), r#"{"username":"ubuntu"}"#).unwrap();
     let request = request(dir.clone(), "r1", true);
     let validated = request.accept().unwrap();
-    assert_eq!(
-        validated.input.version,
-        crate::engine::input::STEP_TRACE_VERSION
-    );
     assert_eq!(validated.input.trace.steps.len(), 1);
     assert_eq!(
         validated.input.trace.steps[0].fields.get("username"),
         Some(&crate::engine::input::ParamValue::Str("ubuntu".into()))
-    );
-    assert_eq!(
-        validated.input.params["username"],
-        crate::engine::input::ParamValue::Str("shared".into())
-    );
-    assert_eq!(
-        validated.input.params["unset"],
-        crate::engine::input::ParamValue::Null
     );
 }
 

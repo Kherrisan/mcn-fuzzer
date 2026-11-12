@@ -7,7 +7,7 @@ trees, block references, order, span bounds and evidence-map consistency.
 
 from __future__ import annotations
 
-import re
+from rsc.schemas import legacy_metadata_errors
 
 BLOCK_TYPES = frozenset(
     {
@@ -23,7 +23,6 @@ BLOCK_TYPES = frozenset(
     }
 )
 FORMATS = frozenset({"txt", "html", "xml"})
-_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _is_int(value: object) -> bool:
@@ -83,7 +82,9 @@ def validate_document(
     source_text: str,
     line_count: int,
 ) -> list[str]:
-    errors: list[str] = []
+    errors = legacy_metadata_errors(document)
+    if errors:
+        return errors
     for key in ("meta", "sections", "blocks"):
         if key not in document:
             errors.append(f"document missing {key!r}")
@@ -113,10 +114,6 @@ def validate_document(
         errors.append("meta.title must be a non-empty string")
     if meta.get("format") not in FORMATS:
         errors.append("meta.format must be txt, html or xml")
-    digest = meta.get("input_sha256")
-    if not isinstance(digest, str) or not _SHA256_RE.match(digest):
-        errors.append("meta.input_sha256 must be a 64-character lowercase hex digest")
-
     source_length = len(source_text)
     section_by_id: dict[str, dict[str, object]] = {}
     section_paths: set[tuple[str, ...]] = set()

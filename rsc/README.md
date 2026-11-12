@@ -1,10 +1,14 @@
 # RSC RFC protocol extraction workflow
 
-RSC extracts a protocol model from RFC documents. A task-local MCP server owns state and scheduling. A Python supervisor uses Herdr Core (`hc`) to run native Codex or Pi sessions. The pipeline is **parallel Parse → concept clustering → parallel group Merge → deterministic Review → publication**. There is no LLM Reviewer or Fix phase.
+RSC turns local RFC documents into a protocol interaction model. A task-local MCP service
+owns JSON files and scheduling; Herdr Core (`hc`) runs native coding-agent sessions.
+The workflow is **Parse → optional whole-input Merge → validation → independent Review**.
+Correctable findings return to the original parser or merger for Fix.
 
 ## Install and run
 
-Requires Python 3.12+, `hc`, an authenticated agent CLI, and local RFC TXT/HTML/XML files. Run commands from this directory.
+Requires Python 3.12+, `hc`, an authenticated native agent CLI, and RFC TXT/HTML/XML files.
+Run commands from this directory:
 
 ```sh
 python3 -m venv .venv
@@ -17,45 +21,68 @@ python3 -m venv .venv
   --config config.example.toml --profile codex-luna-high
 ```
 
-Task directory basenames must be unique because HC namespaces use them. `tiktoken` downloads its `cl100k_base` data once; populate the cache before offline use. Default batch target/maximum sizes are 8,000/12,000 tokens. Every nonempty source range belongs to one batch. Parsers receive contiguous, approximately balanced sections of the batch list, with chapter locality preferred within a 10% tolerance. They can read outside their assignments to resolve dependencies.
+Use a unique task-directory basename for its HC namespace. `tiktoken` downloads its token
+encoding once; populate its cache before offline use. Batches default to 8000 target and
+12000 maximum tokens. Searchable immutable source text preserves document/block locators.
 
-Set `workflow.parse_workers` and `workflow.merge_workers` to positive integers (both default to 3). A value of 1 follows the same code path. Each Parser submits actual extracted items per batch, then one Parser clusters the complete name index. Merge workers process successive groups within the same session. The server integrates results and checks schemas, names, references, connection roles and field carriers. `workflow.max_feedback_rounds` controls corrections after the initial pass (default 2, including regrouping); unresolved structural errors fail without publishing.
+`parse_workers="auto"` plans contiguous chapter-local partitions, using a 258400-token context
+and 45000-token fixed reserve. `parse_max_workers=4` limits concurrency independently of the
+number of partitions. Positive manual parser counts are supported with capacity warnings.
+See `parse-plan.json` for actual assignments and estimates.
 
-`meta.complete=true` means this extraction workflow and its deterministic checks completed. It **does not certify semantic completeness**. `report.json`, `phases.json` and the audit explicitly record `semantic_review=false`.
+One parser skips Merge. Multiple results go to one fresh merger that reads every parser
+file. An explicit whole-input context gate stops oversized merges while preserving results.
+There is no `merge_workers` setting. Independent review reads all source ranges initially,
+then affected ranges after local fixes; global changes require a full review. The default
+feedback limit is five rounds. Correctable errors never publish. Source ambiguity or missing
+external references may publish with `meta.complete=false` and cited unresolved descriptions.
 
 ## Agent profiles
 
-Profiles under `[agents.profiles.NAME]` contain `provider`, `executable`, `model`, `effort`, `args` and `envs`. The default profile is `codex-luna-max`; the example also defines `codex-luna-high` and `pi-deepseek-flash`. Optional `agents.parser_profile` and `agents.merge_profile` select roles. Precedence is role CLI option → common `--profile` → role config → default.
+Profiles under `[agents.profiles.NAME]` specify `provider`, `executable`, `model`, `effort`,
+`args` and `envs`. Parser, merge and reviewer profiles can be selected separately:
 
 ```sh
 .venv/bin/rsc run --task-dir work/mixed-unique --protocol Example --rfc example.txt \
   --config config.example.toml --parser-profile codex-luna-high \
-  --merge-profile pi-deepseek-flash
+  --merge-profile pi-deepseek-flash --reviewer-profile codex-luna-high
 ```
 
-Codex must support `--no-daemon` and resolve to a native executable; update checks are disabled. HC terminal and native thread names match. Initialization is serialized to avoid shared SQLite startup races; ready workers then receive work concurrently. Pi requires Node 22.19+ and Pi 1.5.0+ with native MCP and OSC 7501. Its extension restricts tools to the task namespace and restores complete MCP output when the client truncates it.
+Merge and reviewer inherit the parser selection unless overridden. `agent-profiles.json`
+saves names and full profile definitions for resume; changed selections require a new task.
+`envs` contains literal `[name,value]` pairs. Duplicate names and managed identity overrides
+are rejected; inspection prints environment names only. Native authentication is inherited.
 
-`envs = [["SSL_CERT_FILE", "/path/to/ca.pem"]]` adds literal environment overrides. Duplicate names and RSC/HC identity overrides are rejected. Native authentication is inherited; DeepSeek uses `DEEPSEEK_API_KEY`. Config inspection prints environment names only. Saved `agent-profiles.json` freezes selections and definitions for resume; changed profiles require a new task.
+Codex must support `--no-daemon` and resolve to a native executable. HC terminal and native
+session names match. Initialization and native session lookup are serialized, then parsers
+run concurrently. Pi supports shell reading/writing and the five namespaced MCP tools.
+Fix reuses the original author's native session; the reviewer has an independent session.
 
-## Tools and persistence
+## Files, tools and resume
 
-The six agent tools are `read_source_batches`, `search_source`, `query_model`, `submit_parse_result`, `submit_clustering_result`, and `submit_merge_result`. There is no claim, apply-changes or phase-advance tool. Successful submissions tell the agent what remains. Scheduling and transitions happen on the server. See [pipeline.md](docs/pipeline.md) for contracts and conflict handling.
+Exactly five tools are exposed: `read_source_batches`, `query_model`, `submit_parse_result`,
+`submit_model_result`, and `submit_review_result`. Agents can search source files with shell
+`rg`. Submissions pass a JSON file path; the service validates and atomically saves the official
+file before advancing. Names and source locators replace object IDs. There are no artifact
+hashes, schema versions, revisions, submission counters or workflow SQLite database.
 
-`workflow.sqlite` (storage version 3) is authoritative. Items have simple internal IDs; all except dependencies have names. Exported `protocol.json` remains the version 8 name-based model. Source evidence identifies actual batch/block pairs; no reading receipt or extra completion report is required.
+Parser submissions can save whole accumulated progress with `complete=false` and
+`completed_batches`; a final checkpoint covers every assigned batch. Reviewer submissions
+contain findings and declared reviewed source ranges. See [pipeline.md](docs/pipeline.md)
+for complete file shapes, validation rules, budgets and recovery behavior.
 
-Run the same `rsc run --task-dir ...` to resume. Completed batch/group submissions survive restarts. Identical retries return their saved acknowledgment; changed retries and stale attempts are rejected. Confirmed process death allows two replacements per assignment. Send intent is persisted before dispatch; the first valid tool call acknowledges receipt. A timeout is not proof of death and does not permit duplicate dispatch. `--retry-worker parser-1` also requires a confirmed dead terminal.
+Run the same `rsc run --task-dir ...` to resume. Accepted files restore progress after a crash;
+identical completed submissions are idempotent. Confirmed worker death revokes its credential
+before replacement. An early-ended turn gets bounded continuation in the same session.
+Timeouts do not permit duplicate live agents. Task-local locks enforce one service/supervisor.
+Private tokens do not isolate processes sharing the same OS user.
 
-Task-local locks reject competing services/supervisors. Each task has a private HC environment saved under `hc_env` in `supervisor.json`. Inspect or clean up only that namespace. Tokens and launch settings are private files; permissions do not isolate processes sharing the same OS user.
+Old SQLite runs require their archived code for both resume and audit. New runs use:
 
-Old task databases are not migrated. Resume them with their archived code/config. `rsc audit` retains read-only historical support; version 2 audit requires the adjacent archived `source` package. Removed review config and tool names are rejected.
-
-## Outputs and verification
-
-- `protocol.json` and `snapshots/`: exported model and immutable source documents.
-- `revision-table.json`: old-to-canonical IDs, deletions, exact before/after edits and group attribution.
-- `checks.json`, `assignments.json`, `report.json`: deterministic checks, ownership and outcome.
-- `phases.json`: phase durations, MCP calls/rejections, delivery counts/tokens, repeated reads and worker occupancy. Occupancy is not inference utilization; MCP calls are not API calls.
-- `supervisor.json`, `supervisor-events.jsonl`, `agents/`: session and dispatch diagnostics. Detailed tool events and immutable submissions are in SQLite.
+- `state.json`, `sources.json`, `parse-plan.json` and searchable `sources/text/`.
+- `parsers/`, optional `merge.json`, `candidate.json`, and round-specific `reviews/`.
+- `protocol.json`, immutable `snapshots/` and `report.json` after accepted review.
+- `phases.json`, `events.jsonl`, `supervisor.json` and `agents/` for timings and diagnostics.
 
 ```sh
 .venv/bin/rsc validate protocol work/ftp-unique-name/protocol.json
@@ -63,10 +90,14 @@ Old task databases are not migrated. Resume them with their archived code/config
 .venv/bin/pytest -q
 ```
 
-An audit replays persisted submissions and deterministic integration and checks exported artifacts. It does not perform semantic review. The opt-in paid benchmark freezes source code and both FTP RFCs, runs 1 and 3 Parsers with 3 Merge workers and Luna/high, and limits each run to 40 minutes:
+An audit checks source coverage, file provenance, deterministic validity and independent
+review records. Review improves semantic checking but does not mathematically guarantee
+complete extraction. The opt-in FTP benchmark runs native Luna/high agents on RFC959 and
+RFC3659, records phase/context/call metrics, and compares automatic planning with two parsers:
 
 ```sh
-.venv/bin/python scripts/benchmark_parallel_rsc.py --out runs/result-comparison-unique
+.venv/bin/python scripts/benchmark_parallel_rsc.py --out runs/file-pipeline-unique
 ```
 
-It reports complete pipeline time, per-phase work, failures and available native token counters. The 20-minute timing flag is separate from structural audit and manual semantic assessment. There is no automatic unlimited tuning loop.
+Twenty minutes is a measurement target, not an assumed result. See
+[workflow-acceptance.md](docs/workflow-acceptance.md) for the current verification boundary.

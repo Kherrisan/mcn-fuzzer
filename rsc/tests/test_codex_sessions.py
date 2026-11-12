@@ -35,15 +35,18 @@ def insert(db, context, thread, created=100):
     db.commit()
 
 
-def test_identical_display_names_restore_exact_sessions_in_different_campaigns(tmp_path, native):
+@pytest.mark.parametrize("role", ["parser", "reviewer"])
+def test_identical_display_names_restore_exact_sessions_in_different_campaigns(
+    tmp_path, native, role
+):
     adapter, profile, db = native
     contexts = [
         AgentContext(
             tmp_path / suffix,
             "/tmp/service.sock",
             "a-long-common-campaign-prefix-" + suffix,
-            "parser",
-            worker="parser-1",
+            role,
+            worker=f"{role}-1",
             resume=True,
         )
         for suffix in ("one", "two")
@@ -79,6 +82,20 @@ def test_known_identity_beats_same_directory_name_collision_and_missing_identity
     assert adapter.prepare(profile, resumed).argv[-2:] == ["resume", "current"]
     # Resume retains the original creation time; process restart is not a new conversation.
     assert adapter.session(profile, resumed, started_at=300)["id"] == "current"
+
+
+def test_reviewer_inherits_profile_without_reusing_parser_session(tmp_path, native):
+    adapter, profile, db = native
+    parser = AgentContext(tmp_path, "/tmp/sock", "task", "parser", worker="parser-1", resume=True)
+    reviewer = replace(parser, role="reviewer", worker="reviewer-1")
+    insert(db, parser, "parser-session")
+    insert(db, reviewer, "reviewer-session")
+    assert parser.directory != reviewer.directory
+    assert parser.namespace != reviewer.namespace
+    assert adapter.prepare(profile, parser).argv[-2:] == ["resume", "parser-session"]
+    assert adapter.prepare(profile, reviewer).argv[-2:] == ["resume", "reviewer-session"]
+    with pytest.raises(ConfigError, match="unavailable"):
+        adapter.prepare(profile, replace(reviewer, session_id="parser-session"))
 
 
 def test_absent_native_state_waits_for_initialization_without_creating_a_database(tmp_path, native):
