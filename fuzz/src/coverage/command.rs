@@ -13,9 +13,9 @@ use std::{
 use libafl::{inputs::Input, Error};
 
 use super::{
-    build_fingerprint, load_checkpoint, replay_pending, resume_or_refuse,
-    BatchReport, BatchTimings, CaseLocation, CoverageSummary, OutputLock,
-    PendingCase, Resume, SourceCoverageProgress,
+    build_fingerprint, load_checkpoint, replay_pending, resume_or_refuse, BatchReport,
+    BatchTimings, CaseLocation, CoverageSummary, OutputLock, PendingCase, Resume,
+    SourceCoverageProgress,
 };
 use crate::{app::config::Campaign, engine::input::GeneratorInput};
 
@@ -48,7 +48,7 @@ pub fn run(
         ));
     }
     let fingerprint = build_fingerprint(&config.binary, &config.llvm_profdata, &config.llvm_cov)?;
-    let root = output.join(&fingerprint);
+    let root = output.clone();
     let _lock = OutputLock::acquire(&output)?;
     match resume_or_refuse(&root)? {
         Resume::Refuse { reason } => {
@@ -233,7 +233,7 @@ pub(super) fn replay_directory_once(
     replay_pending(
         campaign,
         &campaign.coverage,
-        &root.join(&fingerprint),
+        root,
         &fingerprint,
         None,
         None,
@@ -387,15 +387,9 @@ mod tests {
             ),
         );
         sleep(Duration::from_millis(20));
-        touch(
-            &later,
-            "{\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n",
-        );
+        touch(&later, "{\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n");
         let same = dir.join("c.json");
-        touch(
-            &same,
-            "{\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n",
-        );
+        touch(&same, "{\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n");
         let selected = select_inputs(&dir).unwrap();
         let names: Vec<_> = selected.iter().map(|item| item.name.clone()).collect();
         assert_eq!(names, vec!["a.json", "b.json", "c.json"]);

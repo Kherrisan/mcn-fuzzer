@@ -653,6 +653,7 @@ mod tests {
             agents: crate::app::config::AgentCatalog::default(),
             parties: None,
             base: PathBuf::from("/tmp"),
+            output_root: None,
         }
     }
 

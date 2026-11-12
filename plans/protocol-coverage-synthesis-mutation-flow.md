@@ -356,7 +356,7 @@ snapshot NNNNNN
 Snapshot 目录通常包含：
 
 ```text
-coverage/<build-fingerprint>/
+coverage/
   snapshots/000001/
     coverage.json
     coverage.profdata

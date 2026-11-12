@@ -1,9 +1,10 @@
-//! Campaign configuration. Paths in the TOML file are relative to that file.
+//! Campaign configuration. Input paths are relative to the TOML file; output paths use the CLI campaign root when provided.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    env, fs,
     path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use libafl::Error;
@@ -578,6 +579,79 @@ impl Default for GeneratorSynthesisConfig {
     }
 }
 
+/// Create a unique campaign output root below `parent` (or the current directory).
+///
+/// The leaf name is `mcn-fuzzer-YYYYMMDD-HHMM`; collisions within the same
+/// minute receive `-2`, `-3`, ... suffixes. Timestamps are UTC.
+pub fn create_campaign_root(parent: Option<&Path>) -> Result<PathBuf, Error> {
+    let parent = match parent {
+        Some(path) if path.is_absolute() => path.to_path_buf(),
+        Some(path) => env::current_dir()
+            .map_err(|error| Error::unknown(format!("current directory: {error}")))?
+            .join(path),
+        None => env::current_dir()
+            .map_err(|error| Error::unknown(format!("current directory: {error}")))?,
+    };
+    fs::create_dir_all(&parent).map_err(|error| {
+        Error::unknown(format!(
+            "creating output parent {}: {error}",
+            parent.display()
+        ))
+    })?;
+    let (year, month, day, hour, minute) = utc_minute(SystemTime::now());
+    let base = format!("mcn-fuzzer-{year:04}{month:02}{day:02}-{hour:02}{minute:02}");
+    for suffix in 1u32.. {
+        let name = if suffix == 1 {
+            base.clone()
+        } else {
+            format!("{base}-{suffix}")
+        };
+        let path = parent.join(name);
+        match fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(Error::unknown(format!(
+                    "creating campaign root {}: {error}",
+                    path.display()
+                )))
+            }
+        }
+    }
+    unreachable!("unbounded campaign-root suffix loop")
+}
+
+fn utc_minute(time: SystemTime) -> (i64, u32, u32, u32, u32) {
+    let seconds = time
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0);
+    let days = seconds.div_euclid(86_400);
+    let second_of_day = seconds.rem_euclid(86_400) as u32;
+    let (year, month, day) = civil_from_days(days);
+    (
+        year,
+        month,
+        day,
+        second_of_day / 3_600,
+        (second_of_day % 3_600) / 60,
+    )
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    (year, month as u32, day as u32)
+}
+
 /// One campaign file.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Campaign {
@@ -616,11 +690,23 @@ pub struct Campaign {
     /// Directory that contained the TOML file. Not read from the file.
     #[serde(skip)]
     pub base: PathBuf,
+    /// CLI-created campaign root. Not read from the file.
+    #[serde(skip)]
+    pub output_root: Option<PathBuf>,
 }
 
 impl Campaign {
     /// Load a TOML campaign and resolve its paths.
     pub fn load(path: &Path) -> Result<Self, Error> {
+        Self::load_with_output_root(path, None)
+    }
+
+    /// Load a campaign, resolving output fields relative to `output_root`.
+    ///
+    /// Input fields (`seeds`, binary, model, documents, ...) remain relative to
+    /// the campaign file. Output fields (`corpus`, `crashes`, coverage output,
+    /// synthesis output) use `output_root` when present.
+    pub fn load_with_output_root(path: &Path, output_root: Option<&Path>) -> Result<Self, Error> {
         let text = fs::read_to_string(path)
             .map_err(|error| Error::unknown(format!("reading {}: {error}", path.display())))?;
         let mut campaign: Campaign = toml::from_str(&text)
@@ -640,6 +726,7 @@ impl Campaign {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
+        let output_base = output_root.unwrap_or(&base).to_path_buf();
         campaign.target.binary = resolve(&base, &campaign.target.binary);
         campaign.target.source_dir = campaign
             .target
@@ -653,14 +740,14 @@ impl Campaign {
             .as_ref()
             .map(|path| resolve(&base, path));
         campaign.campaign.seeds = resolve(&base, &campaign.campaign.seeds);
-        campaign.campaign.corpus = resolve(&base, &campaign.campaign.corpus);
-        campaign.campaign.crashes = resolve(&base, &campaign.campaign.crashes);
+        campaign.campaign.corpus = resolve(&output_base, &campaign.campaign.corpus);
+        campaign.campaign.crashes = resolve(&output_base, &campaign.campaign.crashes);
         campaign.campaign.python = resolve(&base, &campaign.campaign.python);
         campaign.campaign.pythonpath = resolve(&base, &campaign.campaign.pythonpath);
         if !campaign.coverage.binary.as_os_str().is_empty() {
             campaign.coverage.binary = resolve(&base, &campaign.coverage.binary);
         }
-        campaign.coverage.output = resolve(&base, &campaign.coverage.output);
+        campaign.coverage.output = resolve(&output_base, &campaign.coverage.output);
         if !campaign.coverage.callgraph_dot.as_os_str().is_empty() {
             campaign.coverage.callgraph_dot = resolve(&base, &campaign.coverage.callgraph_dot);
         }
@@ -724,7 +811,8 @@ impl Campaign {
             campaign.generator_synthesis.model =
                 resolve(&base, &campaign.generator_synthesis.model);
         }
-        campaign.generator_synthesis.output = resolve(&base, &campaign.generator_synthesis.output);
+        campaign.generator_synthesis.output =
+            resolve(&output_base, &campaign.generator_synthesis.output);
         campaign.generator_synthesis.extra_files = campaign
             .generator_synthesis
             .extra_files
@@ -748,6 +836,7 @@ impl Campaign {
             parties.resolve(&model.party_names())?;
         }
         campaign.base = base;
+        campaign.output_root = output_root.map(Path::to_path_buf);
         Ok(campaign)
     }
 
@@ -819,6 +908,43 @@ pythonpath = "pp"
 {core_line}
 "#
         )
+    }
+
+    #[test]
+    fn output_root_receives_relative_output_fields() {
+        let dir = std::env::temp_dir().join(format!("mcn-output-{}", std::process::id()));
+        let root = dir.join("run-root");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("campaign.toml");
+        fs::write(&path, sample("", "")).unwrap();
+        let campaign = Campaign::load_with_output_root(&path, Some(&root)).unwrap();
+        assert_eq!(campaign.output_root.as_deref(), Some(root.as_path()));
+        assert_eq!(campaign.campaign.corpus, root.join("co"));
+        assert_eq!(campaign.campaign.crashes, root.join("cr"));
+        assert_eq!(campaign.coverage.output, root.join("source-coverage"));
+        assert_eq!(campaign.generator_synthesis.output, root.join("synthesis"));
+        assert_eq!(campaign.target.workdir, dir.join("w"));
+        assert_eq!(campaign.campaign.seeds, dir.join("s"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn campaign_root_uses_a_unique_timestamped_directory() {
+        let dir = std::env::temp_dir().join(format!("mcn-campaign-root-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let first = create_campaign_root(Some(&dir)).unwrap();
+        let second = create_campaign_root(Some(&dir)).unwrap();
+        let name = first.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with("mcn-fuzzer-"));
+        assert_eq!(name.matches('-').count(), 3);
+        assert_eq!(
+            second.file_name().unwrap().to_string_lossy(),
+            format!("{name}-2")
+        );
+        assert!(first.is_dir() && second.is_dir());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

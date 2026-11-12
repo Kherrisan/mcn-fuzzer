@@ -114,7 +114,8 @@ impl CaseExecutor {
         };
         let feedback = MaxMapFeedback::new(&observer);
         let pcap = PcapObserver::new(Arc::clone(&capture));
-        let log_path = base.join("generator.log");
+        let log_root = campaign.output_root.as_deref().unwrap_or(base);
+        let log_path = log_root.join("generator.log");
         let generator = GeneratorClient::spawn(
             &campaign.campaign.python,
             &campaign.campaign.pythonpath,

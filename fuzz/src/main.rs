@@ -46,6 +46,9 @@ enum Command {
     Run {
         #[arg(long)]
         campaign: PathBuf,
+        /// Parent directory for the generated campaign root. Defaults to cwd.
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
         #[arg(long)]
         iterations: Option<u64>,
         /// Save the full llvm-cov JSON for source-coverage snapshots.
@@ -136,8 +139,8 @@ fn main() -> ExitCode {
         }
     };
     mcn_fuzz::runtime::lifecycle::install_job_policy(policy);
+    let mut output_root = None;
     if !orchestrator(&cli.command) {
-        let capture = capture_requested(&cli.command);
         let identity = match mcn_fuzz::runtime::resolve_identity(cli.run_as.as_deref()) {
             Ok(identity) => identity,
             Err(error) => {
@@ -145,12 +148,32 @@ fn main() -> ExitCode {
                 return ExitCode::from(1);
             }
         };
-        if let Err(error) = ensure_command_outputs(&cli.command, &identity) {
+        output_root = match &cli.command {
+            Command::Run { output, .. } => {
+                match mcn_fuzz::app::config::create_campaign_root(output.as_deref()) {
+                    Ok(path) => Some(path),
+                    Err(error) => {
+                        eprintln!("mcn-fuzz: {error}");
+                        return ExitCode::from(1);
+                    }
+                }
+            }
+            _ => None,
+        };
+        if let Some(root) = &output_root {
+            if let Err(error) = mcn_fuzz::runtime::prepare_campaign_root(root, &identity) {
+                eprintln!("mcn-fuzz: {error}");
+                return ExitCode::from(1);
+            }
+        }
+        let capture = capture_requested(&cli.command, output_root.as_deref());
+        if let Err(error) = ensure_command_outputs(&cli.command, &identity, output_root.as_deref())
+        {
             eprintln!("mcn-fuzz: {error}");
             return ExitCode::from(1);
         }
         if let Command::Run { campaign, .. } = &cli.command {
-            if let Ok(loaded) = load(campaign) {
+            if let Ok(loaded) = load_with_output_root(campaign, output_root.as_deref()) {
                 if loaded.generator_synthesis.enabled || loaded.coverage.analysis_enabled {
                     let output = if loaded.generator_synthesis.enabled {
                         loaded.generator_synthesis.output.clone()
@@ -190,7 +213,7 @@ fn main() -> ExitCode {
             }
             Err(error) => {
                 if let Command::Run { campaign, .. } = &cli.command {
-                    if let Ok(loaded) = load(campaign) {
+                    if let Ok(loaded) = load_with_output_root(campaign, output_root.as_deref()) {
                         mcn_fuzz::agents::discard_recorded_runtime(
                             &loaded.generator_synthesis.output,
                         );
@@ -206,7 +229,8 @@ fn main() -> ExitCode {
             campaign,
             iterations,
             source_coverage_json,
-        } => load(campaign).and_then(|mut campaign| {
+            ..
+        } => load_with_output_root(campaign, output_root.as_deref()).and_then(|mut campaign| {
             campaign.coverage.export_json = *source_coverage_json;
             app::run(&campaign, *iterations)
         }),
@@ -250,7 +274,7 @@ fn main() -> ExitCode {
     };
     if !orchestrator(&cli.command) {
         if let Command::Run { campaign, .. } = &cli.command {
-            if let Ok(loaded) = load(campaign) {
+            if let Ok(loaded) = load_with_output_root(campaign, output_root.as_deref()) {
                 mcn_fuzz::agents::discard_recorded_runtime(&loaded.generator_synthesis.output);
             }
         }
@@ -259,13 +283,16 @@ fn main() -> ExitCode {
     ExitCode::from(code as u8)
 }
 
-fn capture_requested(command: &Command) -> bool {
+fn capture_requested(command: &Command, output_root: Option<&std::path::Path>) -> bool {
     match command {
-        Command::Run { campaign, .. }
-        | Command::Replay { campaign, .. }
-        | Command::AcceptJob { campaign, .. } => Campaign::load(campaign)
+        Command::Run { campaign, .. } => load_with_output_root(campaign, output_root)
             .map(|campaign| campaign.capture.enabled)
             .unwrap_or(false),
+        Command::Replay { campaign, .. } | Command::AcceptJob { campaign, .. } => {
+            Campaign::load(campaign)
+                .map(|campaign| campaign.capture.enabled)
+                .unwrap_or(false)
+        }
         Command::Coverage { .. } | Command::Accept { .. } => false,
         #[cfg(feature = "stats")]
         Command::BenchJob { condition, .. } => condition == "on",
@@ -278,11 +305,30 @@ fn capture_requested(command: &Command) -> bool {
 fn ensure_command_outputs(
     command: &Command,
     identity: &mcn_fuzz::runtime::TargetIdentity,
+    output_root: Option<&std::path::Path>,
 ) -> Result<(), Error> {
     let paths = match command {
-        Command::Run { campaign, .. }
-        | Command::Replay { campaign, .. }
-        | Command::AcceptJob { campaign, .. } => {
+        Command::Run { campaign, .. } => {
+            let loaded = load_with_output_root(campaign, output_root)?;
+            let mut paths = vec![
+                loaded.base.clone(),
+                loaded
+                    .output_root
+                    .clone()
+                    .unwrap_or_else(|| loaded.base.clone()),
+            ];
+            paths.push(loaded.target.workdir.clone());
+            paths.push(loaded.campaign.corpus.clone());
+            paths.push(loaded.campaign.crashes.clone());
+            if loaded.coverage.enabled || loaded.coverage.analysis_enabled {
+                paths.push(loaded.coverage.output.clone());
+            }
+            if loaded.generator_synthesis.enabled {
+                paths.push(loaded.generator_synthesis.output.clone());
+            }
+            paths
+        }
+        Command::Replay { campaign, .. } | Command::AcceptJob { campaign, .. } => {
             let loaded = Campaign::load(campaign)?;
             let mut paths = vec![
                 loaded.base.clone(),
@@ -473,6 +519,26 @@ mod cli_tests {
     use clap::Parser;
 
     #[test]
+    fn run_cli_accepts_an_output_parent() {
+        let cli = Cli::try_parse_from([
+            "mcn-fuzz",
+            "run",
+            "--campaign",
+            "campaign.toml",
+            "-o",
+            "runs",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Run {
+                output: Some(output),
+                ..
+            } => assert_eq!(output, PathBuf::from("runs")),
+            _ => panic!("run output was not parsed"),
+        }
+    }
+
+    #[test]
     fn coverage_cli_defaults_campaign_corpus_and_step_one() {
         let cli = Cli::try_parse_from([
             "mcn-fuzz",
@@ -511,6 +577,14 @@ mod cli_tests {
 fn load(path: &std::path::Path) -> Result<Campaign, Error> {
     let path = fs_canonicalize(path)?;
     Campaign::load(&path)
+}
+
+fn load_with_output_root(
+    path: &std::path::Path,
+    output_root: Option<&std::path::Path>,
+) -> Result<Campaign, Error> {
+    let path = fs_canonicalize(path)?;
+    Campaign::load_with_output_root(&path, output_root)
 }
 
 fn fs_canonicalize(path: &std::path::Path) -> Result<PathBuf, Error> {

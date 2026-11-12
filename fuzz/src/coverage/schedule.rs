@@ -28,8 +28,7 @@ use crate::{
     agents::{
         artifacts::{check_identity, read_json},
         command_line, current_boot, AgentClient, AgentCommand, AgentFailure, AgentInit,
-        AgentOutcome, AgentTask, CommandLine, SessionInit,
-        WorkerConfig,
+        AgentOutcome, AgentTask, CommandLine, SessionInit, WorkerConfig,
     },
     app::config::{AgentProvider, Campaign},
     protocol::{load_model, write_catalog, Binding, IndexedModel, PartyRole},
@@ -281,7 +280,7 @@ impl CoverageAnalysisStage {
                 "coverage analysis needs the coverage-built SUT binary".to_string(),
             ));
         };
-        let analysis_root = campaign.coverage.output.join(&fingerprint).join("analysis");
+        let analysis_root = campaign.coverage.output.join("analysis");
         fs::create_dir_all(analysis_root.join("requests"))?;
         fs::create_dir_all(analysis_root.join("init"))?;
         let catalog = analysis_root.join("catalog.json");
@@ -305,7 +304,10 @@ impl CoverageAnalysisStage {
         }
         // Codex workspace-write uses this process cwd. init/ and requests/ are
         // both children, so a later task can publish requests/<id>/result.json.
-        let launch = command_line(profile, &std::path::absolute(analysis_agent_cwd(&analysis_root))?)?;
+        let launch = command_line(
+            profile,
+            &std::path::absolute(analysis_agent_cwd(&analysis_root))?,
+        )?;
         let launch = mcp_launch(launch, campaign)?;
         let secrets = launch.secrets();
         let log = SharedLog::open(

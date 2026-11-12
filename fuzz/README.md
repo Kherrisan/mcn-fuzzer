@@ -35,10 +35,20 @@ cargo build --release
 sudo ./target/release/mcn-fuzz doctor
 sudo ./target/release/mcn-fuzz accept --campaign targets/lightftp/campaign.toml
 sudo ./target/release/mcn-fuzz run --campaign targets/lightftp/campaign.toml
+sudo ./target/release/mcn-fuzz run -o /path/to/runs --campaign targets/lightftp/campaign.toml
 sudo ./target/release/mcn-fuzz replay --campaign targets/lightftp/campaign.toml --input targets/lightftp/corpus/<file>
 ```
 
-When LLVM source coverage is enabled in `[coverage]`, full JSON export is off by default. Add `--source-coverage-json` to save the detailed JSON in snapshots. Without the flag, the stage uses `llvm-cov export --summary-only` for coverage deltas and saves profdata snapshots and metadata. `[source_coverage]` is a configuration error; move that table to `[coverage]`. `analysis_enabled` is separate and requires collection. The private HC executable is `[agents].hc_executable` (default `hc`), not `generator_synthesis.hc_executable`. Analysis output lives under `coverage.output/<build>/analysis/`. `targets/lightftp/build-coverage.sh --graphs` emits the forkserver coverage binary, bitcode, callgraph, CFG dots, and the four-field manifest in one build.
+`run -o PARENT` (or `--output PARENT`) creates a fresh
+`mcn-fuzzer-YYYYMMDD-HHMM` directory below `PARENT` and uses it as the campaign
+root. Without `-o`, the root is created below the current directory. A
+same-minute collision gets a `-2`, `-3`, ... suffix. Relative `[campaign]
+corpus`, `[campaign] crashes`, `[coverage] output`, and
+`[generator_synthesis] output` paths are resolved below that root; absolute
+paths are left unchanged. Inputs such as seeds, binaries, models, and documents
+stay relative to the campaign file.
+
+When LLVM source coverage is enabled in `[coverage]`, full JSON export is off by default. Add `--source-coverage-json` to save the detailed JSON in snapshots. Without the flag, the stage uses `llvm-cov export --summary-only` for coverage deltas and saves profdata snapshots and metadata. `[source_coverage]` is a configuration error; move that table to `[coverage]`. `analysis_enabled` is separate and requires collection. The private HC executable is `[agents].hc_executable` (default `hc`), not `generator_synthesis.hc_executable`. Analysis output lives under `coverage.output/analysis/`; the coverage root is no longer split by a build fingerprint. `targets/lightftp/build-coverage.sh --graphs` emits the forkserver coverage binary, bitcode, callgraph, CFG dots, and the four-field manifest in one build.
 
 Set `[campaign].timeout_secs` to stop the fuzz loop after a wall-clock duration. When present, it takes precedence over `[campaign].iterations`; the CLI `--iterations` option remains an explicit override. The deadline is checked between complete LibAFL iterations, so an iteration already in progress can finish before shutdown.
 
@@ -114,7 +124,8 @@ modified. Set `[coverage].mcp_socket` to connect to a supervisor-provided servic
 instead; `mcp_ready_timeout_secs` defaults to 30. PID 1 creates
 `coverage.output` and `generator_synthesis.output` with campaign ownership before
 either service starts, so the MCP working directory and HC state stay writable
-after privileges drop. The analysis profile must use `provider = "codex"`; a
+after privileges drop. The `run -o` campaign root and its configured output
+directories are created before this hand-off. The analysis profile must use `provider = "codex"`; a
 wrapper executable that ignores its argv cannot register the bridge, so the stage
 rejects non-Codex providers instead of simulating tools with shell commands.
 A reusable analysis profile looks like this (the executable must forward the
@@ -132,9 +143,10 @@ model = "gpt-6-luna"
 args = ["-c", "model_reasoning_effort=max"]
 ```
 
-Parsed data, the committed graph checkpoint, and `service.jsonl` call records
-live under `coverage.output/mcp-state/`; the socket and service log under
-`/tmp/mcn-mcp-*`. `service.jsonl` is the audit trail for agent tool calls.
+Parsed data, the committed graph checkpoint, `service.jsonl` call records, and
+`service.log` live under `coverage.output/mcp-state/`; only the transient MCP
+socket lives under `/tmp/mcn-mcp-*`. `service.jsonl` is the audit trail for
+agent tool calls.
 
 The service tool set is explicit: `load_profdata`, `load_cfg`, `load_callgraph`,
 `load_protocol`, `load_handlers`, `get_loaded_state`; five coverage views

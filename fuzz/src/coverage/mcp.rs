@@ -102,7 +102,7 @@ pub fn boot_if_requested(identity: &TargetIdentity) -> Result<()> {
     prepare_owned_dir(&request.output, identity)?;
     let gid = identity.gid;
     let uid = identity.uid;
-    let log_path = runtime.join("service.log");
+    let log_path = state.join("service.log");
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)

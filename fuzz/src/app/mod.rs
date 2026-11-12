@@ -73,6 +73,14 @@ struct Session {
 
 impl Session {
     fn open(campaign: &Campaign) -> Result<Self, Error> {
+        if let Some(root) = &campaign.output_root {
+            fs::create_dir_all(root).map_err(|error| {
+                Error::unknown(format!(
+                    "creating campaign root {}: {error}",
+                    root.display()
+                ))
+            })?;
+        }
         fs::create_dir_all(&campaign.campaign.corpus).map_err(|error| {
             Error::unknown(format!(
                 "creating corpus {}: {error}",
@@ -85,6 +93,22 @@ impl Session {
                 campaign.campaign.crashes.display()
             ))
         })?;
+        if campaign.coverage.enabled {
+            fs::create_dir_all(&campaign.coverage.output).map_err(|error| {
+                Error::unknown(format!(
+                    "creating coverage output {}: {error}",
+                    campaign.coverage.output.display()
+                ))
+            })?;
+        }
+        if campaign.generator_synthesis.enabled {
+            fs::create_dir_all(&campaign.generator_synthesis.output).map_err(|error| {
+                Error::unknown(format!(
+                    "creating synthesis output {}: {error}",
+                    campaign.generator_synthesis.output.display()
+                ))
+            })?;
+        }
         let (executor, coverage) = CaseExecutor::launch(campaign)?;
         let engine = executor.capture_engine();
         let mut feedback: CampaignFeedback =
@@ -330,6 +354,7 @@ pub fn doctor() -> Result<(), Error> {
         agents: crate::app::config::AgentCatalog::default(),
         parties: None,
         base: tmp.clone(),
+        output_root: None,
     };
     let mut backend = ForkserverBackend::spawn(&campaign, 0)?;
     let allocated = campaign.target.map_size;

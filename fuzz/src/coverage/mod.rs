@@ -332,7 +332,7 @@ where
 {
     let config = &campaign.coverage;
     let fingerprint = build_fingerprint(&config.binary, &config.llvm_profdata, &config.llvm_cov)?;
-    let root = config.output.join(&fingerprint);
+    let root = config.output.clone();
     let _lock = OutputLock::acquire(&config.output)?;
     match resume_or_refuse(&root)? {
         Resume::Refuse { reason } => {
@@ -351,7 +351,7 @@ where
     }
     if !progress.fingerprint.is_empty() && progress.fingerprint != fingerprint {
         log::warn!(
-            "source coverage fingerprint changed from {} to {fingerprint}; keeping the previous data and writing the new directory",
+            "source coverage fingerprint changed from {} to {fingerprint}; resetting coverage progress",
             progress.fingerprint
         );
         progress = SourceCoverageProgress::new(&fingerprint);
@@ -703,7 +703,11 @@ impl CoverageSession {
                 Some(stdout),
                 Some(stderr),
             )?;
-            let log_path = owned.base.join("coverage-generator.log");
+            let log_path = campaign
+                .output_root
+                .as_deref()
+                .unwrap_or(&campaign.base)
+                .join("coverage-generator.log");
             let generator = GeneratorClient::spawn_tagged(
                 &campaign.campaign.python,
                 &campaign.campaign.pythonpath,
@@ -2343,6 +2347,7 @@ fn probe_campaign(workdir: &Path, binary: &Path) -> Campaign {
         agents: crate::app::config::AgentCatalog::default(),
         parties: None,
         base: workdir.to_path_buf(),
+        output_root: None,
     }
 }
 

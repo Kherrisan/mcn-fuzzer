@@ -352,6 +352,10 @@ pub fn ensure_output_accessible(path: &Path, identity: &TargetIdentity) -> Resul
 ///
 /// PID 1 is still root here. The directory must exist before a service or HC
 /// child uses it as a working directory or writes a runtime record into it.
+pub fn prepare_campaign_root(path: &Path, identity: &TargetIdentity) -> Result<(), Error> {
+    prepare_owned_dir(path, identity)
+}
+
 pub(crate) fn prepare_owned_dir(path: &Path, identity: &TargetIdentity) -> Result<(), Error> {
     use std::os::unix::fs::{chown, PermissionsExt};
     fs::create_dir_all(path)
