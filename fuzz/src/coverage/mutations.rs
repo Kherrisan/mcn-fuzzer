@@ -1,12 +1,11 @@
-//! Field and duplicate mutations over an ordered proposal trace.
+//! Field mutations over an ordered proposal trace.
 //!
 //! `steps` is either an array of instance names or a `[start:end]` range.
-//! Duplicate copies reuse the original instances and do not recurse.
+//! Only `op: "field"` mutations are supported.
 
 use serde_json::Value;
 
-pub const MAX_COUNT: i64 = 32;
-pub const MAX_STEPS: usize = 4096;
+use crate::engine::input::{BytesEncoding, FieldKind, ParamValue};
 
 #[derive(Clone, Debug)]
 pub enum Selector {
@@ -58,20 +57,17 @@ pub fn selection(spec: &Value, names: &[String]) -> Result<Selector, String> {
             if !(text.starts_with('[') && text.ends_with(']') && text.contains(':')) {
                 return Err(format!("selector {text:?} must be an array or [start:end]"));
             }
-            let body = &text[1..text.len() - 1];
-            let (start_name, end_name) = body
+            let (start, end) = text[1..text.len() - 1]
                 .split_once(':')
-                .ok_or_else(|| format!("selector {text:?} must be an array or [start:end]"))?;
-            let start_name = start_name.trim();
-            let end_name = end_name.trim();
-            let start = names
-                .iter()
-                .position(|name| name == start_name)
-                .ok_or_else(|| format!("unknown range endpoint in {text}"))?;
-            let end = names
-                .iter()
-                .position(|name| name == end_name)
-                .ok_or_else(|| format!("unknown range endpoint in {text}"))?;
+                .ok_or_else(|| format!("selector {text:?} must be [start:end]"))?;
+            let start = start.trim();
+            let end = end.trim();
+            let Some(start) = names.iter().position(|item| item == start) else {
+                return Err(format!("unknown range endpoint {start:?}"));
+            };
+            let Some(end) = names.iter().position(|item| item == end) else {
+                return Err(format!("unknown range endpoint {end:?}"));
+            };
             if start > end {
                 return Err(format!("range {text} is reversed"));
             }
@@ -81,21 +77,34 @@ pub fn selection(spec: &Value, names: &[String]) -> Result<Selector, String> {
     }
 }
 
-/// Runtime duplicate count. Non-integers, including floats and booleans, are 0.
-pub fn runtime_count(value: &Value) -> Result<usize, String> {
-    let Some(number) = value.as_number() else {
-        return Ok(0);
-    };
-    if let Some(count) = number.as_i64() {
-        if (0..=MAX_COUNT).contains(&count) {
-            return Ok(count as usize);
-        }
-        return Err(format!("duplicate count {count} is outside 0..{MAX_COUNT}"));
+/// Parse the kind, bytes encoding, and optional default of a field mutation.
+pub fn field_type(
+    mutation: &Value,
+) -> Result<(FieldKind, Option<BytesEncoding>, Option<ParamValue>), String> {
+    let kind = mutation
+        .get("kind")
+        .cloned()
+        .map(serde_json::from_value::<FieldKind>)
+        .transpose()
+        .map_err(|error| format!("invalid field kind: {error}"))?
+        .unwrap_or_default();
+    let encoding = mutation
+        .get("encoding")
+        .cloned()
+        .map(serde_json::from_value::<BytesEncoding>)
+        .transpose()
+        .map_err(|error| format!("invalid bytes encoding: {error}"))?;
+    if kind != FieldKind::Bytes && encoding.is_some() {
+        return Err("encoding is only valid for bytes fields".into());
     }
-    if number.as_u64().is_some() {
-        return Err(format!("duplicate count is outside 0..{MAX_COUNT}"));
-    }
-    Ok(0)
+    let encoding = (kind == FieldKind::Bytes).then(|| encoding.unwrap_or_default());
+    let default = mutation
+        .get("default")
+        .cloned()
+        .map(serde_json::from_value::<ParamValue>)
+        .transpose()
+        .map_err(|error| format!("invalid field default: {error}"))?;
+    Ok((kind, encoding, default))
 }
 
 pub fn validate_mutations(
@@ -104,131 +113,61 @@ pub fn validate_mutations(
     mutations: &[Value],
 ) -> Result<(), String> {
     let mut seen_fields = Vec::new();
-    let mut duplicate_spans = Vec::new();
     for mutation in mutations {
         let op = mutation
             .get("op")
             .and_then(Value::as_str)
             .ok_or_else(|| "mutation needs an op".to_string())?;
+        if op != "field" {
+            return Err(format!(
+                "unknown mutation op {op:?}; only field mutations are supported"
+            ));
+        }
         let selected = selection(mutation.get("steps").unwrap_or(&Value::Null), names)?;
-        let indexes = match &selected {
-            Selector::Each(indexes) => indexes.clone(),
-            Selector::Range(start, end) => (*start..=*end).collect(),
+        let indexes = match selected {
+            Selector::Each(indexes) => indexes,
+            Selector::Range(start, end) => (start..=end).collect(),
         };
-        match op {
-            "field" => {
-                let field = mutation
-                    .get("field")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim();
-                if field.is_empty() {
-                    return Err("field mutation needs a field name".into());
-                }
-                if mutation
-                    .get("suggestion")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .is_empty()
-                {
-                    return Err(format!("field {field} needs a suggestion"));
-                }
-                if mutation
-                    .get("evidence")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .is_empty()
-                {
-                    return Err(format!("field {field} needs source evidence"));
-                }
-                for index in indexes {
-                    let instance = names[index].as_str();
-                    if !send(index) {
-                        return Err(format!("field mutation on non-send instance {instance}"));
-                    }
-                    let key = (instance.to_string(), field.to_string());
-                    if seen_fields.contains(&key) {
-                        return Err(format!("field {field} is repeated on {instance}"));
-                    }
-                    seen_fields.push(key);
-                }
+        let field = mutation
+            .get("field")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if field.is_empty() {
+            return Err("field mutation needs a field name".into());
+        }
+        if mutation
+            .get("suggestion")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            return Err(format!("field {field} needs a suggestion"));
+        }
+        if mutation
+            .get("evidence")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        {
+            return Err(format!("field {field} needs source evidence"));
+        }
+        field_type(mutation)?;
+        for index in indexes {
+            let instance = names[index].as_str();
+            if !send(index) {
+                return Err(format!("field mutation on non-send instance {instance}"));
             }
-            "duplicate" => {
-                if mutation
-                    .get("count_param")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .is_empty()
-                {
-                    return Err("duplicate mutation needs count_param".into());
-                }
-                let spans = match selected {
-                    Selector::Each(indexes) => {
-                        indexes.into_iter().map(|index| (index, index)).collect()
-                    }
-                    Selector::Range(start, end) => vec![(start, end)],
-                };
-                for span in spans {
-                    if duplicate_spans.iter().any(|previous: &(usize, usize)| {
-                        !(span.1 < previous.0 || previous.1 < span.0)
-                    }) {
-                        return Err("duplicate selections overlap".into());
-                    }
-                    duplicate_spans.push(span);
-                }
+            let key = (instance.to_string(), field.to_string());
+            if seen_fields.contains(&key) {
+                return Err(format!("field {field} is repeated on {instance}"));
             }
-            other => return Err(format!("unknown mutation op {other:?}")),
+            seen_fields.push(key);
         }
     }
     Ok(())
-}
-
-pub fn expand_named<T: Clone>(
-    trace: &[T],
-    names: &[String],
-    mutations: &[Value],
-    counts: &dyn Fn(&str) -> Value,
-) -> Result<Vec<T>, String> {
-    let mut expanded = trace.to_vec();
-    let mut jobs = Vec::new();
-    for mutation in mutations {
-        if mutation.get("op").and_then(Value::as_str) != Some("duplicate") {
-            continue;
-        }
-        let count = runtime_count(&counts(
-            mutation
-                .get("count_param")
-                .and_then(Value::as_str)
-                .unwrap_or(""),
-        ))?;
-        match selection(mutation.get("steps").unwrap_or(&Value::Null), names)? {
-            Selector::Each(indexes) => {
-                for index in indexes {
-                    jobs.push((index, index, count));
-                }
-            }
-            Selector::Range(start, end) => jobs.push((start, end, count)),
-        }
-    }
-    jobs.sort_by_key(|job| std::cmp::Reverse(job.0));
-    for (start, end, count) in jobs {
-        let block = expanded[start..=end].to_vec();
-        let mut extra = Vec::new();
-        for _ in 0..count {
-            extra.extend(block.iter().cloned());
-        }
-        expanded.splice(end + 1..end + 1, extra);
-        if expanded.len() > MAX_STEPS {
-            return Err(format!(
-                "expanded trace has {} steps; limit is {MAX_STEPS}",
-                expanded.len()
-            ));
-        }
-    }
-    Ok(expanded)
 }
 
 #[cfg(test)]
@@ -306,130 +245,55 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_array_repeats_each_and_range_repeats_the_block() {
+    fn field_kind_and_encoding_are_validated() {
         let items = trace();
-        let listed = names(&items);
-        let each = expand_named(
-            &items,
-            &listed,
-            json!([
-                {"op":"duplicate","steps":["login_first","quit"],"count_param":"n"}
-            ])
-            .as_array()
-            .unwrap(),
-            &|name| if name == "n" { json!(1) } else { json!(0) },
-        )
+        check(&items, json!([
+            {"op":"field","steps":["login_first"],"field":"body","suggestion":"x",
+             "evidence":"s:1","kind":"bytes","encoding":"hex"}
+        ]))
         .unwrap();
-        assert_eq!(
-            each.iter()
-                .map(|item| item.name.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "login_first",
-                "login_first",
-                "login_second",
-                "listen_once",
-                "quit",
-                "quit"
-            ]
-        );
-        let block = expand_named(
-            &items,
-            &listed,
-            json!([
-                {"op":"duplicate","steps":"[login_first:login_second]","count_param":"n"}
-            ])
-            .as_array()
-            .unwrap(),
-            &|_| json!(2),
-        )
+        check(&items, json!([
+            {"op":"field","steps":["login_first"],"field":"body","suggestion":"x",
+             "evidence":"s:1","kind":"bytes","encoding":"base64"}
+        ]))
         .unwrap();
-        assert_eq!(
-            block
-                .iter()
-                .map(|item| item.name.as_str())
-                .collect::<Vec<_>>(),
-            vec![
-                "login_first",
-                "login_second",
-                "login_first",
-                "login_second",
-                "login_first",
-                "login_second",
-                "listen_once",
-                "quit"
-            ]
-        );
-        let zero = expand_named(
-            &items,
-            &listed,
-            json!([
-                {"op":"duplicate","steps":["quit"],"count_param":"n"}
-            ])
-            .as_array()
-            .unwrap(),
-            &|_| json!(0),
-        )
+        check(&items, json!([
+            {"op":"field","steps":["login_first"],"field":"count","suggestion":"x",
+             "evidence":"s:1","kind":"integer"}
+        ]))
         .unwrap();
-        assert_eq!(zero.len(), items.len());
-        let floated = expand_named(
-            &items,
-            &listed,
-            json!([
-                {"op":"duplicate","steps":["quit"],"count_param":"n"}
-            ])
-            .as_array()
-            .unwrap(),
-            &|_| json!(1.5),
-        )
-        .unwrap();
-        assert_eq!(floated.len(), items.len());
+        for mutation in [
+            json!({"op":"field","steps":["login_first"],"field":"x","suggestion":"x",
+                   "evidence":"s:1","kind":"hex"}),
+            json!({"op":"field","steps":["login_first"],"field":"x","suggestion":"x",
+                   "evidence":"s:1","kind":"string","encoding":"hex"}),
+            json!({"op":"field","steps":["login_first"],"field":"x","suggestion":"x",
+                   "evidence":"s:1","kind":"bytes","encoding":"utf8"}),
+        ] {
+            let error = check(&items, json!([mutation])).unwrap_err();
+            assert!(
+                error.contains("kind") || error.contains("encoding"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
-    fn illegal_overlap_and_expansion_cap_fail_and_field_may_share_a_step() {
+    fn duplicate_and_repeated_fields_are_rejected() {
         let items = trace();
         let error = check(
             &items,
-            json!([
-                {"op":"duplicate","steps":"[login_first:login_second]","count_param":"n"},
-                {"op":"duplicate","steps":["login_second"],"count_param":"m"}
-            ]),
+            json!([{"op":"duplicate","steps":["login_first"],"count_param":"n"}]),
         )
         .unwrap_err();
-        assert!(error.contains("overlap"), "{error}");
+        assert!(error.contains("only field mutations"), "{error}");
         let error = check(&items, json!([
             {"op":"field","steps":["login_first"],"field":"username","suggestion":"a","evidence":"s:1"},
             {"op":"field","steps":["login_first"],"field":"username","suggestion":"b","evidence":"s:2"}
-        ])).unwrap_err();
+        ]))
+        .unwrap_err();
         assert!(error.contains("repeated"), "{error}");
-        check(&items, json!([
-            {"op":"field","steps":["login_first"],"field":"username","suggestion":"a","evidence":"s:1"},
-            {"op":"duplicate","steps":["login_first"],"count_param":"n"}
-        ])).unwrap();
         let error = selection(&json!("[quit:login_first]"), &names(&items)).unwrap_err();
         assert!(error.contains("reversed"), "{error}");
-        let huge: Vec<Item> = (0..4096)
-            .map(|index| Item {
-                name: format!("s{index}"),
-                step: "user".into(),
-                send: true,
-            })
-            .collect();
-        let listed = names(&huge);
-        let error = expand_named(
-            &huge,
-            &listed,
-            json!([
-                {"op":"duplicate","steps":["s0"],"count_param":"n"}
-            ])
-            .as_array()
-            .unwrap(),
-            &|_| json!(1),
-        )
-        .unwrap_err();
-        assert!(error.contains("4096"), "{error}");
-        assert!(runtime_count(&json!(true)).unwrap() == 0);
-        assert!(runtime_count(&json!(33)).is_err());
     }
 }

@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 pub(crate) const STDOUT_LOG: &str = "sut.stdout.log";
 pub(crate) const STDERR_LOG: &str = "sut.stderr.log";

@@ -179,8 +179,9 @@ Read these two reference files before writing handlers:
   placeholder step names and fields; do not copy all examples.
 - `{{ campaign.pythonpath }}/generator_server/params.schema.json` — the empty
   production-compatible schema shape (`type`, `properties`, `required`,
-  `additionalProperties`). Copy it and add only the initial mutable-field
-  properties and defaults required by the proposal.
+  `additionalProperties`). Copy it and add one property per step instance that
+  needs initial values; each property is an object holding that instance's
+  mutable fields.
 
 These files are read-only references, not artifacts to publish. The proposal
 still determines the exact steps and fields.
@@ -207,9 +208,10 @@ def handler_example(ctx, params):
 
 `step_trace` is the ordered list of concrete step instances selected and
 mutated by Rust. Each instance has `name`, `step`, `action`, `channel`,
-endpoint fields, `fields` (explicit final field values), `omitted_fields`
-(fields deliberately absent), `inputs` (target field -> `"prior_instance.field"`
-dependency bindings), and `broken_dependencies`. Execute instances in order and
+endpoint fields, `omitted_fields` (fields deliberately absent), `inputs`
+(target field -> `"prior_instance.field"` dependency bindings), and
+`broken_dependencies`. Mutable values are not embedded in the instance; they
+live in `params`, keyed by the instance's concrete `name`. Execute instances in order and
 do not insert, duplicate, reorder, or delete them. Do not inspect mutation
 operations; none are present.
 
@@ -240,18 +242,21 @@ unimplemented branches, or unconditional
 success paths. The return value is ignored. Do not use async def as the entrypoint,
 require a command-line main(), or construct Ctx yourself inside the generator.
 
-Implement field resolution in the generator: use explicit `fields` first, honor
-`omitted_fields`, then resolve `inputs` with `ctx.load_depending_state(name)` and use
-the read-only `params` for shared values when appropriate. Save states needed by
+Implement field resolution in the generator: read this instance's entry from
+`params` first (`params.get(ctx.step_name, {})`), honor `omitted_fields`, then
+resolve `inputs` with `ctx.load_depending_state(name)`. Values for the same
+field name on different instances are independent. `params` is passed read-only
+to the initializer and handlers; resolve instance fields only inside handlers,
+because `@global_init` has no current instance. Save states needed by
 later dependencies with `ctx.save_state(field_name, value)`.
 `ctx.load_depending_state()` raises on a missing binding or state. If using
 `ctx.load_state()` for the current instance, use a unique sentinel as its
 default to distinguish missing state from a saved `None`. Missing required states must raise
 `InteractionError`; never invent a runtime value. `ctx.states` is retained for
 the whole generator invocation, including after closing or reconnecting; it is
-not a per-connection cache. `params.json` is only the
-initial field-default source used by Rust; runtime params contain testcase shared
-values and are passed read-only to the initializer and handlers.
+not a per-connection cache. `params.json` supplies the initial per-instance
+values; Rust mutates them and passes the resulting nested map read-only to the
+initializer and handlers.
 
 The Python server imports/caches the module BEFORE forking a worker.
 At module scope define constants, functions, classes, and safe imports only.
@@ -353,20 +358,27 @@ for the other root before termination.
 # Parameters and output files
 
 Preserve the requested conversation and expose initial values for the
-proposal's `mutable_fields` in params.json. Rust owns the final field values and
-mutates them without revalidating the schema. Handle changed types/signs/lengths/
-list contents; bound local allocations, loops, service counts, and timeouts
-without sanitizing all mutated wire content back to fixed valid values.
+proposal's `mutable_fields` in params.json. Each mutable field carries a `kind`
+and, for `bytes`, an `encoding` (`hex` or `base64`). Rust owns the final field
+values and mutates them according to that kind without revalidating the schema.
+Encode bytes values as strings in the declared encoding; do not embed raw bytes
+or nested objects. Handle changed types/signs/lengths/list contents; bound local
+allocations, loops, service counts, and timeouts without sanitizing all mutated
+wire content back to fixed valid values.
 
 - generator.py: complete module with decorated step handlers and the
   interface/lifecycle above. Use only explicit values, dependencies, and
   shared params; never receive mutation operations.
-- params.json: root object of initial mutable-field values; keys match
-  `mutable_fields`. Values only string, signed 64-bit integer, boolean, or
-  recursively nested lists. No nested objects, floats, null, or JSON bytes.
-- params.schema.json: root type="object", properties, required, and
-  additionalProperties=false for those initial defaults. The validator implements
-  only a basic subset; Rust does not enforce it for mutated values.
+- params.json: root object keyed by step instance name; each value is an object
+  of that instance's mutable fields. Omit an instance that has no mutable
+  fields. Field values are only string, signed 64-bit integer, boolean, or
+  recursively nested lists; `bytes` values are encoded strings. No floats, null,
+  or nested field objects.
+- params.schema.json: root type="object" whose properties are per-instance
+  objects (`type="object"`, `properties`, `required`, `additionalProperties`).
+  Map `string` and `bytes` to `type="string"`, `integer` to `type="integer"`,
+  `boolean` to `type="boolean"`, and `list` to `type="array"`. The validator
+  implements only a basic subset; Rust does not enforce it for mutated values.
 - result.json: final completion signal. It is read immediately when it appears.
   Echo the exact IDs below; added_steps must be an array of strings, even if empty.
 

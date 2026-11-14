@@ -1,4 +1,4 @@
-//! Generator script path plus the parameter dictionary Rust is allowed to mutate.
+//! Generator script path plus the per-instance parameter map Rust mutates.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -33,6 +33,50 @@ pub enum ParamValue {
     /// Raw bytes.
     Bytes(Vec<u8>),
 }
+
+/// Semantic kind of a mutable field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldKind {
+    #[default]
+    String,
+    Bytes,
+    Integer,
+    Boolean,
+    List,
+}
+
+/// Wire encoding for `FieldKind::Bytes` values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BytesEncoding {
+    #[default]
+    Hex,
+    Base64,
+}
+
+/// Kind and encoding for one mutable field, carried beside its value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FieldSpec {
+    #[serde(default)]
+    pub kind: FieldKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<BytesEncoding>,
+}
+
+impl FieldSpec {
+    /// Encoding used for byte values, defaulting to hex.
+    pub fn bytes_encoding(&self) -> BytesEncoding {
+        self.encoding.unwrap_or_default()
+    }
+}
+
+/// Mutable field values for one step instance: field name to value.
+pub type InstanceFields = BTreeMap<String, ParamValue>;
+
+/// Per-instance mutable values: step instance name to its fields.
+pub type InstanceParams = BTreeMap<String, InstanceFields>;
 
 /// zlib bytes waiting to be written beside a saved input. Not part of the seed.
 #[derive(Clone, Debug)]
@@ -69,10 +113,6 @@ pub struct StepInstance {
     pub receiver: Option<String>,
     #[serde(default)]
     pub party: Option<String>,
-    /// Final field values decided by Rust. Missing means the generator should
-    /// use dependency bindings or defaults.
-    #[serde(default)]
-    pub fields: BTreeMap<String, ParamValue>,
     /// Fields explicitly removed by Rust; distinct from "not overridden".
     #[serde(default)]
     pub omitted_fields: Vec<String>,
@@ -121,18 +161,6 @@ impl TraceInstance {
             .collect::<BTreeMap<_, _>>();
         if steps.len() != self.steps.len() {
             return Err("duplicate step instance name".into());
-        }
-        for step in &self.steps {
-            if step
-                .fields
-                .keys()
-                .any(|field| step.omitted_fields.contains(field))
-            {
-                return Err(format!(
-                    "step {} has a field both explicit and omitted",
-                    step.name
-                ));
-            }
         }
         let mut bindings = BTreeSet::new();
         for dependency in &self.dependencies {
@@ -197,9 +225,12 @@ pub struct GeneratorInput {
     /// Concrete step and dependency instances.
     #[serde(flatten)]
     pub trace: TraceInstance,
-    /// Shared per-testcase values passed read-only to generator handlers.
+    /// Mutable values keyed by step instance name, passed read-only to handlers.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub params: BTreeMap<String, ParamValue>,
+    pub params: InstanceParams,
+    /// Kind metadata for mutable values, keyed like `params`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub param_kinds: BTreeMap<String, BTreeMap<String, FieldSpec>>,
     /// Runtime capture export. Skipped by JSON, hashing, equality, and mutation.
     #[serde(skip)]
     pending: Option<PendingCapture>,
@@ -212,16 +243,19 @@ struct GeneratorFile {
     #[serde(flatten)]
     trace: TraceInstance,
     #[serde(default)]
-    params: BTreeMap<String, ParamValue>,
+    params: InstanceParams,
+    #[serde(default)]
+    param_kinds: BTreeMap<String, BTreeMap<String, FieldSpec>>,
 }
 
 impl GeneratorInput {
     /// Build a generator input.
-    pub fn new(generator: PathBuf, params: BTreeMap<String, ParamValue>) -> Self {
+    pub fn new(generator: PathBuf, params: InstanceParams) -> Self {
         Self {
             generator,
             trace: TraceInstance::default(),
             params,
+            param_kinds: BTreeMap::new(),
             pending: None,
         }
     }
@@ -230,7 +264,7 @@ impl GeneratorInput {
     pub fn with_trace(
         generator: PathBuf,
         step_trace: Vec<StepInstance>,
-        params: BTreeMap<String, ParamValue>,
+        params: InstanceParams,
     ) -> Self {
         Self {
             generator,
@@ -239,8 +273,57 @@ impl GeneratorInput {
                 ..TraceInstance::default()
             },
             params,
+            param_kinds: BTreeMap::new(),
             pending: None,
         }
+    }
+
+    /// Validate the trace plus its per-instance parameter bindings.
+    pub fn validate(&self) -> Result<(), String> {
+        self.trace.validate()?;
+        let steps = self
+            .trace
+            .steps
+            .iter()
+            .map(|step| step.name.as_str())
+            .collect::<BTreeSet<_>>();
+        for (instance, fields) in &self.params {
+            if !steps.contains(instance.as_str()) {
+                return Err(format!(
+                    "params key {instance} is not a step instance"
+                ));
+            }
+            if fields.is_empty() {
+                return Err(format!("params for {instance} is empty"));
+            }
+            let omitted = self
+                .trace
+                .steps
+                .iter()
+                .find(|step| &step.name == instance)
+                .map(|step| step.omitted_fields.as_slice())
+                .unwrap_or(&[]);
+            for field in fields.keys() {
+                if omitted.iter().any(|name| name == field) {
+                    return Err(format!(
+                        "step {instance} has field {field} both explicit and omitted"
+                    ));
+                }
+            }
+        }
+        for (instance, fields) in &self.param_kinds {
+            let Some(values) = self.params.get(instance) else {
+                return Err(format!("param kind instance {instance} has no params"));
+            };
+            for field in fields.keys() {
+                if !values.contains_key(field) {
+                    return Err(format!(
+                        "param kind {instance}.{field} has no params value"
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Attach a capture that `to_file` will export. The scheduled parent input is not this value.
@@ -297,7 +380,7 @@ struct RunRequest<'a> {
     generator: String,
     step_trace: &'a [StepInstance],
     dependencies: &'a [DependencyInstance],
-    params: &'a BTreeMap<String, ParamValue>,
+    params: &'a InstanceParams,
     host: &'a str,
     port: u16,
     timeout_ms: u64,
@@ -359,6 +442,7 @@ impl PartialEq for GeneratorInput {
         self.generator == other.generator
             && self.trace == other.trace
             && self.params == other.params
+            && self.param_kinds == other.param_kinds
     }
 }
 
@@ -369,6 +453,7 @@ impl Hash for GeneratorInput {
         self.generator.hash(state);
         self.trace.hash(state);
         self.params.hash(state);
+        self.param_kinds.hash(state);
     }
 }
 
@@ -426,6 +511,7 @@ impl Input for GeneratorInput {
             generator,
             trace: parsed.trace,
             params: parsed.params,
+            param_kinds: parsed.param_kinds,
             pending: None,
         })
     }
@@ -480,7 +566,7 @@ mod tests {
         let seed = dir.join("old.json");
         std::fs::write(
             &seed,
-            r#"{"version":3,"generator":"gen.py","params":{"user":"ubuntu"}}"#,
+            r#"{"version":3,"generator":"gen.py","params":{"session_1":{"user":"ubuntu"}}}"#,
         )
         .unwrap();
         let error = GeneratorInput::from_file(&seed).unwrap_err();
@@ -498,17 +584,18 @@ mod tests {
         let seed = dir.join("seeds").join("one.json");
         std::fs::write(
             &seed,
-            r#"{"generator":"../gen.py","params":{"user":"ubuntu","tries":2,"ok":true}}"#,
+            r#"{"generator":"../gen.py","params":{"session_1":{"user":"ubuntu","tries":2,"ok":true}}}"#,
         )
         .unwrap();
         let input = GeneratorInput::from_file(&seed).unwrap();
         assert_eq!(input.generator, std::fs::canonicalize(&script).unwrap());
+        let session = input.params.get("session_1").expect("instance params");
         assert_eq!(
-            input.params.get("user"),
+            session.get("user"),
             Some(&ParamValue::Str("ubuntu".to_string()))
         );
-        assert_eq!(input.params.get("tries"), Some(&ParamValue::Int(2)));
-        assert_eq!(input.params.get("ok"), Some(&ParamValue::Bool(true)));
+        assert_eq!(session.get("tries"), Some(&ParamValue::Int(2)));
+        assert_eq!(session.get("ok"), Some(&ParamValue::Bool(true)));
         input.to_file(&seed).unwrap();
         let again = GeneratorInput::from_file(&seed).unwrap();
         assert_eq!(again, input);
@@ -533,18 +620,30 @@ mod tests {
             sender: Some("client".into()),
             receiver: Some("server".into()),
             party: None,
-            fields: BTreeMap::from([("name".into(), ParamValue::Str("x".into()))]),
             omitted_fields: vec!["optional".into()],
             inputs: BTreeMap::from([("token".into(), "hello_1.field".into())]),
             broken_dependencies: vec![],
         };
-        let input = GeneratorInput::with_trace(
+        let mut input = GeneratorInput::with_trace(
             std::fs::canonicalize(&script).unwrap(),
             vec![instance],
-            BTreeMap::from([("username".into(), ParamValue::Str("ubuntu".into()))]),
+            BTreeMap::from([(
+                "hello_1".into(),
+                BTreeMap::from([("username".into(), ParamValue::Str("ubuntu".into()))]),
+            )]),
+        );
+        input.param_kinds.insert(
+            "hello_1".into(),
+            BTreeMap::from([(
+                "username".into(),
+                FieldSpec {
+                    kind: FieldKind::String,
+                    encoding: None,
+                },
+            )]),
         );
 
-        input.trace.validate().unwrap();
+        input.validate().unwrap();
         let path = dir.join("input.json");
         input.to_file(&path).unwrap();
         let saved: serde_json::Value =
@@ -557,11 +656,28 @@ mod tests {
         let request: serde_json::Value = ciborium::de::from_reader(body.as_slice()).unwrap();
         assert!(request.get("parties").is_none());
         assert!(request.get("channels").is_none());
-        assert_eq!(request["params"]["username"], "ubuntu");
+        assert_eq!(request["params"]["hello_1"]["username"], "ubuntu");
         let again = GeneratorInput::from_file(&path).unwrap();
         assert_eq!(again, input);
         assert_eq!(again.trace.steps[0].name, "hello_1");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn field_kinds_and_encodings_roundtrip() {
+        assert_eq!(
+            serde_json::from_str::<FieldKind>("\"bytes\"").unwrap(),
+            FieldKind::Bytes
+        );
+        assert_eq!(
+            serde_json::from_str::<BytesEncoding>("\"base64\"").unwrap(),
+            BytesEncoding::Base64
+        );
+        let spec: FieldSpec =
+            serde_json::from_str(r#"{"kind":"bytes","encoding":"hex"}"#).unwrap();
+        assert_eq!(spec.kind, FieldKind::Bytes);
+        assert_eq!(spec.bytes_encoding(), BytesEncoding::Hex);
+        assert_eq!(serde_json::to_string(&FieldKind::List).unwrap(), "\"list\"");
     }
 
     #[test]

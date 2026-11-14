@@ -69,7 +69,7 @@ def parse_cfg_dot(path, source_map):
     return symbol, {"entry": entry, "blocks": nodes, "edges": edges}
 
 
-def load_cfg_dir(cfg_dir, manifest=None):
+def load_cfg_dir(cfg_dir):
     root = Path(cfg_dir)
     if not root.is_dir():
         raise CfgError(f"CFG directory {root} does not exist")

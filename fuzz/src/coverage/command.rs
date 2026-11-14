@@ -10,12 +10,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use libafl::{inputs::Input, Error};
+use libafl::{Error, inputs::Input};
+
+#[cfg(test)]
+use crate::coverage::SourceCoverageProgress;
 
 use super::{
-    build_fingerprint, load_checkpoint, replay_pending, resume_or_refuse, BatchReport,
-    BatchTimings, CaseLocation, CoverageSummary, OutputLock, PendingCase, Resume,
-    SourceCoverageProgress,
+    BatchReport, BatchTimings, CaseLocation, CoverageSummary, OutputLock, PendingCase,
+    discover_progress, replay_pending,
 };
 use crate::{app::config::Campaign, engine::input::GeneratorInput};
 
@@ -47,20 +49,9 @@ pub fn run(
             "campaign coverage.binary is required for coverage replay".to_string(),
         ));
     }
-    let fingerprint = build_fingerprint(&config.binary, &config.llvm_profdata, &config.llvm_cov)?;
     let root = output.clone();
     let _lock = OutputLock::acquire(&output)?;
-    match resume_or_refuse(&root)? {
-        Resume::Refuse { reason } => {
-            return Err(Error::illegal_state(reason));
-        }
-        Resume::Ready => {}
-    }
-    let mut progress =
-        load_checkpoint(&root).unwrap_or_else(|| SourceCoverageProgress::new(&fingerprint));
-    if progress.fingerprint != fingerprint {
-        progress = SourceCoverageProgress::new(&fingerprint);
-    }
+    let mut progress = discover_progress(&root);
     let mut csv = Csv::create(&output.join("cov_over_time.csv"))?;
     let mut cumulative = 0_u64;
     for batch in selected.chunks(step as usize) {
@@ -69,7 +60,6 @@ pub fn run(
             campaign,
             config,
             &root,
-            &fingerprint,
             None,
             None,
             &pending,
@@ -224,17 +214,11 @@ pub(super) fn replay_directory_once(
 ) -> Result<BatchReport, Error> {
     let selected = select_inputs(corpus)?;
     let pending = pending_cases(&selected)?;
-    let fingerprint = build_fingerprint(
-        &campaign.coverage.binary,
-        &campaign.coverage.llvm_profdata,
-        &campaign.coverage.llvm_cov,
-    )?;
-    let progress = SourceCoverageProgress::new(&fingerprint);
+    let progress = SourceCoverageProgress::default();
     replay_pending(
         campaign,
         &campaign.coverage,
         root,
-        &fingerprint,
         None,
         None,
         &pending,
@@ -382,14 +366,14 @@ mod tests {
         touch(
             &earlier,
             &format!(
-                "{{\"generator\":\"{}\",\"params\":{{\"n\":1}}}}\n",
+                "{{\"generator\":\"{}\",\"params\":{{\"unit\":{{\"n\":1}}}}}}\n",
                 script.display()
             ),
         );
         sleep(Duration::from_millis(20));
-        touch(&later, "{\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n");
+        touch(&later, "{\"generator\":\"gen.py\",\"params\":{\"unit\":{\"n\":2}}}\n");
         let same = dir.join("c.json");
-        touch(&same, "{\"generator\":\"gen.py\",\"params\":{\"n\":2}}\n");
+        touch(&same, "{\"generator\":\"gen.py\",\"params\":{\"unit\":{\"n\":2}}}\n");
         let selected = select_inputs(&dir).unwrap();
         let names: Vec<_> = selected.iter().map(|item| item.name.clone()).collect();
         assert_eq!(names, vec!["a.json", "b.json", "c.json"]);

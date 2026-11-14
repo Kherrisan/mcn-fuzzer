@@ -90,7 +90,7 @@ class FtpGeneratorTests(unittest.TestCase):
             "id": 3,
             "generator": str(FTP_SCRIPT),
             "step_trace": [{"name": "one", "step": "ftp command"}],
-            "params": {"verb": "USER", "arg": "ubuntu"},
+            "params": {"one": {"verb": "USER", "arg": "ubuntu"}},
             "host": "127.0.0.1",
             "port": port,
             "timeout_ms": 1000,
@@ -132,7 +132,7 @@ class FtpGeneratorTests(unittest.TestCase):
             "id": 4,
             "generator": str(FTP_SCRIPT),
             "step_trace": [{"name": "one", "step": "ftp command"}],
-            "params": {"verb": "PASV", "arg": ""},
+            "params": {"one": {"verb": "PASV", "arg": ""}},
             "host": "127.0.0.1",
             "port": port,
             "timeout_ms": 1000,
@@ -275,7 +275,7 @@ class BufferIsolationTests(unittest.TestCase):
             "from generator_server import step_handler\n@step_handler('test')\ndef handler(ctx, params):\n"
             "    global COUNT\n"
             "    COUNT += 1\n"
-            "    open(params['out'], 'w').write(str(COUNT))\n"
+            "    open(params['one']['out'], 'w').write(str(COUNT))\n"
         )
         outs = []
         for index in range(2):
@@ -286,7 +286,7 @@ class BufferIsolationTests(unittest.TestCase):
                 "id": index + 1,
                 "generator": str(script),
                 "step_trace": [{"name": "one", "step": "test"}],
-                "params": {"out": str(out)},
+                "params": {"one": {"out": str(out)}},
                 "host": "127.0.0.1",
                 "port": 1,
                 "timeout_ms": 500,
@@ -428,8 +428,8 @@ class StepTraceTests(unittest.TestCase):
                 "def receive(ctx, params):\n"
                 "    s = ctx.step_instance\n"
                 "    assert ctx.step_name == s['name']\n"
-                "    ctx.save_state('token', s['fields']['token'])\n"
-                "    assert ctx.load_state('token') == s['fields']['token']\n"
+                "    ctx.save_state('token', params[s['name']]['token'])\n"
+                "    assert ctx.load_state('token') == params[s['name']]['token']\n"
                 "@step_handler('send')\n"
                 "def send(ctx, params):\n"
                 "    ctx.observed.append((ctx.step_instance['name'], ctx.load_depending_state('token')))\n"
@@ -437,10 +437,14 @@ class StepTraceTests(unittest.TestCase):
             generate = Registry().get(str(script))
             ctx = Ctx(Session(), "127.0.0.1", 1, 1.0)
             ctx.observed = []
+            ctx.generator_params = {
+                "a": {"token": "original"},
+                "a_copy": {"token": "copy"},
+            }
             trace = [
-                {"name": "a", "step": "receive", "fields": {"token": "original"}},
+                {"name": "a", "step": "receive"},
                 {"name": "b", "step": "send", "inputs": {"token": "a.token"}},
-                {"name": "a_copy", "step": "receive", "fields": {"token": "copy"}},
+                {"name": "a_copy", "step": "receive"},
                 {"name": "b_copy", "step": "send", "inputs": {"token": "a_copy.token"}},
                 {"name": "b_later", "step": "send", "inputs": {"token": "a.token"}},
             ]
@@ -463,14 +467,14 @@ class StepTraceTests(unittest.TestCase):
             "def setup(ctx, params):\n"
             "    assert ctx.step_instance is None\n"
             "    assert ctx.step_name is None\n"
-            "    ctx.events = [('init', params['shared'][0])]\n"
+            "    ctx.events = [('init', 'ready')]\n"
             "@step_handler('send USER')\n"
             "def user(ctx, params):\n"
-            "    ctx.events.append((ctx.step_instance['name'], ctx.step_instance['fields']['username']))\n"
-            "    try: params['shared'][0] = 'changed'\n"
+            "    ctx.events.append((ctx.step_name, params[ctx.step_name]['username']))\n"
+            "    try: params[ctx.step_name]['username'] = 'changed'\n"
             "    except TypeError: pass\n"
             "    else: raise AssertionError('params must be read-only')\n"
-            "    try: ctx.step_instance['fields']['username'] = 'changed'\n"
+            "    try: ctx.step_instance['name'] = 'changed'\n"
             "    except TypeError: pass\n"
             "    else: raise AssertionError('instance must be read-only')\n"
         )
@@ -478,12 +482,15 @@ class StepTraceTests(unittest.TestCase):
         generate = registry.get(str(script))
         self.assertIs(generate, registry.get(str(script)))
         ctx = Ctx(Session(), "127.0.0.1", 1, 1.0)
-        ctx.generator_params = {"shared": ["value"]}
+        ctx.generator_params = {
+            "one": {"username": "a"},
+            "two": {"username": "b"},
+        }
         generate(ctx, [
-            {"name": "one", "step": "send USER", "fields": {"username": "a"}},
-            {"name": "two", "step": "send USER", "fields": {"username": "b"}},
+            {"name": "one", "step": "send USER"},
+            {"name": "two", "step": "send USER"},
         ])
-        self.assertEqual(ctx.events, [("init", "value"), ("one", "a"), ("two", "b")])
+        self.assertEqual(ctx.events, [("init", "ready"), ("one", "a"), ("two", "b")])
         self.assertIsNone(ctx.step_instance)
         self.assertIsNone(ctx.step_name)
         with self.assertRaises(InteractionError):
@@ -502,25 +509,26 @@ class StepTraceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate step handler"):
             Registry().get(str(script))
 
-    def test_server_dispatches_read_only_params_and_step_fields(self):
+    def test_server_dispatches_read_only_instance_params(self):
         directory = Path(tempfile.mkdtemp(prefix="mcn-handler-request-"))
         script = directory / "generator.py"
         script.write_text(
             "from generator_server import step_handler, global_init\n"
             "@global_init\n"
-            "def setup(ctx, params): ctx.initial_username = params['username']\n"
+            "def setup(ctx, params): ctx.ready = True\n"
             "@step_handler('hello')\n"
             "def hello(ctx, params):\n"
-            "    assert ctx.initial_username == 'shared'\n"
-            "    assert ctx.step_instance['fields']['username'] == 'mutated'\n"
-            "    try: params['username'] = 'changed'\n"
+            "    assert ctx.ready is True\n"
+            "    assert ctx.step_name == 'one'\n"
+            "    assert params['one']['username'] == 'mutated'\n"
+            "    try: params['one']['username'] = 'changed'\n"
             "    except TypeError: pass\n"
             "    else: raise AssertionError('params must be read-only')\n"
         )
         try:
             request = {"op": "run", "client": 42, "id": 1, "generator": str(script),
-                       "step_trace": [{"name": "one", "step": "hello", "fields": {"username": "mutated"}}],
-                       "params": {"username": "shared"}, "host": "127.0.0.1", "port": 1}
+                       "step_trace": [{"name": "one", "step": "hello"}],
+                       "params": {"one": {"username": "mutated"}}, "host": "127.0.0.1", "port": 1}
             response = cbor2.loads(handle_payload(cbor2.dumps(request), {}))
             self.assertEqual(response["status"], "ok", response)
         finally:
@@ -561,8 +569,8 @@ class StepTraceTests(unittest.TestCase):
         marker = directory / "seen.txt"
         script.write_text(
             "from generator_server import step_handler\n@step_handler('hello')\ndef handler(ctx, params):\n"
-            "    assert ctx.step_instance['fields']['username'] == 'ubuntu'\n"
-            "    assert ctx.get_global('x', 'missing') is None\n"
+            "    assert params['hello_1']['username'] == 'ubuntu'\n"
+            "    assert ctx.get_global('x', 'missing') == 'missing'\n"
             f"    open({str(marker)!r}, 'w').write('1')\n"
         )
         try:
@@ -574,9 +582,9 @@ class StepTraceTests(unittest.TestCase):
                 "version": 3,
                 "step_trace": [{
                     "name": "hello_1", "step": "hello", "action": "send",
-                    "channel": "control", "fields": {"username": "ubuntu"},
+                    "channel": "control",
                 }],
-                "params": {"x": None},
+                "params": {"hello_1": {"username": "ubuntu"}},
                 "host": "127.0.0.1", "port": 1, "timeout_ms": 1000,
             }
             response = cbor2.loads(handle_payload(cbor2.dumps(request), {}))
@@ -660,7 +668,7 @@ class ServerProcessTests(unittest.TestCase):
                         "case_id": 2,
                         "generator": str(FTP_SCRIPT),
                         "step_trace": [{"name": "one", "step": "ftp command"}],
-                        "params": {"verb": "USER", "arg": "ubuntu"},
+                        "params": {"one": {"verb": "USER", "arg": "ubuntu"}},
                         "host": "127.0.0.1",
                         "port": port,
                         "timeout_ms": 1000,

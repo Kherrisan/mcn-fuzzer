@@ -12,12 +12,12 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::mutations::{self, expand_named};
+use super::mutations;
 use crate::{
-    engine::input::ParamValue,
+    engine::input::{BytesEncoding, FieldKind, ParamValue},
     protocol::{Binding, IndexedModel, StepRecord},
 };
 
@@ -41,7 +41,9 @@ pub struct ProposalChannel {
 pub struct MutableField {
     pub field: String,
     #[serde(default)]
-    pub kind: String,
+    pub kind: FieldKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoding: Option<BytesEncoding>,
     #[serde(default)]
     pub default: Option<ParamValue>,
     #[serde(default)]
@@ -450,14 +452,6 @@ impl Proposal {
         Ok(())
     }
 
-    /// Expand duplicate mutations. `counts` maps each count_param to a runtime value.
-    pub fn expand(&self, counts: &BTreeMap<String, Value>) -> Result<Vec<ProposalStep>, String> {
-        let names = mutations::instance_names(&self.trace)?;
-        expand_named(&self.trace, &names, &self.mutations, &|name| {
-            counts.get(name).cloned().unwrap_or(json!(0))
-        })
-    }
-
     /// Downstream copy for synthesis: strip mutation strategy and expose only
     /// the mutable field descriptions. The original proposal remains available
     /// for handoff/audit.
@@ -470,8 +464,14 @@ impl Proposal {
         }
         let mut declared = BTreeSet::new();
         for mutation in &self.mutations {
-            if mutation.get("op").and_then(Value::as_str) != Some("field") {
-                continue;
+            let op = mutation
+                .get("op")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "mutation needs an op".to_string())?;
+            if op != "field" {
+                return Err(format!(
+                    "unsupported mutation op {op:?}; only field mutations are supported"
+                ));
             }
             let field = mutation
                 .get("field")
@@ -482,6 +482,7 @@ impl Proposal {
             if field.is_empty() {
                 continue;
             }
+            let (kind, encoding, default) = mutations::field_type(mutation)?;
             match mutations::selection(mutation.get("steps").unwrap_or(&Value::Null), &names)? {
                 mutations::Selector::Each(indexes) => {
                     for index in indexes {
@@ -489,8 +490,9 @@ impl Proposal {
                         if declared.insert(key) {
                             copy.trace[index].mutable_fields.push(MutableField {
                                 field: field.clone(),
-                                kind: "string".into(),
-                                default: None,
+                                kind,
+                                encoding,
+                                default: default.clone(),
                                 source: "proposal".into(),
                             });
                         }
@@ -502,8 +504,9 @@ impl Proposal {
                         if declared.insert(key) {
                             copy.trace[index].mutable_fields.push(MutableField {
                                 field: field.clone(),
-                                kind: "string".into(),
-                                default: None,
+                                kind,
+                                encoding,
+                                default: default.clone(),
                                 source: "proposal".into(),
                             });
                         }
@@ -526,10 +529,11 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{load_model, Binding, PartyRole};
+    use crate::protocol::{Binding, PartyRole, load_model};
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -732,6 +736,7 @@ mod tests {
         let mut proposal = base(&model);
         proposal.mutations = vec![json!({
             "op": "field", "steps": ["hello"], "field": "username",
+            "kind": "bytes", "encoding": "base64", "default": "AAE=",
             "suggestion": "empty or boundary", "evidence": "src/a.c:1"
         })];
         let copy = proposal.synthesis_copy().unwrap();
@@ -739,6 +744,18 @@ mod tests {
         let hello = copy.trace.iter().find(|step| step.step == "hello").unwrap();
         assert_eq!(hello.mutable_fields.len(), 1);
         assert_eq!(hello.mutable_fields[0].field, "username");
+        assert_eq!(
+            hello.mutable_fields[0].kind,
+            crate::engine::input::FieldKind::Bytes
+        );
+        assert_eq!(
+            hello.mutable_fields[0].encoding,
+            Some(crate::engine::input::BytesEncoding::Base64)
+        );
+        assert_eq!(
+            hello.mutable_fields[0].default,
+            Some(ParamValue::Str("AAE=".into()))
+        );
         assert_eq!(proposal.mutations.len(), 1);
     }
 

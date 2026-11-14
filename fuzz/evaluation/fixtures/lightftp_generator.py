@@ -1,7 +1,14 @@
 """Hand-written LightFTP step handlers for the evaluation cases."""
 
 import re
+from collections.abc import Mapping
+
 from generator_server import InteractionError, step_handler
+
+
+def _scope(ctx, params):
+    scope = params.get(ctx.step_name)
+    return scope if isinstance(scope, Mapping) else {}
 
 
 def _read(ctx, expected=None):
@@ -22,7 +29,7 @@ def greeting(ctx, params):
 
 @step_handler("send USER")
 def user(ctx, params):
-    _send(ctx, "USER " + params.get("user", "ubuntu"))
+    _send(ctx, "USER " + _scope(ctx, params).get("user", "ubuntu"))
 
 
 @step_handler("USER intermediate")
@@ -32,7 +39,7 @@ def user_reply(ctx, params):
 
 @step_handler("send PASS")
 def password(ctx, params):
-    _send(ctx, "PASS " + params.get("password", "ubuntu"))
+    _send(ctx, "PASS " + _scope(ctx, params).get("password", "ubuntu"))
 
 
 @step_handler("login accepted")
@@ -97,7 +104,7 @@ def list_command(ctx, params):
 
 @step_handler("send RETR")
 def retr(ctx, params):
-    _send(ctx, "RETR " + params.get("download", "hello.txt"))
+    _send(ctx, "RETR " + _scope(ctx, params).get("download", "hello.txt"))
 
 
 @step_handler("transfer preliminary")
@@ -136,7 +143,7 @@ def port_reply(ctx, params):
 
 @step_handler("send STOR")
 def stor(ctx, params):
-    _send(ctx, "STOR " + params["upload_name"])
+    _send(ctx, "STOR " + _scope(ctx, params)["upload_name"])
 
 
 @step_handler("store stream bytes via active")

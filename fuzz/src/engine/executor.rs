@@ -17,7 +17,9 @@ use std::{
 use libafl::{
     executors::{Executor, ExitKind, HasObservers},
     feedbacks::MaxMapFeedback,
-    observers::{CanTrack, ExplicitTracking, HitcountsMapObserver, StdMapObserver},
+    observers::{
+        AsanBacktraceObserver, CanTrack, ExplicitTracking, HitcountsMapObserver, StdMapObserver,
+    },
     state::HasExecutions,
     Error, HasMetadata,
 };
@@ -65,7 +67,7 @@ pub struct TraceIdentity {
 
 /// Coordinates one forkserver backend and the Python generator.
 pub struct CaseExecutor {
-    observers: (CoverageObserver, (PcapObserver, ())),
+    observers: (CoverageObserver, (PcapObserver, (AsanBacktraceObserver, ()))),
     backend: ForkserverBackend,
     capture: Arc<CaptureEngine>,
 
@@ -84,6 +86,7 @@ pub struct CaseExecutor {
     workdir: PathBuf,
     binary: PathBuf,
     report_path: PathBuf,
+    asan_log_dir: PathBuf,
     last_report: Option<CaseReport>,
     last_identity: Option<TraceIdentity>,
 }
@@ -115,6 +118,14 @@ impl CaseExecutor {
         let feedback = MaxMapFeedback::new(&observer);
         let pcap = PcapObserver::new(Arc::clone(&capture));
         let log_root = campaign.output_root.as_deref().unwrap_or(base);
+        let asan_log_dir = crate::runtime::backend::asan_log_dir(campaign);
+        fs::create_dir_all(&asan_log_dir).map_err(|error| {
+            Error::unknown(format!(
+                "creating ASAN log dir {}: {error}",
+                asan_log_dir.display()
+            ))
+        })?;
+        let asan = AsanBacktraceObserver::new("asan");
         let log_path = log_root.join("generator.log");
         let generator = GeneratorClient::spawn(
             &campaign.campaign.python,
@@ -128,7 +139,7 @@ impl CaseExecutor {
         let case_timeout = policy.effective_case_timeout(campaign.timeouts.case_ms)?;
         println!("lifecycle: {}", policy.describe(case_timeout));
         let executor = Self {
-            observers: tuple_list!(observer, pcap),
+            observers: tuple_list!(observer, pcap, asan),
             backend,
             capture,
             generator,
@@ -145,7 +156,8 @@ impl CaseExecutor {
             cleanup_script: campaign.target.cleanup_script.clone(),
             workdir: campaign.target.workdir.clone(),
             binary: campaign.target.binary.clone(),
-            report_path: base.join("cases.jsonl"),
+            report_path: log_root.join("cases.jsonl"),
+            asan_log_dir,
             last_report: None,
             last_identity: None,
         };
@@ -155,6 +167,11 @@ impl CaseExecutor {
     /// Borrow the observer so `MaxMapFeedback::new` can take its name and handle.
     pub fn observer(&self) -> &CoverageObserver {
         &self.observers.0
+    }
+
+    /// ASAN stack observer. Parsed logs update the objective hash.
+    pub fn asan_observer(&self) -> &AsanBacktraceObserver {
+        &self.observers.1.1.0
     }
 
     /// Shared capture engine used by the feedbacks.
@@ -324,6 +341,27 @@ impl CaseExecutor {
     }
 }
 
+impl CaseExecutor {
+    /// Feed any ASan log for the just-finished child into the observer.
+    ///
+    /// ASAN writes `<prefix>.<pid>` after the child exits. Parsing only when the
+    /// file exists keeps ordinary non-ASAN cases from producing a spurious zero
+    /// stack hash.
+    fn observe_asan_log(&mut self) {
+        let Some(pid) = self.last_identity.as_ref().map(|identity| identity.child_pid) else {
+            return;
+        };
+        let path = self.asan_log_dir.join(format!("asanlog.{pid}"));
+        let Ok(text) = fs::read_to_string(&path) else {
+            return;
+        };
+        if !text.contains("AddressSanitizer") {
+            return;
+        }
+        self.observers.1.1.0.parse_asan_output(&text);
+    }
+}
+
 impl<EM, S, Z> Executor<EM, GeneratorInput, S, Z> for CaseExecutor
 where
     S: HasExecutions + HasMetadata,
@@ -336,6 +374,7 @@ where
         input: &GeneratorInput,
     ) -> Result<ExitKind, Error> {
         let kind = self.drive_case(state, input)?;
+        self.observe_asan_log();
         let valid = self.last_report.as_ref().is_some_and(|report| report.valid);
         state
             .metadata_or_insert_with(BitmapProgress::default)
@@ -910,7 +949,7 @@ fn signal_pair(sut: Option<&mut Watched>, generator: Option<&mut Watched>) -> Re
 }
 
 impl HasObservers for CaseExecutor {
-    type Observers = (CoverageObserver, (PcapObserver, ()));
+    type Observers = (CoverageObserver, (PcapObserver, (AsanBacktraceObserver, ())));
 
     fn observers(&self) -> RefIndexable<&Self::Observers, Self::Observers> {
         RefIndexable::from(&self.observers)

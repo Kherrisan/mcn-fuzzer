@@ -20,11 +20,13 @@ src/
 
 ```sh
 # AFL++ and the Python venv already live under fuzz/.deps and fuzz/.venv.
-bash targets/lightftp/build.sh
+bash targets/lightftp/build-pcguard-asan.sh   # fuzz target
+bash targets/lightftp/build-coverage.sh       # llvm-cov target
+bash targets/lightftp/build-graphs.sh         # callgraph + CFG
 cargo build --release
 ```
 
-`build.sh` copies LightFTP, applies `targets/lightftp/forkserver-session.patch`, and compiles with `afl-clang-fast`, `AFL_LLVM_INSTRUMENT=PCGUARD`, and `AFL_LLVM_THREADSAFE_INST=1`. It removes `AFL_LLVM_ONLY_FSRV` and `AFL_GCC_ONLY_FSRV` from the compiler environment when those variables are present. It does not modify `fuzz/.deps/LightFTP`.
+The three scripts build from `targets/lightftp/source`, the pristine LightFTP copy, so `.deps/LightFTP` and the source copy stay untouched. Each script copies the source, applies `targets/lightftp/forkserver-session.patch`, and writes into its own `build-*` directory. The ASAN variant uses `AFL_LLVM_INSTRUMENT=PCGUARD`, `AFL_LLVM_THREADSAFE_INST=1`, and `AFL_USE_ASAN=1`; the coverage variant uses `AFL_LLVM_ONLY_FSRV=1` plus profile flags; the graph variant uses `clang-18 -flto` with the same profile flags and exports `callgraph.dot` and `cfg/*.dot`.
 
 ## Run
 
@@ -36,6 +38,7 @@ sudo ./target/release/mcn-fuzz doctor
 sudo ./target/release/mcn-fuzz accept --campaign targets/lightftp/campaign.toml
 sudo ./target/release/mcn-fuzz run --campaign targets/lightftp/campaign.toml
 sudo ./target/release/mcn-fuzz run -o /path/to/runs --campaign targets/lightftp/campaign.toml
+sudo ./target/release/mcn-fuzz coverage -o /path/to/coverage-runs --campaign targets/lightftp/campaign.toml --corpus targets/lightftp/corpus --step 1
 sudo ./target/release/mcn-fuzz replay --campaign targets/lightftp/campaign.toml --input targets/lightftp/corpus/<file>
 ```
 
@@ -46,9 +49,11 @@ same-minute collision gets a `-2`, `-3`, ... suffix. Relative `[campaign]
 corpus`, `[campaign] crashes`, `[coverage] output`, and
 `[generator_synthesis] output` paths are resolved below that root; absolute
 paths are left unchanged. Inputs such as seeds, binaries, models, and documents
-stay relative to the campaign file.
+stay relative to the campaign file. `coverage -o PARENT` follows the same
+timestamped-root rule and writes snapshots/analysis directly below the new
+coverage campaign root. It never adds a build-hash directory.
 
-When LLVM source coverage is enabled in `[coverage]`, full JSON export is off by default. Add `--source-coverage-json` to save the detailed JSON in snapshots. Without the flag, the stage uses `llvm-cov export --summary-only` for coverage deltas and saves profdata snapshots and metadata. `[source_coverage]` is a configuration error; move that table to `[coverage]`. `analysis_enabled` is separate and requires collection. The private HC executable is `[agents].hc_executable` (default `hc`), not `generator_synthesis.hc_executable`. Analysis output lives under `coverage.output/analysis/`; the coverage root is no longer split by a build fingerprint. `targets/lightftp/build-coverage.sh --graphs` emits the forkserver coverage binary, bitcode, callgraph, CFG dots, and the four-field manifest in one build.
+When LLVM source coverage is enabled in `[coverage]`, the fuzzer stores only the merged profile: each snapshot keeps `coverage.profdata.zlib`, metadata, and the SUT logs, never a full JSON export. The analysis MCP service decompresses that profile, runs `llvm-cov export` itself when `load_coverage_json` needs the detailed counters, and removes its temporary JSON and profile once the model is built. Rust still runs a summary-only export to record line/branch totals in `metadata.json` for reporting. A snapshot directory contains only `coverage.profdata.zlib`, `metadata.json`, and the SUT logs: there is no `checkpoint/`, no `progress.json`, and no raw `.profraw`. `metadata.json` carries the snapshot number, cumulative replay count, summary, per-batch delta, case ids, and timings; it no longer stores fingerprints or binary hashes. A restarted campaign discovers progress from the existing snapshot metadata and merges the new raw profiles with `current.profdata`. The `--source-coverage-json` flag is gone. `[source_coverage]` is a configuration error; move that table to `[coverage]`. `analysis_enabled` is separate and requires collection. The private HC executable is `[agents].hc_executable` (default `hc`), not `generator_synthesis.hc_executable`. Analysis output lives under `coverage.output/analysis/`; the coverage root is no longer split by a build fingerprint. `targets/lightftp/build-graphs.sh` emits bitcode, `callgraph.dot`, CFG dots, and `source-map.json`; `targets/lightftp/build-coverage.sh` emits only the coverage binary.
 
 Set `[campaign].timeout_secs` to stop the fuzz loop after a wall-clock duration. When present, it takes precedence over `[campaign].iterations`; the CLI `--iterations` option remains an explicit override. The deadline is checked between complete LibAFL iterations, so an iteration already in progress can finish before shutdown.
 
@@ -97,9 +102,10 @@ while initialization is pending it skips dispatch and retains the trigger for a
 later round. Initialization failures pause synthesis while ordinary fuzzing continues.
 Seedless campaigns wait for initialization and the first synthesis input.
 Before the ordinary fuzzer loop starts, the same mutation stage is invoked
-directly while its FIFO is non-empty. It runs the baseline once without feedback,
-then applies the ordinary mutation/evaluation loop until a mutated child enters
-the corpus; the baseline itself is never added. The mutation stage is the only
+directly while its FIFO is non-empty. It runs the baseline once through normal
+feedback, then applies the ordinary mutation/evaluation loop until a mutated
+child enters the corpus; the baseline is kept when the evaluator finds it
+interesting. The mutation stage is the only
 consumer of the FIFO, and the normal `synthesis → mutation → coverage replay →
 coverage analysis` order is unchanged once the corpus is schedulable.
 
@@ -148,7 +154,7 @@ Parsed data, the committed graph checkpoint, `service.jsonl` call records, and
 socket lives under `/tmp/mcn-mcp-*`. `service.jsonl` is the audit trail for
 agent tool calls.
 
-The service tool set is explicit: `load_profdata`, `load_cfg`, `load_callgraph`,
+The service tool set is explicit: `load_coverage_json`, `load_cfg`, `load_callgraph`,
 `load_protocol`, `load_handlers`, `get_loaded_state`; five coverage views
 (`show_overview/module/file/handler/func_code_coverage`); `get_reachable_functions`,
 `get_reaching_handlers`, and `show_source_coverage`; and protocol-graph tools
@@ -171,10 +177,10 @@ Accepted generators are put into a FIFO in LibAFL state metadata instead of
 being evaluated. The ordinary mutation stage checks that FIFO before asking the
 scheduler: a non-empty queue supplies the input for this round, while an empty
 queue uses the normal scheduler/corpus testcase. For a queued synthesis input,
-the same mutation stage first runs its original initial parameters once as a
-baseline outside feedback, then applies the existing `GeneratorMutator` and
-ordinary mutation iterations/evaluation/feedback. The baseline is never added to
-the corpus. Only mutated inputs that pass normal feedback enter the corpus,
+the same mutation stage first runs its original initial parameters once through
+normal feedback, then applies the existing `GeneratorMutator` and ordinary
+mutation iterations/evaluation/feedback. The baseline enters the corpus only
+when feedback keeps it. Only mutated inputs that pass normal feedback enter the corpus,
 where subsequent mutation rounds continue to evolve them. There is no separate
 candidate stage, no bypass mutation stage, and no temporary corpus insertion.
 
@@ -214,7 +220,11 @@ parsing.
 
 Both prompts also inject the absolute path to [the protocol module skill](skills/protocol-modules/SKILL.md) and require the agent to read it before selecting libraries. It covers all 13 ProfuzzGym targets (four FTP variants), with message/packet codecs, upstream/server SDKs, crypto helpers, import names, installed versions and limitations. Keep the skill and its references accessible at runtime. Evaluation fingerprints the skill directory along with the prompt templates, so changing its contents requires preparing a new evaluation task.
 
-Proposals contain the ordered trace with per-step reasons and constraints, the selected definitions, handler references, and dependencies. Rust instantiates the proposal as a `TraceInstance` containing concrete steps and dependencies. Execution input carries the generator path, `step_trace`, dependencies, and shared `params`; no execution-format version or proposal request ID is embedded. Each step instance carries final `fields`, explicit `omitted_fields`, dependency `inputs`, and broken-dependency metadata. At import the runtime builds a mapping from `@step_handler("model step name")` declarations; during execution it calls an optional `@global_init` once, then dispatches each instance in order to its handler with `(ctx, params)`. Params and `ctx.step_instance` are read-only; `ctx.step_name` is the current instance name. The handler resolves explicit fields, omissions, dependencies and global values, performs the step action, and uses `ctx.save_state(field, value)` and `ctx.load_state(field)` for the current instance, and `ctx.load_depending_state(field)` for bound prior values; `ctx.states` lives until the generator exits. They do not embed the full model. The skill requires the agent to run [the fixed artifact validator](skills/protocol-modules/scripts/validate_generator.py) on `result.draft.json` before atomically publishing `result.json`. The agent additionally runs its bounded import probe. Fuzzer acceptance rechecks the completion IDs, parameter schema and values, and Python syntax and entrypoint in Rust using the RustPython compiler; it does not launch Python or run the generator or SUT.
+Proposals contain the ordered trace with per-step reasons and constraints, the selected definitions, handler references, and dependencies. Rust instantiates the proposal as a `TraceInstance` containing concrete steps and dependencies. Proposal mutations are field-only (`op: "field"`); each may declare a `kind`
+(`string`, `bytes`, `integer`, `boolean`, `list`) and, for `bytes`, an
+`encoding` (`hex` or `base64`). Execution input carries the generator path,
+`step_trace`, dependencies, and per-instance `params` keyed by step instance
+name; no execution-format version or proposal request ID is embedded. Each step instance carries explicit `omitted_fields`, dependency `inputs`, and broken-dependency metadata. Mutable values for an instance live only in `params[instance_name]`. At import the runtime builds a mapping from `@step_handler("model step name")` declarations; during execution it calls an optional `@global_init` once, then dispatches each instance in order to its handler with `(ctx, params)`. Params and `ctx.step_instance` are read-only; `ctx.step_name` is the current instance name. The handler resolves its instance's params entry, omissions and dependency inputs, performs the step action, and uses `ctx.save_state(field, value)` and `ctx.load_state(field)` for the current instance, and `ctx.load_depending_state(field)` for bound prior values; `ctx.states` lives until the generator exits. They do not embed the full model. The skill requires the agent to run [the fixed artifact validator](skills/protocol-modules/scripts/validate_generator.py) on `result.draft.json` before atomically publishing `result.json`. The agent additionally runs its bounded import probe. Fuzzer acceptance rechecks the completion IDs, parameter schema and values, and Python syntax and entrypoint in Rust using the RustPython compiler; it does not launch Python or run the generator or SUT.
 
 The prepared environment is CPython 3.12 on Linux x86_64. Install its pinned dependencies into the campaign interpreter (the supplied campaigns use `.venv/bin/python`):
 
@@ -226,7 +236,12 @@ The prepared environment is CPython 3.12 on Linux x86_64. Install its pinned dep
 
 The audit checks 32 cataloged distributions and runs protocol/crypto/codec probes; `--network` additionally exercises temporary loopback DNS, FTP, SMTP, DICOM, SSH and HTTP/DMAP peers. These checks verify the library environment, not interoperability with every ProFuzzBench target. Synthesis agents use installed modules and do not install dependencies themselves.
 
-Coverage-analysis init and task prompts receive `[target].source_dir` as `SOURCE_DIR`.
+Coverage-analysis init and task prompts receive `[target].source_dir` as `SOURCE_DIR`,
+plus `[target].configure_options` and `[target].cli_args` as `CONFIGURE_OPTIONS` and
+`CLI_ARGS`. The prompts tell the agent to combine those switches with other build
+material (`configdata.pm`, `CMakeCache.txt`, generated headers, build logs) to
+decide which protocol features are compiled in, to avoid goals for disabled
+features, and to prioritize enabled features in proposals and trace selection.
 Synthesizer prompts do not receive that path, even when it is configured.
 Both prompts and the module skill prohibit reading SUT source or using SUT feature
 support or expected message acceptance to decide whether to generate. Protocol
@@ -256,15 +271,29 @@ If the target reports a map larger than the campaign allocation, set `map_size` 
 
 ## OpenSSL s_server
 
-`targets/openssl/build.sh` downloads OpenSSL 3.5.9, checks SHA256 `603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a`, and compiles `openssl`, `libssl`, and `libcrypto` with `afl-clang-fast`, `AFL_LLVM_INSTRUMENT=PCGUARD`, `AFL_LLVM_THREADSAFE_INST=1`, and `AFL_MAP_SIZE=1048576`. Configure uses `no-shared no-module no-asm no-tests`. The same script writes an unencrypted RSA 2048 certificate into `targets/openssl/build/fixture/`. That directory, the tree, and the private key are gitignored.
+OpenSSL 4.0.2 is built two ways, one directory per instrumentation variant (plus a graph-only build). All use the same tarball (SHA256 `736b467530f916737b7031310ccb21d8218c6229e61e8e160cd1d3458cd543a8`), the same source under `.deps/openssl/openssl-4.0.2`, and match the 4.0.2 LLVM graphs under `targets/openssl/llvm-compatible`.
 
-A campaign can set `target.cleanup_script` to a shell script that prepares or resets `workdir` before startup and each case. The script runs with `workdir` as its current directory and receives `MCN_FUZZ_WORKDIR`, `MCN_FUZZ_HOST`, and `MCN_FUZZ_PORT`. LightFTP's script copies its certificate files and renders `fftp.conf`; OpenSSL's script copies its certificate and key. OpenSSL args use `@PORT@` for the chosen listener port. The campaign allocates a 1 MiB map. The handshake still rejects a target that needs a larger map. The generator sends one ClientHello on its own TCP connection. Do not add a readiness connection: `-naccept 1` would treat that probe as the case.
+| script | directory | instrumentation |
+|---|---|---|
+| `build-pcguard-asan.sh` | `build-pcguard-asan/tree/apps/openssl` | `AFL_LLVM_INSTRUMENT=PCGUARD`, `AFL_LLVM_THREADSAFE_INST=1`, `AFL_MAP_SIZE=1048576`, `AFL_USE_ASAN=1`, `-fsanitize=address` |
+| `build-coverage.sh` | `build-llvm-cov/tree/apps/openssl` | forkserver-only, llvm-cov source counters |
+
+Both variants Configure with `no-shared no-module no-asm no-tests`, then compile `openssl`, `libssl`, and `libcrypto` with `afl-clang-fast`. The ASAN build requires `__asan_init`, `__sanitizer_cov_trace_pc_guard`, and `__afl_area_ptr`; the coverage build requires llvm profile counters. Each script checks `AFL_DUMP_MAP_SIZE` against the 1 MiB campaign allocation. `gen_certs.sh` writes one unencrypted RSA 2048 certificate into `targets/openssl/fixture/`; that directory, the build trees, and the private key are gitignored. `cleanup.sh` copies the certificate and key from there.
+
+The ASAN build is the fuzzing target for sanitizer campaigns: the fuzzer sets `ASAN_OPTIONS` with `abort_on_error=1`, so an ASAN report ends the child with `SIGABRT` and is recorded as a crash. The forkserver also parses `asan/asanlog.<pid>` through `AsanBacktraceObserver`. The coverage build stays non-ASAN so source counters are not distorted.
+
+A campaign can set `target.cleanup_script` to a shell script that prepares or resets `workdir` before startup and each case. The script runs with `workdir` as its current directory and receives `MCN_FUZZ_WORKDIR`, `MCN_FUZZ_HOST`, and `MCN_FUZZ_PORT`. OpenSSL's script copies its certificate and key. OpenSSL args use `@PORT@` for the chosen listener port. The campaign allocates a 1 MiB map; the handshake rejects a target that needs a larger one. The generator sends one ClientHello on its own TCP connection. Do not add a readiness connection: `-naccept 1` would treat that probe as the case.
 
 ```sh
-bash targets/openssl/build.sh
+bash targets/openssl/build-pcguard-asan.sh
+bash targets/openssl/build-coverage.sh
 sudo ./target/release/mcn-fuzz run --campaign targets/openssl/campaign.toml
 sudo ./target/release/mcn-fuzz accept --campaign targets/openssl/campaign.toml
 sudo ./target/release/mcn-fuzz replay --campaign targets/openssl/campaign.toml --input targets/openssl/corpus/<file>
 ```
 
-`generators/tls12.py` is a params-only example; new synthesis generators use decorated step handlers. It rebuilds TLS lengths, then applies `version`, `cipher`, `sni`, `extensions_hex`, and `truncate`. The response reader takes the 5-byte record header and then at most 18432 body bytes. A ServerHello is `ok`. An alert is `alert`. A short close is `eof`. Connect failures stay `conn` and read deadlines stay `timeout`.
+All campaigns use the ASAN target; only the coverage binary is non-ASAN. `build-graphs.sh` is a third build used solely to export `callgraph.dot` and `cfg/*.dot`; it keeps the same profile-instrumentation flags so inlining matches the coverage binary. Campaigns read the graphs from `build-graphs/graphs/`. `campaign-asan-smoke.toml` is a short ASAN plus coverage smoke run.
+
+`build-graphs/graphs` is exported from the pruned 4.0.2 source: `opt -passes=dot-callgraph` on the linked bitcode, and `dot-cfg-only` per object in parallel (the linked-module pass is ~100x slower). The old `llvm-compatible/` SVF bundle stays for history but is no longer referenced by campaigns. The alias join still reports inline/header function records that have no standalone symbol as unmatched instead of guessing.
+
+`generators/tls12.py` is a params-only example; new synthesis generators use decorated step handlers. It reads the current instance's entry from `params`, rebuilds TLS lengths, then applies `version`, `cipher`, `sni`, `extensions_hex`, and `truncate`. The response reader takes the 5-byte record header and then at most 18432 body bytes. A ServerHello is `ok`. An alert is `alert`. A short close is `eof`. Connect failures stay `conn` and read deadlines stay `timeout`.

@@ -13,7 +13,7 @@ use super::common::{
 use crate::{
     app::config::Campaign,
     app::{interesting_indexes, require_exec, symmetric_diff, Session},
-    engine::input::{GeneratorInput, ParamValue},
+    engine::input::{GeneratorInput, ParamValue, StepInstance},
     engine::mutator::GeneratorMutator,
 };
 use libafl::{
@@ -456,17 +456,33 @@ fn check_generator_timeout(
 }
 
 fn mode_input(campaign: &Campaign, mode: &str, user: &str, password: &str) -> GeneratorInput {
-    let mut params = BTreeMap::new();
-    params.insert("user".to_string(), ParamValue::Str(user.to_string()));
-    params.insert(
+    let mut fields = BTreeMap::new();
+    fields.insert("user".to_string(), ParamValue::Str(user.to_string()));
+    fields.insert(
         "password".to_string(),
         ParamValue::Str(password.to_string()),
     );
-    params.insert("mode".to_string(), ParamValue::Str(mode.to_string()));
-    params.insert("file".to_string(), ParamValue::Str("hello.txt".to_string()));
-    params.insert("pause_ms".to_string(), ParamValue::Int(0));
-    GeneratorInput::new(
+    fields.insert("mode".to_string(), ParamValue::Str(mode.to_string()));
+    fields.insert("file".to_string(), ParamValue::Str("hello.txt".to_string()));
+    fields.insert("pause_ms".to_string(), ParamValue::Int(0));
+    let mut params = BTreeMap::new();
+    params.insert("session_1".to_string(), fields);
+    GeneratorInput::with_trace(
         campaign.base.join("generators").join("ftp_session.py"),
+        vec![StepInstance {
+            name: "session_1".to_string(),
+            step: "ftp_session".to_string(),
+            action: "send".to_string(),
+            condition: String::new(),
+            message: None,
+            channel: "control".to_string(),
+            sender: None,
+            receiver: None,
+            party: None,
+            omitted_fields: Vec::new(),
+            inputs: BTreeMap::new(),
+            broken_dependencies: Vec::new(),
+        }],
         params,
     )
 }

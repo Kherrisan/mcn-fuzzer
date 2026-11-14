@@ -23,7 +23,7 @@ class ArtifactValidationTests(unittest.TestCase):
         self.root.mkdir()
         self.write("generator.py", "from generator_server import step_handler\n@step_handler('x')\ndef handler(ctx, params):\n    raise RuntimeError('must not execute')\n")
         self.write_json("params.schema.json", {"type": "object"})
-        self.write_json("params.json", {"values": [True, -1, "text", [2]]})
+        self.write_json("params.json", {"x": {"values": [True, -1, "text", [2]]}})
         self.write_json("result.draft.json", {
             "request_id": "request-1",
             "status": "ok", "added_steps": [],
@@ -77,34 +77,38 @@ class ArtifactValidationTests(unittest.TestCase):
     def test_production_subset_accepts_optional_properties_and_ignores_unsupported_keywords(self):
         self.write_json("params.schema.json", {
             "type": "object", "properties": {
-                "required_value": {"type": "integer", "minimum": 10, "enum": [11]},
-                "optional_value": {"type": "string"},
-            }, "required": ["required_value"], "additionalProperties": False,
+                "x": {"type": "object", "properties": {
+                    "required_value": {"type": "integer", "minimum": 10, "enum": [11]},
+                    "optional_value": {"type": "string"},
+                }, "required": ["required_value"], "additionalProperties": False},
+            }, "required": ["x"], "additionalProperties": False,
         })
-        self.write_json("params.json", {"required_value": 1})
+        self.write_json("params.json", {"x": {"required_value": 1}})
         self.assertEqual(self.validate()["status"], "ok")
 
     def test_signed_integer_boundaries_and_nested_lists(self):
-        self.write_json("params.json", {"bounds": [-(1 << 63), (1 << 63) - 1, [False, ""]]})
+        self.write_json("params.json", {"x": {"bounds": [-(1 << 63), (1 << 63) - 1, [False, ""]]}})
         self.validate()
         for value in [-(1 << 63) - 1, 1 << 63, 1.5, None, {"nested": True}, [None]]:
             with self.subTest(value=value):
-                self.write_json("params.json", {"value": value})
+                self.write_json("params.json", {"x": {"value": value}})
                 with self.assertRaises(ValidationError):
                     self.validate()
 
     def test_non_json_numbers_are_rejected(self):
-        self.write("params.json", '{"value": NaN}')
+        self.write("params.json", '{"x": {"value": NaN}}')
         with self.assertRaisesRegex(ValidationError, "non-JSON number"):
             self.validate()
 
     def test_required_unknown_fields_and_boolean_integer_mismatch(self):
         self.write_json("params.schema.json", {
-            "type": "object", "properties": {"value": {"type": "integer"}},
-            "required": ["value"], "additionalProperties": False,
+            "type": "object", "properties": {"x": {
+                "type": "object", "properties": {"value": {"type": "integer"}},
+                "required": ["value"], "additionalProperties": False,
+            }}, "required": ["x"], "additionalProperties": False,
         })
-        for params, error in [({}, "missing required"), ({"value": 1, "extra": 2}, "not in the schema"),
-                              ({"value": True}, "must be an integer")]:
+        for params, error in [({}, "missing required"), ({"x": {"value": 1, "extra": 2}}, "not in the schema"),
+                              ({"x": {"value": True}}, "must be an integer")]:
             with self.subTest(params=params):
                 self.write_json("params.json", params)
                 with self.assertRaisesRegex(ValidationError, error):
@@ -112,7 +116,7 @@ class ArtifactValidationTests(unittest.TestCase):
 
     def test_remote_refs_rejected_even_in_nested_schema(self):
         self.write_json("params.schema.json", {
-            "type": "object", "properties": {"unused": {"items": {"$ref": "https://invalid/schema"}}},
+            "type": "object", "properties": {"x": {"type": "object", "properties": {"unused": {"items": {"$ref": "https://invalid/schema"}}}}},
         })
         with self.assertRaisesRegex(ValidationError, "remote \\$ref"):
             self.validate()

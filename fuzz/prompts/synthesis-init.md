@@ -173,8 +173,8 @@ Every later successful request writes four files in its own OUTPUT_DIR:
 | File | Required content |
 | --- | --- |
 | generator.py | Complete importable module with a synchronous `@step_handler("model step name")` function accepting `(ctx, params)` for each selected step name, and optionally one `@global_init` function with the same signature. Runtime dispatches the trace and exposes the current instance as `ctx.step_instance` and its name as `ctx.step_name`. |
-| params.schema.json | Root object schema describing initial values for proposal mutable fields; Rust mutates final trace fields and does not revalidate it. |
-| params.json | Initial mutable-field defaults (strings, signed 64-bit integers, booleans, or nested lists). Rust uses them when the proposal declares mutable fields; it does not pass this object to generator. |
+| params.schema.json | Root object schema whose properties are per-instance objects describing that instance's mutable fields; Rust mutates final values and does not revalidate it. |
+| params.json | Initial per-instance mutable-field defaults, keyed by step instance name (strings, signed 64-bit integers, booleans, or nested lists). Rust mutates them and passes the nested map read-only to generator handlers. |
 | result.json | Completion signal with the exact request_id, status="ok", and added_steps as an array of strings. Publish last by atomic rename. |
 
 Each generation task provides exact success/failure JSON examples. On failure,

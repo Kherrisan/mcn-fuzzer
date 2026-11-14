@@ -1,1 +1,1 @@
-"""Startup DOT conversion, manifest digests, and CFG source maps."""
+"""Startup DOT graph conversion and CFG source maps."""

@@ -24,7 +24,7 @@ use crate::{
     agents::{command_line, CommandLine},
     app::config::{Campaign, GeneratorSynthesisConfig},
     coverage::proposal::ProposalMailbox,
-    engine::input::{GeneratorInput, ParamValue},
+    engine::input::GeneratorInput,
     engine::stagnation::BitmapProgress,
     protocol::{write_catalog, Binding, IndexedModel},
 };
@@ -41,6 +41,7 @@ use request::GeneratorRequest;
 pub use prompts::{ExecutionMode, SynthesisPromptContext};
 pub use queue::{SynthesisCandidate, SynthesisCandidates};
 pub use request::ValidatedGenerator;
+pub(crate) use request::build_generator_input;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TraceOrigin {
@@ -228,7 +229,7 @@ impl GeneratorSynthesisStage {
     fn spawn_worker(&mut self, socket: PathBuf) -> Result<(), Error> {
         let terminal = crate::agents::campaign_terminal_name("synthesis", &self.campaign_base);
         let client = Client::spawn(WorkerConfig {
-            thread_name: "generator-synthesis",
+            thread_name: "synthesis",
             socket,
             terminal,
             init_timeout: Duration::from_secs(self.config.init_timeout_secs.max(1)),

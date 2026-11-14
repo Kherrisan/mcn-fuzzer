@@ -3,12 +3,15 @@
 /third-party/LibAFL/
 /third-party/protocolguard/
 /third-party/LibAFLstar/.git.upstream/
+/third-party/FuzzAgent/
 
 # SUTs and target-specific files are maintained locally.
 targets/
 /third-party/LibAFLstar/case_studies/
 
 # Fuzzing, acceptance, benchmark, and coverage results.
+/fuzz/analysis/
+/fuzz/evaluation/grok-synthesis-test/
 capture-bench/
 /third-party/LibAFLstar/benchmark/
 corpus/

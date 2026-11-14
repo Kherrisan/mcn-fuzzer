@@ -51,10 +51,6 @@ enum Command {
         output: Option<PathBuf>,
         #[arg(long)]
         iterations: Option<u64>,
-        /// Save the full llvm-cov JSON for source-coverage snapshots.
-        /// Disabled by default; summary-only data is still used for coverage deltas.
-        #[arg(long)]
-        source_coverage_json: bool,
     },
     /// Execute one saved generator input.
     Replay {
@@ -67,8 +63,9 @@ enum Command {
     Coverage {
         #[arg(long)]
         campaign: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
+        /// Parent directory for the generated coverage campaign root. Defaults to cwd.
+        #[arg(short = 'o', long)]
+        output: Option<PathBuf>,
         /// Defaults to the campaign corpus.
         #[arg(long)]
         corpus: Option<PathBuf>,
@@ -149,7 +146,7 @@ fn main() -> ExitCode {
             }
         };
         output_root = match &cli.command {
-            Command::Run { output, .. } => {
+            Command::Run { output, .. } | Command::Coverage { output, .. } => {
                 match mcn_fuzz::app::config::create_campaign_root(output.as_deref()) {
                     Ok(path) => Some(path),
                     Err(error) => {
@@ -228,21 +225,21 @@ fn main() -> ExitCode {
         Command::Run {
             campaign,
             iterations,
-            source_coverage_json,
             ..
-        } => load_with_output_root(campaign, output_root.as_deref()).and_then(|mut campaign| {
-            campaign.coverage.export_json = *source_coverage_json;
-            app::run(&campaign, *iterations)
-        }),
+        } => load_with_output_root(campaign, output_root.as_deref())
+            .and_then(|campaign| app::run(&campaign, *iterations)),
         Command::Replay { campaign, input } => {
             load(&campaign).and_then(|campaign| app::replay(&campaign, &input))
         }
         Command::Coverage {
             campaign,
-            output,
             corpus,
             step,
+            ..
         } => load(campaign).and_then(|campaign| {
+            let output = output_root.as_deref().ok_or_else(|| {
+                Error::unknown("coverage campaign root was not created".to_string())
+            })?;
             mcn_fuzz::coverage::command::run(&campaign, output, corpus.as_deref(), *step)
         }),
         Command::Doctor => app::doctor(),
@@ -343,7 +340,9 @@ fn ensure_command_outputs(
             }
             paths
         }
-        Command::Coverage { output, .. } => vec![output.clone()],
+        Command::Coverage { .. } => vec![output_root
+            .ok_or_else(|| Error::unknown("coverage campaign root was not created".to_string()))?
+            .to_path_buf()],
         #[cfg(feature = "stats")]
         Command::BenchJob { output, .. } | Command::BenchFinalize { output, .. } => {
             vec![output.clone()]

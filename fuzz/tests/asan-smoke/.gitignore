@@ -1,0 +1,10 @@
+/build/
+/work/
+/corpus/
+/crashes/
+/coverage/
+/asan/
+/cases.jsonl
+/generator.log
+/coverage-generator.log
+__pycache__/

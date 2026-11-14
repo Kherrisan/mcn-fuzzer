@@ -64,13 +64,14 @@
 | 工具 | 输入 | 行为 |
 | --- | --- | --- |
 | `get_loaded_state` | 无 | 返回各数据集是否加载、身份与版本；不触发加载 |
-| `load_profdata` | `request_id, snapshot_dir, manifest_path` | 读取冻结 snapshot 的 metadata、profdata 和 coverage JSON，绑定到该请求 |
+| `load_coverage_json` | `request_id, snapshot_dir, manifest_path` | 读取冻结 snapshot 的 `metadata.json` 与 `coverage.json`，绑定到该请求；`coverage.profdata` 只校验存在，不用 Python 解码 |
 | `load_cfg` | `cfg_dir, manifest_path` | 解析 CFG DOT 和现有 source-map，建立块、边、指令位置索引 |
 | `load_callgraph` | `callgraph_dot, manifest_path` | 解析调用图，建立正反向邻接索引 |
 | `load_protocol` | `protocol_path, catalog_path, checkpoint_path?` | 加载原始 protocol 与稳定 ID 表；可显式叠加已提交图快照 |
 | `load_handlers` | `handlers_path` | 加载并校验初始化得到的入站 message ↔ handler 多对多映射 |
 
 - snapshot 目前保存 `coverage.profdata.zlib`；也允许测试输入提供未压缩 `coverage.profdata`。profdata 是 LLVM 二进制 profile，不自行用 Python 解码其计数；在内存中解压/校验后，解析同一冻结 snapshot 中由 Rust 在 replay 结束后调用 llvm-cov 导出的 `coverage.json`。
+- 符号别名连接（coverage 名 ↔ callgraph 符号）在服务生命周期内只计算一次并保存在内存中；后续 snapshot 只对新模型套用该映射。一次 analysis 会话只加载一个 build 和一份 callgraph，且两者都包含该 build 的全部符号（含未覆盖函数），因此映射对整个会话有效。
 - 保留 Rust replay/export；缺少 coverage JSON 时 load 报错，不重新 replay，也不悄悄启动另一次 LLVM 导出。保存并校验 JSON 摘要与 profile 摘要，确保二者属于同一次 snapshot 导出。
 - CFG/callgraph 的 DOT 解析移动到显式 load 阶段，不再由 Rust 启动时强制转换。可复用现有 Python parser；保留后继端口/序号等原始边信息，后续工具不再需要猜边序号。
 - 文件不存在、解析失败、身份不符时，返回具体错误并保留之前成功加载的状态。

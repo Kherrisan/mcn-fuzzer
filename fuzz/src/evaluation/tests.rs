@@ -141,9 +141,9 @@ if "REQUEST=" in prompt:
         shutil.copyfile(proposal, os.path.join(out, "proposal.json"))
     open(os.path.join(out, "generator.py"), "w").write("from generator_server import step_handler\n@step_handler('greet')\ndef handler(ctx, params):\n    return None\n")
     open(os.path.join(out, "params.schema.json"), "w").write(
-        '{"type":"object","additionalProperties":false,"required":["scenario"],"properties":{"scenario":{"type":"string"}}}'
+        '{"type":"object","additionalProperties":false,"required":["greet"],"properties":{"greet":{"type":"object","additionalProperties":false,"required":["scenario"],"properties":{"scenario":{"type":"string"}}}}}'
     )
-    open(os.path.join(out, "params.json"), "w").write('{"scenario":"login-quit"}')
+    open(os.path.join(out, "params.json"), "w").write('{"greet":{"scenario":"login-quit"}}')
     open(os.path.join(out, "result.json"), "w").write(
         '{"request_id":"%s","status":"ok","added_steps":[]}'
         % field("REQUEST")
@@ -490,10 +490,10 @@ fn validator_rejects_bad_artifacts_and_accepts_the_production_subset() {
     .unwrap();
     fs::write(
         dir.join("params.schema.json"),
-        br#"{"type":"object","additionalProperties":false,"required":["scenario"],"properties":{"scenario":{"type":"string"}},"$ref":"https://example.invalid/schema"}"#,
+        br#"{"type":"object","additionalProperties":false,"required":["greet"],"properties":{"greet":{"type":"object","additionalProperties":false,"required":["scenario"],"properties":{"scenario":{"type":"string"}}}},"$ref":"https://example.invalid/schema"}"#,
     )
     .unwrap();
-    fs::write(dir.join("params.json"), br#"{"scenario":"login-quit"}"#).unwrap();
+    fs::write(dir.join("params.json"), br#"{"greet":{"scenario":"login-quit"}}"#).unwrap();
     fs::write(
         dir.join("result.json"),
         br#"{"request_id":"r","protocol_id":"p","trace_id":"t","status":"ok","added_steps":[]}"#,
@@ -503,7 +503,7 @@ fn validator_rejects_bad_artifacts_and_accepts_the_production_subset() {
     assert!(error.contains("$ref"), "{error}");
     fs::write(
         dir.join("params.schema.json"),
-        br#"{"type":"object","additionalProperties":false,"required":["scenario"],"properties":{"scenario":{"type":"string"}}}"#,
+        br#"{"type":"object","additionalProperties":false,"required":["greet"],"properties":{"greet":{"type":"object","additionalProperties":false,"required":["scenario"],"properties":{"scenario":{"type":"string"}}}}}"#,
     )
     .unwrap();
     fs::write(dir.join("result.json"), br#"{"request_id":"other","protocol_id":"p","trace_id":"t","status":"ok","added_steps":[]}"#).unwrap();
@@ -514,9 +514,9 @@ fn validator_rejects_bad_artifacts_and_accepts_the_production_subset() {
         br#"{"request_id":"r","protocol_id":"p","trace_id":"t","status":"ok","added_steps":[]}"#,
     )
     .unwrap();
-    fs::write(dir.join("params.json"), br#"{"scenario":1}"#).unwrap();
+    fs::write(dir.join("params.json"), br#"{"greet":{"scenario":1}}"#).unwrap();
     assert!(crate::engine::synthesis::validate_generator_artifacts(&dir, "r").is_err());
-    fs::write(dir.join("params.json"), br#"{"scenario":"login-quit"}"#).unwrap();
+    fs::write(dir.join("params.json"), br#"{"greet":{"scenario":"login-quit"}}"#).unwrap();
     let validated = crate::engine::synthesis::validate_generator_artifacts(&dir, "r").unwrap();
     assert!(validated.input.generator.ends_with("generator.py"));
     assert_eq!(validated.origin.request_id, "r");
@@ -781,17 +781,56 @@ fn handwritten_lightftp_generators_replay() {
         )
         .unwrap();
         fs::write(dir.join("generator.py"), &generator).unwrap();
+        let proposal: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("proposal.json")).unwrap()).unwrap();
+        let trace = proposal["trace"].as_array().unwrap();
+        let instance = |step: &str| {
+            trace
+                .iter()
+                .find(|item| item["step"] == step)
+                .and_then(|item| item["name"].as_str())
+                .map(str::to_string)
+        };
+        let upload = format!("{}-upload.txt", task.case_name);
+        let mut params: std::collections::BTreeMap<String, serde_json::Map<String, serde_json::Value>> =
+            std::collections::BTreeMap::new();
+        let mut add = |step: &str, field: &str, value: serde_json::Value| {
+            if let Some(name) = instance(step) {
+                params
+                    .entry(name)
+                    .or_default()
+                    .insert(field.to_string(), value);
+            }
+        };
+        add("send STOR", "upload_name", serde_json::json!(upload));
+        add("send RETR", "download", serde_json::json!("hello.txt"));
+        add("service greeting", "scenario", serde_json::json!(task.case_name));
+        let mut properties = serde_json::Map::new();
+        for (name, fields) in &params {
+            let mut field_props = serde_json::Map::new();
+            for field in fields.keys() {
+                field_props.insert(field.clone(), serde_json::json!({"type": "string"}));
+            }
+            properties.insert(
+                name.clone(),
+                serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": field_props,
+                }),
+            );
+        }
+        let schema = serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": params.keys().cloned().collect::<Vec<_>>(),
+            "properties": properties,
+        });
         fs::write(
             dir.join("params.schema.json"),
-            br#"{"type":"object","additionalProperties":false,"required":["scenario"],"properties":{"scenario":{"type":"string"},"upload_name":{"type":"string"},"download":{"type":"string"}}}"#,
+            serde_json::to_vec(&schema).unwrap(),
         )
         .unwrap();
-        let upload = format!("{}-upload.txt", task.case_name);
-        let params = serde_json::json!({
-            "scenario": task.case_name,
-            "upload_name": upload,
-            "download": "hello.txt",
-        });
         fs::write(
             dir.join("params.json"),
             serde_json::to_vec(&params).unwrap(),
@@ -1110,7 +1149,7 @@ fn tampered_published_snapshot_is_rejected() {
     restore();
     let mut input: serde_json::Value =
         serde_json::from_slice(&fs::read(request.join("input.json")).unwrap()).unwrap();
-    input["params"]["scenario"] = serde_json::Value::String("changed".into());
+    input["params"]["extra"] = serde_json::json!({"changed": true});
     fs::write(
         request.join("input.json"),
         serde_json::to_vec(&input).unwrap(),

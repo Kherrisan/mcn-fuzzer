@@ -108,7 +108,7 @@ def _plain_step_trace(trace: list) -> list[dict[str, Any]]:
             raise InteractionError("generator", "step_trace entries must be objects")
         row = {}
         for key, value in item.items():
-            if key in {"fields", "inputs"} and isinstance(value, dict):
+            if key == "inputs" and isinstance(value, dict):
                 row[key] = {str(name): _plain(inner) for name, inner in value.items()}
             elif key == "omitted_fields" and isinstance(value, list):
                 row[key] = [str(name) for name in value]

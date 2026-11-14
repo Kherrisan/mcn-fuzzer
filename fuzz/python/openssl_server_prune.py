@@ -1,4 +1,10 @@
-"""Copy OpenSSL 3.5.9 sources and prune the CLI to s_server and built-in help."""
+"""Copy OpenSSL 4.0.2 sources and prune the CLI to s_server and built-in help.
+
+The pruned tree keeps only ``openssl.c``, ``s_server.c`` and a support file so
+LLVM/SVF graph extraction sees the TLS server entry points without the rest of
+the command-line tool. The generated ``s_server_prune.patch`` is meant to be
+applied with ``patch -p1`` to a pristine 4.0.2 tree.
+"""
 
 import argparse
 import difflib
@@ -7,8 +13,82 @@ import shutil
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / ".deps/openssl/openssl-3.5.9"
-COPY = ROOT / ".deps/openssl/openssl-3.5.9-s-server-only"
+VERSION = "4.0.2"
+SOURCE = ROOT / ".deps/openssl" / f"openssl-{VERSION}"
+COPY = ROOT / ".deps/openssl" / f"openssl-{VERSION}-s-server-only"
+
+SUPPORT_PREAMBLE = """/*
+ * Copyright 2001-2026 The OpenSSL Project Authors. All Rights Reserved.
+ *
+ * Licensed under the Apache License 2.0 (the "License").  You may not use
+ * this file except in compliance with the License.  You can obtain a copy
+ * in the file LICENSE in the source distribution or at
+ * https://www.openssl.org/source/license.html
+ */
+
+#include "apps.h"
+#include <openssl/ocsp.h>
+
+#include <openssl/ssl.h>
+
+"""
+
+
+def cut(text, start_marker, end_marker, replacement):
+    start = text.index(start_marker)
+    end = text.index(end_marker, start)
+    return text[:start] + replacement + text[end:]
+
+
+def prune_build_info(text):
+    return cut(
+        text,
+        "# Source for the 'openssl' program",
+        "IF[{- !$disabled{apps} -}]",
+        "# Retain s_server and the CLI's built-in help only.\n"
+        "$OPENSSLSRC=openssl.c s_server.c s_server_support.c\n\n",
+    )
+
+
+def prune_progs(text):
+    return cut(
+        text,
+        "    my %md_disabler = (",
+        '    print "    {0, NULL, NULL, NULL, NULL}',
+        "",
+    )
+
+
+def prune_openssl_c(text):
+    # 4.0.2 resolves digest/cipher names through EVP_MD_fetch/EVP_CIPHER_fetch
+    # and dispatches to dgst_main/enc_main. Neither command is linked after the
+    # prune, so drop the fallback instead of keeping dead references.
+    return cut(
+        text,
+        "    if (fp == NULL) {\n        EVP_MD *md = NULL;",
+        "    if (fp != NULL) {",
+        "",
+    )
+
+
+def support_file(source):
+    client = (source / "apps/s_client.c").read_text()
+    constants = "\n".join(
+        line for line in client.splitlines()
+        if line.startswith("const unsigned char tls13_aes")
+    )
+    ocsp = (source / "apps/ocsp.c").read_text()
+    function_start = ocsp.index("OCSP_RESPONSE *process_responder(")
+    function_end = ocsp.index("\n}\n", function_start) + 3
+    helper = (
+        SUPPORT_PREAMBLE
+        + constants
+        + "\n\n"
+        + "#if !defined(OPENSSL_NO_OCSP) && !defined(OPENSSL_NO_SOCK)\n"
+        + ocsp[function_start:function_end]
+        + "#endif\n"
+    )
+    return helper
 
 
 def prune_source(source, destination, patch_path=None):
@@ -18,45 +98,37 @@ def prune_source(source, destination, patch_path=None):
         raise ValueError("Source and destination must be separate, non-nested directories")
     if not destination.exists():
         shutil.copytree(source, destination, symlinks=True)
+
     patch = []
-    for name in ("apps/build.info", "apps/progs.pl", "apps/openssl.c"):
+    transforms = {
+        "apps/build.info": prune_build_info,
+        "apps/progs.pl": prune_progs,
+        "apps/openssl.c": prune_openssl_c,
+    }
+    for name, transform in transforms.items():
         original = (source / name).read_text()
-        modified = original
-        if name.endswith("build.info"):
-            start = modified.index("# Source for the 'openssl' program")
-            end = modified.index("IF[{- !$disabled{apps} -}]", start)
-            modified = (modified[:start]
-                        + "# Retain s_server and the CLI's built-in help only.\n"
-                        + "$OPENSSLSRC=openssl.c s_server.c s_server_support.c\n\n"
-                        + modified[end:])
-        elif name.endswith("progs.pl"):
-            start = modified.index("    my %md_disabler = (")
-            end = modified.index('    print "    {0, NULL, NULL, NULL, NULL}', start)
-            modified = modified[:start] + modified[end:]
-        else:
-            start = modified.index("    if (fp == NULL) {\n        if (EVP_get_digestbyname")
-            end = modified.index("    if (fp != NULL) {", start)
-            modified = modified[:start] + modified[end:]
+        modified = transform(original)
         (destination / name).write_text(modified)
-        patch.extend(difflib.unified_diff(original.splitlines(True),
-                                         modified.splitlines(True),
-                                         fromfile=f"a/{name}", tofile=f"b/{name}"))
-    # Retain s_server's shared definitions verbatim, without linking either
-    # the s_client or OCSP CLI implementation.
-    ocsp = (source / "apps/ocsp.c").read_text()
-    function_start = ocsp.index("OCSP_RESPONSE *process_responder(")
-    function_end = ocsp.index("\n}\n", function_start) + 3
-    client = (source / "apps/s_client.c").read_text()
-    constants = "\n".join(line for line in client.splitlines()
-                          if line.startswith("const unsigned char tls13_aes"))
-    helper = (ocsp[:ocsp.index("#include")]
-              + '#include "apps.h"\n#include <openssl/ocsp.h>\n\n'
-              + '#include <openssl/ssl.h>\n\n' + constants + "\n\n"
-              + "#if !defined(OPENSSL_NO_OCSP) && !defined(OPENSSL_NO_SOCK)\n"
-              + ocsp[function_start:function_end] + "#endif\n")
+        patch.extend(
+            difflib.unified_diff(
+                original.splitlines(True),
+                modified.splitlines(True),
+                fromfile=f"a/{name}",
+                tofile=f"b/{name}",
+            )
+        )
+
+    helper = support_file(source)
     (destination / "apps/s_server_support.c").write_text(helper)
-    patch.extend(difflib.unified_diff([], helper.splitlines(True),
-                                     fromfile="/dev/null", tofile="b/apps/s_server_support.c"))
+    patch.extend(
+        difflib.unified_diff(
+            [],
+            helper.splitlines(True),
+            fromfile="/dev/null",
+            tofile="b/apps/s_server_support.c",
+        )
+    )
+
     patch_path = patch_path or destination / "s_server_prune.patch"
     patch_path.parent.mkdir(parents=True, exist_ok=True)
     patch_path.write_text("".join(patch))
@@ -66,7 +138,7 @@ def prune_source(source, destination, patch_path=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=SOURCE,
-                        help="Original, unmodified OpenSSL source directory")
+                        help=f"Original OpenSSL {VERSION} source directory")
     parser.add_argument("--output", type=Path, default=COPY,
                         help="Destination directory for the pruned source copy")
     parser.add_argument("--patch", type=Path,

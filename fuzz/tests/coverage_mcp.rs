@@ -135,7 +135,6 @@ fn fixture(dir: &Path) -> Value {
         .to_string(),
     )
     .unwrap();
-    fs::write(snapshot.join("coverage.profdata.zlib"), b"not-zlib").unwrap();
     json!({
         "protocol": protocol, "catalog": catalog, "handlers": handlers, "cfg": cfg,
         "callgraph": callgraph, "manifest": manifest, "snapshot": snapshot,
@@ -235,7 +234,7 @@ fn rust_client_drives_the_python_service_and_validates_the_proposal() {
             .unwrap();
         client
             .tool(
-                "load_profdata",
+                "load_coverage_json",
                 json!({
             "request_id": "req-1", "snapshot_dir": files["snapshot"],
             "manifest_path": files["manifest"]}),

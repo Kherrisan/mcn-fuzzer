@@ -28,8 +28,9 @@ def parse_pasv(reply: bytes) -> tuple[str, int]:
 
 @step_handler("ftp command")
 def handle_command(ctx: Ctx, params: dict) -> None:
-    verb = params.get("verb", "NOOP")
-    arg = params.get("arg", "")
+    scope = params.get(ctx.step_name, {})
+    verb = scope.get("verb", "NOOP")
+    arg = scope.get("arg", "")
     ctx.send(_line(str(verb), str(arg)))
     reply = ctx.recv(until=b"\r\n")
     if reply.startswith(b"227"):

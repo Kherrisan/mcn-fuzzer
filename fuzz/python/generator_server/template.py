@@ -50,18 +50,17 @@ def _field(ctx: Ctx, params: dict[str, Any], name: str, default: Any = _MISSING)
     """Resolve one field in the order required by the runtime contract.
 
     Precedence:
-      1. explicit ``fields`` chosen by Rust;
+      1. this instance's entry in the per-instance ``params`` map;
       2. explicit omission in ``omitted_fields`` (never silently fall back);
       3. an ``inputs`` dependency binding, via ``ctx.load_depending_state``;
-      4. shared read-only ``params``;
-      5. the caller's default, if one was supplied.
+      4. the caller's default, if one was supplied.
 
-    ``fields`` may contain a legitimate ``None``; do not use truthiness here.
+    ``params`` is keyed by concrete step instance name (``ctx.step_name``).
     """
     instance = _instance(ctx)
-    fields = instance.get("fields") or {}
-    if name in fields:
-        return fields[name]
+    scope = params.get(instance.get("name"), {})
+    if name in scope:
+        return scope[name]
 
     if name in (instance.get("omitted_fields") or ()):
         if default is not _MISSING:
@@ -71,9 +70,6 @@ def _field(ctx: Ctx, params: dict[str, Any], name: str, default: Any = _MISSING)
     inputs = instance.get("inputs") or {}
     if name in inputs:
         return ctx.load_depending_state(name)
-
-    if name in params:
-        return params[name]
 
     if default is not _MISSING:
         return default

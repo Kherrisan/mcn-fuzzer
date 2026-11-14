@@ -23,7 +23,6 @@ analysis_init_timeout_secs = 120
 analysis_task_timeout_secs = 600
 callgraph_dot = "build-coverage/callgraph.dot"
 cfg_dir = "build-coverage/cfg"
-build_manifest = "build-coverage/manifest.json"
 
 [agents]
 hc_executable = "hc"

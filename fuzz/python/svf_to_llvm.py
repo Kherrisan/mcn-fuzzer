@@ -2,7 +2,7 @@ r"""Convert post-PTA SVF DOTs to mcn-fuzzer's LLVM callgraph/per-function CFG fo
 
 The original bitcode is required: compact SVF labels do not identify LLVM basic
 blocks. Rebuilding SVFIR recovers that identity without rerunning pointer analysis.
-No coverage manifest is generated; it must belong to the matching instrumented build.
+No build manifest is generated; it must belong to the matching instrumented build.
 
 Example (from the repository root)::
 

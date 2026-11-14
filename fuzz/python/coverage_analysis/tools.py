@@ -17,6 +17,25 @@ def _schema(properties, required=()):
 
 REQUEST = {"type": "string", "description": "registered analysis request id"}
 STEP = {"type": "string", "description": "exact step name from the catalog"}
+FIELD_KIND = {"type": "string", "enum": ["string", "bytes", "integer", "boolean", "list"]}
+BYTES_ENCODING = {"type": "string", "enum": ["hex", "base64"]}
+MUTABLE_FIELD = _schema({
+    "field": {"type": "string", "minLength": 1},
+    "kind": FIELD_KIND,
+    "encoding": BYTES_ENCODING,
+    "default": {},
+    "source": {"type": "string"},
+}, ("field",))
+FIELD_MUTATION = _schema({
+    "op": {"type": "string", "enum": ["field"]},
+    "steps": {"type": ["array", "string"]},
+    "field": {"type": "string", "minLength": 1},
+    "suggestion": {"type": "string", "minLength": 1},
+    "evidence": {"type": "string", "minLength": 1},
+    "kind": FIELD_KIND,
+    "encoding": BYTES_ENCODING,
+    "default": {},
+}, ("op", "steps", "field", "suggestion", "evidence"))
 TRACE_STEP = _schema({
     "name": {"type": "string", "description": "unique step instance name"},
     "step": STEP,
@@ -26,7 +45,7 @@ TRACE_STEP = _schema({
     "party": {"type": "string"},
     "reason": {"type": "string"},
     "constraints": {"type": "array", "items": {"type": "string"}},
-    "mutable_fields": {"type": "array"},
+    "mutable_fields": {"type": "array", "items": MUTABLE_FIELD},
 }, ("name", "step", "channel", "reason"))
 PAGE_PROPS = {
     "offset": {"type": "integer", "minimum": 0, "default": 0},
@@ -36,15 +55,13 @@ PAGE_PROPS = {
 TOOLS = [
     ("get_loaded_state", "Report which datasets are loaded and their versions.",
      _schema({})),
-    ("load_profdata", "Load a frozen snapshot's profdata and coverage JSON for a request.",
-     _schema({"request_id": REQUEST, "snapshot_dir": {"type": "string"},
-              "manifest_path": {"type": "string"}}, ("request_id", "snapshot_dir", "manifest_path"))),
+    ("load_coverage_json", "Load a snapshot's coverage counters, exporting them from the stored profile when needed.",
+     _schema({"request_id": REQUEST, "snapshot_dir": {"type": "string"}},
+             ("request_id", "snapshot_dir"))),
     ("load_cfg", "Parse per-function CFG DOT files and their source map.",
-     _schema({"cfg_dir": {"type": "string"}, "manifest_path": {"type": "string"}},
-             ("cfg_dir", "manifest_path"))),
+     _schema({"cfg_dir": {"type": "string"}}, ("cfg_dir",))),
     ("load_callgraph", "Parse the callgraph DOT file.",
-     _schema({"callgraph_dot": {"type": "string"}, "manifest_path": {"type": "string"}},
-             ("callgraph_dot", "manifest_path"))),
+     _schema({"callgraph_dot": {"type": "string"}}, ("callgraph_dot",))),
     ("load_protocol", "Load the protocol model, stable id catalog, and optional checkpoint.",
      _schema({"protocol_path": {"type": "string"}, "catalog_path": {"type": "string"},
               "checkpoint_path": {"type": "string"}}, ("protocol_path", "catalog_path"))),
@@ -107,7 +124,7 @@ TOOLS = [
               "goal": {"type": "object"},
               "parties": {"type": "object"},
               "channels": {"type": "object"},
-              "mutations": {"type": "array"},
+              "mutations": {"type": "array", "items": FIELD_MUTATION},
               "dependencies": {"type": "array", "items": _schema({
                   "prior": {"type": "string"}, "dependent": {"type": "string"},
                   "kind": {"type": "string", "enum": ["order", "data", "resource", "state"]},
@@ -140,7 +157,7 @@ def _require(state, key, request_id=None, load_tool=None):
 
 
 def _coverage(state, request_id=None):
-    return _require(state, "coverage", request_id, "load_profdata")
+    return _require(state, "coverage", request_id, "load_coverage_json")
 
 
 def _callgraph(state, request_id=None):
@@ -244,17 +261,16 @@ def tool_get_loaded_state(state, arguments):
     return state.loaded_state()
 
 
-def tool_load_profdata(state, arguments):
-    return state.load_profdata(arguments["request_id"], arguments["snapshot_dir"],
-                               arguments["manifest_path"])
+def tool_load_coverage_json(state, arguments):
+    return state.load_coverage_json(arguments["request_id"], arguments["snapshot_dir"])
 
 
 def tool_load_cfg(state, arguments):
-    return state.load_cfg(arguments["cfg_dir"], arguments["manifest_path"])
+    return state.load_cfg(arguments["cfg_dir"])
 
 
 def tool_load_callgraph(state, arguments):
-    return state.load_callgraph(arguments["callgraph_dot"], arguments["manifest_path"])
+    return state.load_callgraph(arguments["callgraph_dot"])
 
 
 def tool_load_protocol(state, arguments):

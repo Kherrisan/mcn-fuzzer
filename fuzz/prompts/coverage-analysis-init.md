@@ -10,7 +10,20 @@ MODEL={{ model }}
 CATALOG={{ catalog }}
 HANDLERS={{ handlers_path }}
 SUT_PARTIES={{ sut_parties }}
+CONFIGURE_OPTIONS={{ configure_options }}
+CLI_ARGS={{ cli_args }}
 WRITE ready.json
+
+## Build configuration and enabled features
+
+CONFIGURE_OPTIONS lists the build-time switches used for this SUT; CLI_ARGS
+lists the runtime command-line flags. Use them together with other build
+material (configdata.pm, CMakeCache.txt, generated headers, build logs,
+linked libraries) to decide which protocol features are actually compiled in
+and enabled. Do not propose goals for features that are disabled or were not
+built. Prioritize enabled features: inspect their handlers, branches, and
+dependencies thoroughly, and make them the primary targets of proposals and
+trace selection.
 
 ## Scope and handler definition
 

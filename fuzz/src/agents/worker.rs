@@ -252,6 +252,9 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
                     client,
                 );
             }
+            if let Err(reason) = self.wait_idle(client, "the Codex thread rename", true) {
+                return self.failure(reason, client);
+            }
             let rename = format!("/rename {}", self.initial_terminal);
             if let Err(error) = client.send(&self.config.terminal, &rename) {
                 return self.failure(
@@ -262,19 +265,14 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
                     client,
                 );
             }
-            // Send the init prompt only after the status line shows the name.
-            let terminal = self.initial_terminal.clone();
-            if let Err(reason) = self.wait_for_screen(
-                client,
-                std::time::Instant::now() + Duration::from_secs(15),
-                |screen| codex_thread_name_visible(screen, &terminal),
-                "the renamed Codex thread",
-            ) {
-                return self.failure(reason, client);
-            }
+            // The rename is cosmetic: Codex may treat `/rename` as a user
+            // message and auto-title the thread instead. Do not fail init on
+            // the title; the init prompt waits for an idle agent below.
         }
-        if let Err(error) = client.send(&self.config.terminal, prompt) {
-            return self.failure(error.message, client);
+        if let Err(reason) =
+            self.send_checked(client, prompt, "the initialization prompt", launch.codex)
+        {
+            return self.failure(reason, client);
         }
         let ready_path = context.output_dir().join("ready.json");
         let mut deadline = std::time::Instant::now() + self.config.init_timeout;
@@ -346,8 +344,8 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
             Ok(prepared) => prepared,
             Err(reason) => return self.artifact(request, Err(reason), client),
         };
-        if let Err(error) = client.send(&self.config.terminal, prompt) {
-            return self.failure(error.message, client);
+        if let Err(reason) = self.send_checked(client, prompt, "the request prompt", false) {
+            return self.failure(reason, client);
         }
         let result_path = request.output_dir().join("result.json");
         if let Err(reason) = super::artifacts::wait_for_result(
@@ -386,6 +384,106 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
                 Some(format!("terminal {} {}", info.name, info.state))
             }
             _ => None,
+        }
+    }
+
+    /// Send only after HC reports the agent idle, then confirm a turn started.
+    fn send_checked(
+        &self,
+        client: &mut HcClient,
+        text: &str,
+        what: &str,
+        require_status: bool,
+    ) -> Result<(), String> {
+        self.wait_idle(client, what, require_status)?;
+        let receipt = client
+            .send(&self.config.terminal, text)
+            .map_err(|error| error.message)?;
+        if receipt.started == Some(false) {
+            // HC saw no turn within its short window, but the paste may still
+            // be queued. Give the program fifteen seconds to start working
+            // before pasting the same text again.
+            let deadline = std::time::Instant::now() + Duration::from_secs(15);
+            let mut started = false;
+            while std::time::Instant::now() < deadline {
+                match client.get(&self.config.terminal) {
+                    Ok(info) if matches!(info.state.as_str(), "finished" | "exited" | "dead") => {
+                        return Err(format!(
+                            "agent terminal {} exited after {what}",
+                            self.config.terminal
+                        ));
+                    }
+                    Ok(info) => match agent_activity(info.status.as_deref(), require_status) {
+                        AgentActivity::Busy => {
+                            started = true;
+                            break;
+                        }
+                        AgentActivity::Blocked => {
+                            return Err(format!(
+                                "agent terminal {} is blocked after {what}",
+                                self.config.terminal
+                            ));
+                        }
+                        AgentActivity::Ready => {}
+                    },
+                    Err(error) => return Err(error.message),
+                }
+                thread::sleep(IDLE_POLL);
+            }
+            if !started {
+                self.wait_idle(client, what, require_status)?;
+                let again = client
+                    .send(&self.config.terminal, text)
+                    .map_err(|error| error.message)?;
+                if again.started == Some(false) {
+                    return Err(format!(
+                        "{what} was pasted but the agent did not start a turn on {}",
+                        self.config.terminal
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn wait_idle(
+        &self,
+        client: &mut HcClient,
+        what: &str,
+        require_status: bool,
+    ) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + IDLE_TIMEOUT;
+        loop {
+            match client.get(&self.config.terminal) {
+                Ok(info) if matches!(info.state.as_str(), "finished" | "exited" | "dead") => {
+                    let detail = info
+                        .error
+                        .or(info.status)
+                        .unwrap_or_else(|| "no terminal error was reported".to_string());
+                    return Err(format!(
+                        "agent terminal {} exited while waiting for {what} ({}): {detail}",
+                        self.config.terminal, info.state
+                    ));
+                }
+                Ok(info) => match agent_activity(info.status.as_deref(), require_status) {
+                    AgentActivity::Ready => return Ok(()),
+                    AgentActivity::Blocked => {
+                        return Err(format!(
+                            "agent terminal {} is blocked and cannot accept {what}",
+                            self.config.terminal
+                        ))
+                    }
+                    AgentActivity::Busy => {}
+                },
+                Err(error) => return Err(error.message),
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "timed out waiting for {what}: agent on {} never reported idle",
+                    self.config.terminal
+                ));
+            }
+            thread::sleep(IDLE_POLL);
         }
     }
 
@@ -428,6 +526,49 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
 }
 
 /// Codex 0.166.0 draws this placeholder when the composer will submit a line.
+/// How long a send waits for the agent to report a non-working status.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const IDLE_POLL: Duration = Duration::from_millis(200);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentActivity {
+    Ready,
+    Busy,
+    Blocked,
+}
+
+/// Classify HC's status payload. HC returns either a plain word or an object
+/// whose `state` is the word, for example `{"state": "working"}`.
+fn agent_activity(status: Option<&str>, require_status: bool) -> AgentActivity {
+    let Some(text) = status else {
+        // Programs with no status protocol are usable as soon as they answer.
+        // Codex reports `working`/`idle`, so a missing status means it is still
+        // starting and must not receive a prompt yet.
+        return if require_status {
+            AgentActivity::Busy
+        } else {
+            AgentActivity::Ready
+        };
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return AgentActivity::Ready;
+    }
+    let state = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => value
+            .get("state")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(text)
+            .to_string(),
+        Err(_) => text.to_string(),
+    };
+    match state.as_str() {
+        "working" | "not_started" => AgentActivity::Busy,
+        "blocked" => AgentActivity::Blocked,
+        _ => AgentActivity::Ready,
+    }
+}
+
 fn codex_composer_ready(screen: &str) -> bool {
     screen.contains("Ask Codex to do anything")
 }
@@ -751,6 +892,26 @@ mod tests {
         drop(client);
         drop(core);
         let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn agent_activity_requires_codex_status_before_a_send() {
+        assert_eq!(agent_activity(None, false), AgentActivity::Ready);
+        assert_eq!(agent_activity(None, true), AgentActivity::Busy);
+        assert_eq!(agent_activity(Some("idle"), true), AgentActivity::Ready);
+        assert_eq!(
+            agent_activity(Some(r#"{"app":"codex","state":"working"}"#), true),
+            AgentActivity::Busy
+        );
+        assert_eq!(
+            agent_activity(Some(r#"{"app":"codex","state":"idle"}"#), true),
+            AgentActivity::Ready
+        );
+        assert_eq!(
+            agent_activity(Some(r#"{"app":"codex","state":"blocked"}"#), true),
+            AgentActivity::Blocked
+        );
+        assert_eq!(agent_activity(Some("not_started"), true), AgentActivity::Busy);
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::{
 
 use libafl::{
     executors::{forkserver::ForkserverExecutor, StdChildArgs},
-    observers::{StdErrObserver, StdOutObserver},
+    observers::{get_asan_runtime_flags, StdErrObserver, StdOutObserver},
     Error,
 };
 use libafl_bolts::{
@@ -125,9 +125,30 @@ impl ForkserverBackend {
         if let Some(core) = campaign.campaign.core {
             builder = builder.core(CoreId(core));
         }
+        let inherited_asan = campaign
+            .target
+            .extra_env
+            .iter()
+            .find(|(key, _)| key == "ASAN_OPTIONS")
+            .map(|(_, value)| placeholders.apply(value));
         for (key, value) in &campaign.target.extra_env {
+            if key == "ASAN_OPTIONS" {
+                continue;
+            }
             builder = builder.env(key, placeholders.apply(value));
         }
+        let asan_dir = super::asan_log_dir(campaign);
+        fs::create_dir_all(&asan_dir).map_err(|error| {
+            Error::unknown(format!("creating ASAN log dir {}: {error}", asan_dir.display()))
+        })?;
+        let mut asan_options = inherited_asan.unwrap_or_default();
+        if !asan_options.is_empty() {
+            asan_options.push(':');
+        }
+        asan_options.push_str(&get_asan_runtime_flags());
+        asan_options.push_str(":log_path=");
+        asan_options.push_str(&asan_dir.join("asanlog").display().to_string());
+        builder = builder.env("ASAN_OPTIONS", asan_options);
         let executor = builder
             .build(tuple_list!(
                 StdOutObserver::new("sut-stdout".into())?,
@@ -627,6 +648,8 @@ mod tests {
                 workdir: PathBuf::from("/tmp"),
                 cleanup_script: None,
                 args: vec!["fftp.conf".to_string()],
+                configure_options: Vec::new(),
+                cli_args: Vec::new(),
                 host: "127.0.0.1".to_string(),
                 port: 0,
                 extra_env: vec![(key.to_string(), value.to_string())],

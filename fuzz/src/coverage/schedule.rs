@@ -14,24 +14,25 @@ use std::{
 };
 
 use libafl::{
-    stages::{Restartable, Stage},
     Error, HasMetadata,
+    stages::{Restartable, Stage},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::{
     events::SharedLog,
     mcp::McpClient,
-    proposal::{sha256_file, AcceptedProposal, Proposal, ProposalMailbox},
+    proposal::{AcceptedProposal, Proposal, ProposalMailbox, sha256_file},
 };
 use crate::{
     agents::{
+        AgentClient, AgentCommand, AgentFailure, AgentInit, AgentOutcome, AgentTask, CommandLine,
+        SessionInit, WorkerConfig,
         artifacts::{check_identity, read_json},
-        command_line, current_boot, AgentClient, AgentCommand, AgentFailure, AgentInit,
-        AgentOutcome, AgentTask, CommandLine, SessionInit, WorkerConfig,
+        command_line, current_boot,
     },
     app::config::{AgentProvider, Campaign},
-    protocol::{load_model, write_catalog, Binding, IndexedModel, PartyRole},
+    protocol::{Binding, IndexedModel, PartyRole, load_model, write_catalog},
 };
 
 type Client = AgentClient<CoverageInit, AnalysisRequest>;
@@ -196,13 +197,13 @@ impl AgentTask for AnalysisRequest {
                 return Err(format!(
                     "analysis produced no proposal: {}",
                     result.get("error").and_then(Value::as_str).unwrap_or("")
-                ))
+                ));
             }
             other => {
                 return Err(format!(
                     "analysis status {other}: {}",
                     result.get("error").and_then(Value::as_str).unwrap_or("")
-                ))
+                ));
             }
         }
         let path = self.output_dir.join("proposal.json");
@@ -269,17 +270,12 @@ impl CoverageAnalysisStage {
                 .ok_or_else(|| Error::illegal_argument("coverage analysis requires [parties]"))?
                 .resolve(&model.party_names())?,
         );
-        let fingerprint = if campaign.coverage.binary.is_file() {
-            super::build_fingerprint(
-                &campaign.coverage.binary,
-                &campaign.coverage.llvm_profdata,
-                &campaign.coverage.llvm_cov,
-            )?
-        } else {
+        if !campaign.coverage.binary.is_file() {
             return Err(Error::illegal_argument(
                 "coverage analysis needs the coverage-built SUT binary".to_string(),
             ));
-        };
+        }
+        let fingerprint = "source-coverage".to_string();
         let analysis_root = campaign.coverage.output.join("analysis");
         fs::create_dir_all(analysis_root.join("requests"))?;
         fs::create_dir_all(analysis_root.join("init"))?;
@@ -321,7 +317,6 @@ impl CoverageAnalysisStage {
                 "coverage_output": campaign.coverage.output,
                 "callgraph": campaign.coverage.callgraph_dot,
                 "cfg_dir": campaign.coverage.cfg_dir,
-                "manifest": campaign.coverage.build_manifest,
                 "mcp_socket": crate::coverage::mcp::socket_path(),
             }),
         );
@@ -538,10 +533,11 @@ impl CoverageAnalysisStage {
                     "snapshot_dir": snapshot_dir,
                     "sut_stdout_log": sut_stdout_log,
                     "sut_stderr_log": sut_stderr_log,
-                    "manifest": self.campaign.coverage.build_manifest,
                     "model": self.campaign.generator_synthesis.model,
                     "catalog": self.catalog,
                     "handlers": self.handlers_path,
+                    "configure_options": self.campaign.target.configure_options,
+                    "cli_args": self.campaign.target.cli_args,
                     "output_dir": output_dir,
                 }))
                 .map_err(|error| Error::unknown(error.to_string()))?
@@ -558,11 +554,13 @@ impl CoverageAnalysisStage {
             "snapshot": format!("{snapshot:06}"),
             "output_dir": output_dir,
             "snapshot_dir": snapshot_dir,
-            "manifest": self.campaign.coverage.build_manifest,
             "model": self.campaign.generator_synthesis.model,
             "catalog": self.catalog,
             "handlers": self.handlers_path,
             "source_dir": self.campaign.target.source_dir,
+            "configure_options": self.campaign.target.configure_options,
+            "cli_args": self.campaign.target.cli_args,
+            "llvm_cov": self.campaign.coverage.llvm_cov.clone(),
         }))?;
         let prompt = render_task(
             self,
@@ -840,6 +838,15 @@ fn mcp_launch(mut launch: CommandLine, campaign: &Campaign) -> Result<CommandLin
     Ok(launch)
 }
 
+fn inject_target_config(prompt: String, target: &crate::app::config::TargetConfig) -> String {
+    prompt
+        .replace(
+            "{{ configure_options }}",
+            &json!(target.configure_options).to_string(),
+        )
+        .replace("{{ cli_args }}", &json!(target.cli_args).to_string())
+}
+
 fn render_init(
     stage: &CoverageAnalysisStage,
     model: &IndexedModel,
@@ -862,7 +869,7 @@ fn render_init(
             })
         })
         .collect();
-    INIT_PROMPT
+    let prompt = INIT_PROMPT
         .replace("{{ session_id }}", &stage.session)
         .replace(
             "{{ campaign.workspace }}",
@@ -888,7 +895,8 @@ fn render_init(
         .replace(
             "{{ execution.summary }}",
             "Coverage analysis reads the SUT source directory and protocol model.",
-        )
+        );
+    inject_target_config(prompt, &stage.campaign.target)
 }
 
 fn snapshot_sut_logs(snapshot_dir: &Path, snapshot: u64) -> Result<(PathBuf, PathBuf), Error> {
@@ -914,17 +922,13 @@ fn render_task(
     sut_stdout_log: &Path,
     sut_stderr_log: &Path,
 ) -> String {
-    TASK_PROMPT
+    let prompt = TASK_PROMPT
         .replace("{{ session_id }}", &stage.session)
         .replace("{{ request_id }}", request)
         .replace("{{ output_dir }}", &output_dir.display().to_string())
         .replace("{{ snapshot }}", &format!("{snapshot:06}"))
         .replace("{{ snapshot_dir }}", &snapshot_dir.display().to_string())
         .replace("{{ build }}", &stage.fingerprint)
-        .replace(
-            "{{ manifest }}",
-            &stage.campaign.coverage.build_manifest.display().to_string(),
-        )
         .replace(
             "{{ callgraph_dot }}",
             &stage.campaign.coverage.callgraph_dot.display().to_string(),
@@ -965,7 +969,8 @@ fn render_task(
                 .as_ref()
                 .map(|path| path.display().to_string())
                 .unwrap_or_default(),
-        )
+        );
+    inject_target_config(prompt, &stage.campaign.target)
 }
 
 #[cfg(test)]
@@ -1020,9 +1025,11 @@ pythonpath = "pp"
             assert!(!first.initialized);
             assert!(requests.try_recv().is_err(), "must not send another init");
             if let Err(error) = result {
-                assert!(error
-                    .to_string()
-                    .contains("initialization timed out 3 times"));
+                assert!(
+                    error
+                        .to_string()
+                        .contains("initialization timed out 3 times")
+                );
             }
         }
         second
@@ -1050,6 +1057,39 @@ pythonpath = "pp"
         assert_eq!(stderr, dir.join("sut.stderr.log"));
         assert!(stdout.is_absolute());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prompt_injects_build_configuration_and_cli_args() {
+        let campaign: Campaign = toml::from_str(
+            r#"
+[target]
+binary = "b"
+workdir = "w"
+port = 0
+configure_options = ["no-asm", "no-shared"]
+cli_args = ["-tls1_3", "-www"]
+[timeouts]
+connect_ms = 1
+io_ms = 1
+case_ms = 1
+exit_grace_ms = 1
+[campaign]
+seeds = "s"
+corpus = "co"
+crashes = "cr"
+python = "python"
+pythonpath = "pp"
+"#,
+        )
+        .unwrap();
+        let prompt = inject_target_config(
+            "CONFIGURE_OPTIONS={{ configure_options }} CLI_ARGS={{ cli_args }}".into(),
+            &campaign.target,
+        );
+        assert!(prompt.contains(r#"["no-asm","no-shared"]"#), "{prompt}");
+        assert!(prompt.contains(r#"["-tls1_3","-www"]"#), "{prompt}");
+        assert!(!prompt.contains("{{"), "{prompt}");
     }
 
     #[test]

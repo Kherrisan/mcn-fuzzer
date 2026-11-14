@@ -434,7 +434,7 @@ Coverage agent 初始化时：
 Coverage agent 通过 MCP 工具加载：
 
 ```text
-load_profdata
+load_coverage_json
 load_protocol
 load_handlers
 load_cfg

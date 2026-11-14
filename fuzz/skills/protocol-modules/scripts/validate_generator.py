@@ -75,26 +75,48 @@ def check_parameters(schema, params):
         raise ValidationError("parameter schema must describe an object")
     if not isinstance(params, dict):
         raise ValidationError("params.json must be an object")
+    properties = schema.get("properties")
+    if schema.get("additionalProperties") is False:
+        for name in params:
+            if not isinstance(properties, dict) or name not in properties:
+                raise ValidationError(f"params.json instance {name} is not in the schema")
     required = schema.get("required")
     if isinstance(required, list):
         for name in required:
             if isinstance(name, str) and name not in params:
-                raise ValidationError(f"params.json is missing required field {name}")
-    properties = schema.get("properties")
-    if isinstance(properties, dict):
-        if schema.get("additionalProperties") is False:
-            for key in params:
-                if key not in properties:
-                    raise ValidationError(f"params.json field {key} is not in the schema")
-        types = {"string": str, "integer": int, "boolean": bool, "array": list}
-        for key, spec in properties.items():
-            if key in params and isinstance(spec, dict):
-                kind = spec.get("type")
-                if isinstance(kind, str) and kind in types and type(params[key]) is not types[kind]:
-                    article = "an" if kind in ("integer", "array") else "a"
-                    raise ValidationError(f"{key} must be {article} {kind}")
-    for key, value in params.items():
-        check_value(value, f"params.json.{key}")
+                raise ValidationError(f"params.json is missing required instance {name}")
+    for instance, fields in params.items():
+        path = f"params.json.{instance}"
+        if not isinstance(fields, dict):
+            raise ValidationError(f"{path} must be an object of mutable fields")
+        if not fields:
+            raise ValidationError(f"{path} is empty")
+        spec = properties.get(instance) if isinstance(properties, dict) else None
+        if isinstance(spec, dict):
+            if spec.get("type") != "object":
+                raise ValidationError(f"{path} schema must describe an object")
+            inst_props = spec.get("properties")
+            if spec.get("additionalProperties") is False:
+                for field in fields:
+                    if not isinstance(inst_props, dict) or field not in inst_props:
+                        raise ValidationError(f"{path} field {field} is not in the schema")
+            inst_required = spec.get("required")
+            if isinstance(inst_required, list):
+                for field in inst_required:
+                    if isinstance(field, str) and field not in fields:
+                        raise ValidationError(f"{path} is missing required field {field}")
+            types = {"string": str, "integer": int, "boolean": bool, "array": list}
+            if isinstance(inst_props, dict):
+                for field, value in fields.items():
+                    field_spec = inst_props.get(field)
+                    if not isinstance(field_spec, dict):
+                        continue
+                    kind = field_spec.get("type")
+                    if isinstance(kind, str) and kind in types and type(value) is not types[kind]:
+                        article = "an" if kind in ("integer", "array") else "a"
+                        raise ValidationError(f"{path}.{field} must be {article} {kind}")
+        for field, value in fields.items():
+            check_value(value, f"{path}.{field}")
 
 
 def check_generator(path):

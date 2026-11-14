@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::{prompts, GeneratorInput, TraceOrigin};
 use crate::coverage::proposal::Proposal;
-use crate::engine::input::StepInstance;
+use crate::engine::input::{FieldSpec, InstanceParams, StepInstance};
 
 /// Identity and artifact directory shared by dispatch, prompting, and validation.
 pub(super) struct GeneratorRequest {
@@ -21,6 +21,121 @@ pub(super) struct GeneratorRequest {
 pub struct ValidatedGenerator {
     pub input: GeneratorInput,
     pub origin: TraceOrigin,
+}
+
+/// Build the execution input for a proposal and its per-instance parameter values.
+pub(crate) fn build_generator_input(
+    proposal: &Proposal,
+    generator: PathBuf,
+    params: InstanceParams,
+) -> Result<GeneratorInput, String> {
+    let declared = proposal
+        .trace
+        .iter()
+        .map(|step| step.name.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for instance in params.keys() {
+        if !declared.contains(instance.as_str()) {
+            return Err(format!("params.json instance {instance} is not in the proposal"));
+        }
+    }
+    let mut step_trace = proposal
+        .trace
+        .iter()
+        .map(|step| StepInstance {
+            name: step.name.clone(),
+            step: step.step.clone(),
+            action: step.action.clone(),
+            condition: step.condition.clone(),
+            message: step.message.clone(),
+            channel: step.channel.clone(),
+            sender: step.sender.clone(),
+            receiver: step.receiver.clone(),
+            party: step.party.clone(),
+            omitted_fields: Vec::new(),
+            inputs: std::collections::BTreeMap::new(),
+            broken_dependencies: Vec::new(),
+        })
+        .collect::<Vec<_>>();
+    let order = proposal
+        .trace
+        .iter()
+        .enumerate()
+        .map(|(index, step)| (step.name.as_str(), index))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for dependency in &proposal.dependencies {
+        let (Some(prior), Some(dependent)) = (
+            order.get(dependency.prior.as_str()),
+            order.get(dependency.dependent.as_str()),
+        ) else {
+            continue;
+        };
+        if prior >= dependent {
+            continue;
+        }
+        let Some(dependent) = step_trace
+            .iter_mut()
+            .find(|step| step.name == dependency.dependent)
+        else {
+            continue;
+        };
+        for field in &dependency.fields {
+            dependent
+                .inputs
+                .insert(field.clone(), format!("{}.{field}", dependency.prior));
+        }
+    }
+    let dependencies = proposal
+        .dependencies
+        .iter()
+        .filter(|dependency| {
+            let (Some(prior), Some(dependent)) = (
+                order.get(dependency.prior.as_str()),
+                order.get(dependency.dependent.as_str()),
+            ) else {
+                return false;
+            };
+            prior < dependent
+        })
+        .map(|dependency| crate::engine::input::DependencyInstance {
+            prior: dependency.prior.clone(),
+            dependent: dependency.dependent.clone(),
+            kind: if dependency.kind.is_empty() {
+                "order".to_string()
+            } else {
+                dependency.kind.clone()
+            },
+            condition: dependency.condition.clone(),
+            fields: dependency.fields.clone(),
+            origin: "proposal".into(),
+        })
+        .collect();
+    let mut param_kinds = std::collections::BTreeMap::new();
+    for step in &proposal.trace {
+        let Some(values) = params.get(&step.name) else {
+            continue;
+        };
+        let mut kinds = std::collections::BTreeMap::new();
+        for field in &step.mutable_fields {
+            if values.contains_key(&field.field) {
+                kinds.insert(
+                    field.field.clone(),
+                    FieldSpec {
+                        kind: field.kind,
+                        encoding: field.encoding,
+                    },
+                );
+            }
+        }
+        if !kinds.is_empty() {
+            param_kinds.insert(step.name.clone(), kinds);
+        }
+    }
+    let mut input = GeneratorInput::with_trace(generator, step_trace, params);
+    input.param_kinds = param_kinds;
+    input.trace.dependencies = dependencies;
+    input.validate()?;
+    Ok(input)
 }
 
 impl GeneratorRequest {
@@ -78,52 +193,21 @@ impl GeneratorRequest {
         .map_err(|error| error.to_string())?;
         let generator =
             fs::canonicalize(published.join("generator.py")).map_err(|error| error.to_string())?;
-        let step_trace = proposal
-            .trace
-            .iter()
-            .map(|step| {
-                let fields = step
-                    .mutable_fields
-                    .iter()
-                    .filter_map(|field| {
-                        params
-                            .get(&field.field)
-                            .cloned()
-                            .or_else(|| field.default.clone())
-                            .map(|value| (field.field.clone(), value))
-                    })
-                    .collect();
-                StepInstance {
-                    name: step.name.clone(),
-                    step: step.step.clone(),
-                    action: step.action.clone(),
-                    condition: step.condition.clone(),
-                    message: step.message.clone(),
-                    channel: step.channel.clone(),
-                    sender: step.sender.clone(),
-                    receiver: step.receiver.clone(),
-                    party: step.party.clone(),
-                    fields,
-                    omitted_fields: Vec::new(),
-                    inputs: std::collections::BTreeMap::new(),
-                    broken_dependencies: Vec::new(),
+        for (instance, fields) in &params {
+            let step = proposal
+                .trace
+                .iter()
+                .find(|step| &step.name == instance)
+                .ok_or_else(|| format!("params.json instance {instance} is not in the proposal"))?;
+            for field in fields.keys() {
+                if !step.mutable_fields.iter().any(|item| &item.field == field) {
+                    return Err(format!(
+                        "params.json field {instance}.{field} is not declared mutable"
+                    ));
                 }
-            })
-            .collect::<Vec<_>>();
-        let mut step_trace = step_trace;
-        for dependency in &proposal.dependencies {
-            let Some(dependent) = step_trace
-                .iter_mut()
-                .find(|step| step.name == dependency.dependent)
-            else {
-                continue;
-            };
-            for field in &dependency.fields {
-                dependent
-                    .inputs
-                    .insert(field.clone(), format!("{}.{field}", dependency.prior));
             }
         }
+        let input = build_generator_input(&proposal, generator, params)?;
         let added = result
             .get("added_steps")
             .and_then(Value::as_array)
@@ -135,25 +219,6 @@ impl GeneratorRequest {
                     .collect()
             })
             .unwrap_or_default();
-        let dependencies = proposal
-            .dependencies
-            .iter()
-            .map(|dependency| crate::engine::input::DependencyInstance {
-                prior: dependency.prior.clone(),
-                dependent: dependency.dependent.clone(),
-                kind: if dependency.kind.is_empty() {
-                    "order".to_string()
-                } else {
-                    dependency.kind.clone()
-                },
-                condition: dependency.condition.clone(),
-                fields: dependency.fields.clone(),
-                origin: "proposal".into(),
-            })
-            .collect();
-        let mut input = GeneratorInput::with_trace(generator, step_trace, std::collections::BTreeMap::new());
-        input.trace.dependencies = dependencies;
-        input.trace.validate()?;
         Ok(ValidatedGenerator {
             input,
             origin: TraceOrigin {

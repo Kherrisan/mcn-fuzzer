@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from coverage_analysis.mutations import MutationError, validate_mutations
+from coverage_analysis.mutations import MutationError, field_type, validate_mutations
 from coverage_analysis.protocol import ProtocolError
 
 ORIGINS = {"coverage", "autonomous"}
@@ -150,9 +150,14 @@ def _mutable_fields(values):
         if not field or field in seen:
             raise ProposalError(f"mutable field {field!r} must be non-empty and unique")
         seen.add(field)
+        try:
+            kind, encoding = field_type(item)
+        except MutationError as error:
+            raise ProposalError(str(error)) from error
         out.append({
             "field": field,
-            "kind": str(item.get("kind") or "string"),
+            "kind": kind,
+            "encoding": encoding,
             "default": item.get("default"),
             "source": str(item.get("source") or "proposal"),
         })

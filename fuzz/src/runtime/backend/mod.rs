@@ -5,9 +5,20 @@ pub mod forkserver;
 
 pub use forkserver::ForkserverBackend;
 
+/// Directory for per-child ASan logs under the campaign output root.
+pub(crate) fn asan_log_dir(campaign: &Campaign) -> PathBuf {
+    campaign
+        .output_root
+        .as_deref()
+        .unwrap_or(&campaign.base)
+        .join("asan")
+}
+
+use std::path::PathBuf;
+
 use libafl::{executors::ExitKind, Error};
 
-use crate::runtime::report::TargetStop;
+use crate::{app::config::Campaign, runtime::report::TargetStop};
 
 /// One case, from process creation through the shared coverage map.
 pub trait TargetBackend {

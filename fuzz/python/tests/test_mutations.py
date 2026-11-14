@@ -1,8 +1,12 @@
-"""Field and duplicate mutation selection."""
+"""Field mutation selection and kind validation."""
 
 import unittest
 
-from coverage_analysis.mutations import MutationError, expand_trace, validate_mutations
+from coverage_analysis.mutations import (
+    MutationError,
+    field_type,
+    validate_mutations,
+)
 
 
 def trace():
@@ -40,35 +44,29 @@ class MutationTests(unittest.TestCase):
                 "suggestion": "x", "evidence": "src/a.c:1",
             }], model())
 
-    def test_duplicate_each_and_range_counts(self):
-        items = trace()
-        each = expand_trace(items, [{
-            "op": "duplicate", "steps": ["login_first", "quit"], "count_param": "n",
-        }], {"n": 1})
-        self.assertEqual([item["name"] for item in each],
-                         ["login_first", "login_first", "login_second", "listen_once", "quit", "quit"])
-        block = expand_trace(items, [{
-            "op": "duplicate", "steps": "[login_first:login_second]", "count_param": "n",
-        }], {"n": 2})
-        self.assertEqual([item["name"] for item in block][:6],
-                         ["login_first", "login_second"] * 3)
-        self.assertEqual(len(expand_trace(items, [{
-            "op": "duplicate", "steps": ["quit"], "count_param": "n",
-        }], {"n": 0})), 4)
-        self.assertEqual(len(expand_trace(items, [{
-            "op": "duplicate", "steps": ["quit"], "count_param": "n",
-        }], {"n": 1.5})), 4)
-        self.assertEqual(len(expand_trace(items, [{
-            "op": "duplicate", "steps": ["quit"], "count_param": "n",
-        }], {"n": True})), 4)
+    def test_duplicate_is_rejected(self):
+        with self.assertRaisesRegex(MutationError, "only field mutations"):
+            validate_mutations(trace(), [{
+                "op": "duplicate", "steps": ["quit"], "count_param": "n",
+            }], model())
 
-    def test_overlap_cap_and_combined_field(self):
+    def test_kind_and_encoding_are_validated(self):
+        self.assertEqual(field_type({"kind": "bytes", "encoding": "hex"}), ("bytes", "hex"))
+        self.assertEqual(field_type({"kind": "bytes"}), ("bytes", "hex"))
+        self.assertEqual(field_type({"kind": "bytes", "encoding": "base64"}), ("bytes", "base64"))
+        self.assertEqual(field_type({"kind": "integer"}), ("integer", None))
+        self.assertEqual(field_type({}), ("string", None))
+        for item, message in [
+            ({"kind": "hex"}, "kind"),
+            ({"kind": "string", "encoding": "hex"}, "encoding"),
+            ({"kind": "bytes", "encoding": "utf8"}, "encoding"),
+        ]:
+            with self.subTest(item=item):
+                with self.assertRaisesRegex(MutationError, message):
+                    field_type(item)
+
+    def test_repeated_field_and_reversed_range(self):
         items = trace()
-        with self.assertRaisesRegex(MutationError, "overlap"):
-            validate_mutations(items, [
-                {"op": "duplicate", "steps": "[login_first:login_second]", "count_param": "n"},
-                {"op": "duplicate", "steps": ["login_second"], "count_param": "m"},
-            ], model())
         with self.assertRaisesRegex(MutationError, "repeated"):
             validate_mutations(items, [
                 {"op": "field", "steps": ["login_first"], "field": "username",
@@ -76,24 +74,11 @@ class MutationTests(unittest.TestCase):
                 {"op": "field", "steps": ["login_first"], "field": "username",
                  "suggestion": "b", "evidence": "s:2"},
             ], model())
-        validate_mutations(items, [
-            {"op": "field", "steps": ["login_first"], "field": "username",
-             "suggestion": "a", "evidence": "s:1"},
-            {"op": "duplicate", "steps": ["login_first"], "count_param": "n"},
-        ], model())
         with self.assertRaisesRegex(MutationError, "reversed"):
             validate_mutations(items, [{
-                "op": "duplicate", "steps": "[quit:login_first]", "count_param": "n",
+                "op": "field", "steps": "[quit:login_first]", "field": "x",
+                "suggestion": "a", "evidence": "s:1",
             }], model())
-        huge = [{"name": f"s{index}", "step": "user"} for index in range(4096)]
-        with self.assertRaisesRegex(MutationError, "4096"):
-            expand_trace(huge, [{
-                "op": "duplicate", "steps": ["s0"], "count_param": "n",
-            }], {"n": 1})
-        with self.assertRaisesRegex(MutationError, "outside"):
-            expand_trace(items, [{
-                "op": "duplicate", "steps": ["quit"], "count_param": "n",
-            }], {"n": 33})
 
 
 if __name__ == "__main__":

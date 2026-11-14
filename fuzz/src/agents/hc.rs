@@ -41,6 +41,14 @@ pub struct TerminalInfo {
     pub error: Option<String>,
 }
 
+/// What HC reported after paste+Enter. `started` is false when the text
+/// landed but no turn began; `None` when the program has no status protocol.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SendReceipt {
+    pub started: Option<bool>,
+    pub turn: Option<u64>,
+}
+
 pub struct HcClient {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
@@ -143,9 +151,12 @@ impl HcClient {
         Ok(info_from(&result, name))
     }
 
-    pub fn send(&mut self, terminal: &str, text: &str) -> Result<(), HcError> {
-        self.call("terminal.send", json!({"terminal": terminal, "text": text}))?;
-        Ok(())
+    pub fn send(&mut self, terminal: &str, text: &str) -> Result<SendReceipt, HcError> {
+        let result = self.call("terminal.send", json!({"terminal": terminal, "text": text}))?;
+        Ok(SendReceipt {
+            started: result.get("started").and_then(Value::as_bool),
+            turn: result.get("turn").and_then(Value::as_u64),
+        })
     }
 
     pub fn read(&mut self, terminal: &str, lines: usize) -> Result<String, HcError> {

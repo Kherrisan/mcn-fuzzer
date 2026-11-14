@@ -30,9 +30,10 @@ use libafl::{
     corpus::{Corpus, OnDiskCorpus},
     events::{ProgressReporter, SimpleEventManager},
     executors::ExitKind,
-    feedbacks::{CombinedFeedback, CrashFeedback, LogicEagerOr},
+    feedbacks::{CombinedFeedback, CrashFeedback, LogicEagerOr, NewHashFeedback},
     fuzzer::{Evaluator, ExecutesInput, Fuzzer, NopInputFilter, StdFuzzer},
     inputs::{BytesInputConverter, Input},
+    observers::AsanBacktraceObserver,
     monitors::SimpleMonitor,
     schedulers::QueueScheduler,
     stages::Stage,
@@ -44,7 +45,12 @@ use libafl_bolts::{rands::StdRand, tuples::tuple_list};
 type State =
     StdState<OnDiskCorpus<GeneratorInput>, GeneratorInput, StdRand, OnDiskCorpus<GeneratorInput>>;
 type CampaignFeedback = CombinedFeedback<CoverageFeedback, PcapToMetadataFeedback, LogicEagerOr>;
-type CampaignObjective = CombinedFeedback<CrashFeedback, PcapToMetadataFeedback, LogicEagerOr>;
+type AsanObjective = NewHashFeedback<AsanBacktraceObserver>;
+type CampaignObjective = CombinedFeedback<
+    CombinedFeedback<AsanObjective, CrashFeedback, LogicEagerOr>,
+    PcapToMetadataFeedback,
+    LogicEagerOr,
+>;
 type CampaignFuzzer = StdFuzzer<
     QueueScheduler,
     CampaignFeedback,
@@ -113,8 +119,12 @@ impl Session {
         let engine = executor.capture_engine();
         let mut feedback: CampaignFeedback =
             CombinedFeedback::new(coverage, PcapToMetadataFeedback::new(Arc::clone(&engine)));
+        let asan = executor.asan_observer().clone();
+        let asan_objective = NewHashFeedback::new(&asan);
+        let asan_objective: CombinedFeedback<AsanObjective, CrashFeedback, LogicEagerOr> =
+            CombinedFeedback::new(asan_objective, CrashFeedback::new());
         let mut objective: CampaignObjective =
-            CombinedFeedback::new(CrashFeedback::new(), PcapToMetadataFeedback::new(engine));
+            CombinedFeedback::new(asan_objective, PcapToMetadataFeedback::new(engine));
         let mut state = StdState::new(
             StdRand::with_seed(0x4d43_4e21),
             OnDiskCorpus::new(&campaign.campaign.corpus)?,
@@ -210,8 +220,8 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
     }
     // A seedless campaign cannot ask the scheduler for a corpus input yet.
     // Run the same mutation stage directly while it still has synthesis input.
-    // The baseline never enters the corpus; the first kept mutation enables the
-    // ordinary fuzzer loop.
+    // The baseline is evaluated like any other input, so it may itself enable
+    // the ordinary fuzzer loop when feedback keeps it.
     if session.state.corpus().count() == 0 {
         while mutation.has_queue(&session.state) {
             if session.state.corpus().count() > 0 {
@@ -323,6 +333,8 @@ pub fn doctor() -> Result<(), Error> {
             workdir: tmp.join("work"),
             cleanup_script: None,
             args: vec!["fftp.conf".to_string()],
+            configure_options: Vec::new(),
+            cli_args: Vec::new(),
             host: "127.0.0.1".to_string(),
             port: 0,
             extra_env: Vec::new(),

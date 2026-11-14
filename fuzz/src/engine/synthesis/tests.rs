@@ -139,7 +139,8 @@ fn accepted_input_carries_step_trace_and_mutable_field_defaults() {
         .mutable_fields
         .push(crate::coverage::proposal::MutableField {
             field: "username".into(),
-            kind: "string".into(),
+            kind: crate::engine::input::FieldKind::Bytes,
+            encoding: Some(crate::engine::input::BytesEncoding::Hex),
             default: None,
             source: "proposal".into(),
         });
@@ -150,15 +151,19 @@ fn accepted_input_carries_step_trace_and_mutable_field_defaults() {
     .unwrap();
     fs::write(
         dir.join("params.schema.json"),
-        r#"{"type":"object","additionalProperties":false,"properties":{"username":{"type":"string"}}}"#,
+        r#"{"type":"object","additionalProperties":false,"properties":{"hello":{"type":"object","additionalProperties":false,"properties":{"username":{"type":"string"}}}}}"#,
     )
     .unwrap();
-    fs::write(dir.join("params.json"), r#"{"username":"ubuntu"}"#).unwrap();
+    fs::write(
+        dir.join("params.json"),
+        r#"{"hello":{"username":"ubuntu"}}"#,
+    )
+    .unwrap();
     let request = request(dir.clone(), "r1", true);
     let validated = request.accept().unwrap();
     assert_eq!(validated.input.trace.steps.len(), 1);
     assert_eq!(
-        validated.input.trace.steps[0].fields.get("username"),
+        validated.input.params["hello"].get("username"),
         Some(&crate::engine::input::ParamValue::Str("ubuntu".into()))
     );
 }

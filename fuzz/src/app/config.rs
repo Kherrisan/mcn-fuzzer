@@ -80,6 +80,12 @@ pub struct TargetConfig {
     /// Arguments after the program. `@PORT@` and `@ROOT@` are substituted.
     #[serde(default = "default_args")]
     pub args: Vec<String>,
+    /// Build-time switches that decide which protocol features are compiled in.
+    #[serde(default)]
+    pub configure_options: Vec<String>,
+    /// Runtime command-line switches that select enabled protocol features.
+    #[serde(default)]
+    pub cli_args: Vec<String>,
     #[serde(default = "default_host")]
     pub host: String,
     /// Control port. `0` picks a free port once for the campaign.
@@ -211,17 +217,12 @@ pub struct CoverageConfig {
     pub callgraph_dot: PathBuf,
     #[serde(default)]
     pub cfg_dir: PathBuf,
-    #[serde(default)]
-    pub build_manifest: PathBuf,
     /// Supervisor-provided MCP endpoint. Absent starts a private service.
     #[serde(default)]
     pub mcp_socket: Option<PathBuf>,
     /// How long to wait for the MCP service socket, in seconds.
     #[serde(default = "default_mcp_ready")]
     pub mcp_ready_timeout_secs: u64,
-    /// Runtime-only CLI override. Full JSON export is off unless requested on the command line.
-    #[serde(skip)]
-    pub export_json: bool,
 }
 
 /// Previous name of [`CoverageConfig`].
@@ -241,10 +242,8 @@ impl Default for CoverageConfig {
             analysis_task_timeout_secs: default_task_timeout(),
             callgraph_dot: PathBuf::new(),
             cfg_dir: PathBuf::new(),
-            build_manifest: PathBuf::new(),
             mcp_socket: None,
             mcp_ready_timeout_secs: default_mcp_ready(),
-            export_json: false,
         }
     }
 }
@@ -754,9 +753,6 @@ impl Campaign {
         if !campaign.coverage.cfg_dir.as_os_str().is_empty() {
             campaign.coverage.cfg_dir = resolve(&base, &campaign.coverage.cfg_dir);
         }
-        if !campaign.coverage.build_manifest.as_os_str().is_empty() {
-            campaign.coverage.build_manifest = resolve(&base, &campaign.coverage.build_manifest);
-        }
         if let Some(socket) = &campaign.coverage.mcp_socket {
             campaign.coverage.mcp_socket = Some(resolve(&base, socket));
         }
@@ -783,7 +779,6 @@ impl Campaign {
             for (label, path) in [
                 ("callgraph_dot", &campaign.coverage.callgraph_dot),
                 ("cfg_dir", &campaign.coverage.cfg_dir),
-                ("build_manifest", &campaign.coverage.build_manifest),
             ] {
                 if path.as_os_str().is_empty() {
                     return Err(Error::illegal_argument(format!(

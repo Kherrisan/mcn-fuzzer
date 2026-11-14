@@ -1,0 +1,14 @@
+{
+  "generator": "../generator.py",
+  "step_trace": [
+    {
+      "name": "send_1",
+      "step": "send_payload",
+      "action": "send",
+      "channel": "control"
+    }
+  ],
+  "params": {
+    "payload": "CRASH"
+  }
+}

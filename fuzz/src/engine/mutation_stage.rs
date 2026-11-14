@@ -1,9 +1,10 @@
 //! The ordinary generator mutation stage, with a small synthesis hand-off queue.
 //!
 //! When the synthesis FIFO has an item, this stage consumes it before asking
-//! the scheduler for a corpus testcase. It runs the initial parameters once as
-//! a baseline outside feedback, then uses the same mutator/evaluator loop as
-//! ordinary corpus inputs. A baseline is never added to the corpus.
+//! the scheduler for a corpus testcase. It evaluates the initial parameters
+//! once through the normal feedback path, then runs the same mutator loop as
+//! ordinary corpus inputs. The baseline is kept only when feedback decides it
+//! is interesting, exactly like any other executed input.
 
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -128,20 +129,27 @@ impl GeneratorMutationStage {
         state
             .metadata_or_insert_with(BitmapProgress::default)
             .set_mutation_pending(false);
-        match executor.run_target(fuzzer, state, manager, &candidate.input) {
-            Ok(_) => {}
-            Err(error) => {
-                log::warn!(
-                    "synthesis input {} baseline failed: {error:?}; dropping it",
-                    candidate.request
-                );
-                return Ok(());
+        let (_, baseline_id) =
+            match fuzzer.evaluate_filtered(state, executor, manager, &candidate.input) {
+                Ok(result) => result,
+                Err(error) => {
+                    log::warn!(
+                        "synthesis input {} baseline failed: {error:?}; dropping it",
+                        candidate.request
+                    );
+                    return Ok(());
+                }
+            };
+        log::info!(
+            "synthesis input {} baseline evaluated once (kept in corpus: {})",
+            candidate.request,
+            baseline_id.is_some()
+        );
+        if let Some(id) = baseline_id {
+            if let Err(error) = attach_origin(state.corpus_mut(), id, &candidate.origin) {
+                log::warn!("could not attach TraceOrigin to baseline corpus {id:?}: {error:?}");
             }
         }
-        log::info!(
-            "synthesis input {} baseline executed once (not added to corpus)",
-            candidate.request
-        );
         self.run_mutations(
             fuzzer,
             executor,

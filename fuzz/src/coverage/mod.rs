@@ -20,24 +20,26 @@ use std::{
     io::Write,
     os::fd::{AsRawFd, OwnedFd},
     os::unix::process::ExitStatusExt,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, ExitStatus},
     thread::sleep,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use flate2::{write::ZlibEncoder, Compression};
+use flate2::{Compression, write::ZlibEncoder};
+#[cfg(test)]
+use std::path::PathBuf;
+
 use libafl::{
+    Error, HasMetadata,
     corpus::Corpus,
     executors::ExitKind,
     stages::{Restartable, Stage},
     state::{HasCorpus, HasExecutions, HasSolutions},
-    Error, HasMetadata,
 };
 use libafl_bolts::impl_serdeany;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use sut_output::SutLog;
 
@@ -49,15 +51,11 @@ use crate::{
     runtime::backend::{ForkserverBackend, TargetBackend},
     runtime::generator::{GeneratorClient, GeneratorUpdate},
     runtime::lifecycle::{
-        assess_pid, classify_startup, classify_sut, job_policy, FailureKind, PidCheck,
-        PidObservation, StartupEnd, SutKillReason, TimeoutStreaks,
+        FailureKind, PidCheck, PidObservation, StartupEnd, SutKillReason, TimeoutStreaks,
+        assess_pid, classify_startup, classify_sut, job_policy,
     },
     runtime::report::TargetStop,
 };
-
-const BUILD_FLAGS: &str = "\
--O2 -g -fno-lto -fprofile-instr-generate -fcoverage-mapping \
--fprofile-update=atomic -mllvm -runtime-counter-relocation AFL_LLVM_ONLY_FSRV=1";
 
 /// Where a saved input lives.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,6 +70,7 @@ pub struct CaseLocation {
 
 /// Covered counts from one `llvm-cov export` summary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct CoverageSummary {
     /// Covered functions.
     pub functions: u64,
@@ -164,18 +163,16 @@ pub struct SourceCoverageProgress {
     pub last_summary: CoverageSummary,
     /// Latest snapshot number. Zero means nothing has been published.
     pub snapshot: u64,
-    /// Build fingerprint this progress belongs to.
-    pub fingerprint: String,
     /// Replay executions. This is not the main fuzz execution counter.
     pub replay_executions: u64,
+    /// Case IDs that have successfully contributed to the cumulative profile.
+    #[serde(default)]
+    pub replayed_case_ids: HashSet<String>,
 }
 
 impl SourceCoverageProgress {
-    fn new(fingerprint: &str) -> Self {
-        Self {
-            fingerprint: fingerprint.to_string(),
-            ..Self::default()
-        }
+    fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -331,37 +328,14 @@ where
     S: HasCorpus<GeneratorInput> + HasSolutions<GeneratorInput> + HasMetadata,
 {
     let config = &campaign.coverage;
-    let fingerprint = build_fingerprint(&config.binary, &config.llvm_profdata, &config.llvm_cov)?;
     let root = config.output.clone();
     let _lock = OutputLock::acquire(&config.output)?;
-    match resume_or_refuse(&root)? {
-        Resume::Refuse { reason } => {
-            log::warn!("{reason}");
-            return Ok(());
-        }
-        Resume::Ready => {}
-    }
-    let mut progress = state
+    let progress = state
         .metadata_map()
         .get::<SourceCoverageProgress>()
         .cloned()
-        .unwrap_or_else(|| SourceCoverageProgress::new(&fingerprint));
-    if progress.fingerprint.is_empty() {
-        progress.fingerprint = fingerprint.clone();
-    }
-    if !progress.fingerprint.is_empty() && progress.fingerprint != fingerprint {
-        log::warn!(
-            "source coverage fingerprint changed from {} to {fingerprint}; resetting coverage progress",
-            progress.fingerprint
-        );
-        progress = SourceCoverageProgress::new(&fingerprint);
-    }
-    if let Some(saved) = load_checkpoint(&root) {
-        if saved.fingerprint == fingerprint && saved.snapshot >= progress.snapshot {
-            progress = saved;
-        }
-    }
-    let pending = pending_cases(state)?;
+        .unwrap_or_else(|| discover_progress(&root));
+    let pending = pending_cases(state, &progress.replayed_case_ids)?;
     if pending.is_empty() {
         return Ok(());
     }
@@ -370,7 +344,6 @@ where
         campaign,
         config,
         &root,
-        &fingerprint,
         Some(main_forkserver),
         Some(main_generator),
         &pending,
@@ -401,27 +374,38 @@ struct PendingCase {
     input: GeneratorInput,
 }
 
-fn pending_cases<S>(state: &S) -> Result<Vec<PendingCase>, Error>
+fn pending_cases<S>(
+    state: &S,
+    replayed_case_ids: &HashSet<String>,
+) -> Result<Vec<PendingCase>, Error>
 where
     S: HasCorpus<GeneratorInput> + HasSolutions<GeneratorInput>,
 {
     let mut cases = Vec::new();
-    collect_corpus(state.corpus(), "corpus", &mut cases)?;
-    collect_corpus(state.solutions(), "solution", &mut cases)?;
+    collect_corpus(state.corpus(), "corpus", replayed_case_ids, &mut cases)?;
+    collect_corpus(state.solutions(), "solution", replayed_case_ids, &mut cases)?;
     Ok(cases)
 }
 
-fn collect_corpus<C>(corpus: &C, kind: &str, out: &mut Vec<PendingCase>) -> Result<(), Error>
+fn collect_corpus<C>(
+    corpus: &C,
+    kind: &str,
+    replayed_case_ids: &HashSet<String>,
+    out: &mut Vec<PendingCase>,
+) -> Result<(), Error>
 where
     C: Corpus<GeneratorInput>,
 {
     for nth in 0..corpus.count_all() {
         let id = corpus.nth_from_all(nth);
+        let case_id = format!("{kind}:{}", id.0);
+        if replayed_case_ids.contains(&case_id) {
+            continue;
+        }
         let mut borrowed = corpus.get_from_all(id)?.borrow_mut();
         let input = borrowed.load_input(corpus)?.clone();
         let filename = borrowed.filename().clone();
         drop(borrowed);
-        let case_id = format!("{kind}:{}", id.0);
         out.push(PendingCase {
             location: CaseLocation {
                 id: case_id.clone(),
@@ -439,7 +423,6 @@ fn replay_pending(
     campaign: &Campaign,
     config: &SourceCoverageConfig,
     root: &Path,
-    fingerprint: &str,
     main_forkserver: Option<i32>,
     main_generator: Option<i32>,
     pending: &[PendingCase],
@@ -450,12 +433,11 @@ fn replay_pending(
     let main_generator = main_generator.unwrap_or(0);
     let work_raw = root.join("work-raw");
     let rollback_raw = root.join("rollback-raw");
-    prepare_work_raw(root, &work_raw)?;
+    prepare_work_raw(&work_raw)?;
     let profile = work_raw.join("%m%c.profraw");
     let started = Instant::now();
     let batch = format!(
-        "{}-{}-{}",
-        fingerprint,
+        "{}-{}",
         std::process::id(),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -537,7 +519,8 @@ fn replay_pending(
     }
     let indexed = root.join("coverage.profdata.tmp");
     let index_at = Instant::now();
-    merge_raw(&config.llvm_profdata, &work_raw, &indexed).map_err(|error| {
+    let seed = root.join("current.profdata");
+    merge_raw(&config.llvm_profdata, &work_raw, &seed, &indexed).map_err(|error| {
         Error::unknown(format!(
             "{error}; snapshot was not published after {} ms",
             index_at.elapsed().as_millis()
@@ -545,11 +528,10 @@ fn replay_pending(
     })?;
     timings.index = index_at.elapsed();
     let export_at = Instant::now();
-    // Analysis consumes detailed counters in-process from the frozen snapshot.
-    // Export once here while replay owns the executor, never in an async worker.
-    let detailed = config.export_json || config.analysis_enabled;
-    let summary_output = export_cov(&config.llvm_cov, &config.binary, &indexed, !detailed)
-        .map_err(|error| {
+    // Only batch totals are exported here: the analysis MCP service reads the
+    // compressed profile and runs its own detailed export when it needs one.
+    let summary_output =
+        export_cov(&config.llvm_cov, &config.binary, &indexed, true).map_err(|error| {
             Error::unknown(format!(
                 "{error}; snapshot was not published after {} ms",
                 export_at.elapsed().as_millis()
@@ -557,7 +539,6 @@ fn replay_pending(
         })?;
     timings.export = export_at.elapsed();
     let summary = parse_summary(&summary_output)?;
-    let snapshot_json = detailed.then_some(summary_output.as_str());
     let grew = summary.grew_from(progress.last_summary);
     let decision = BatchDecision {
         succeeded: succeeded.iter().map(|case| case.id.clone()).collect(),
@@ -568,18 +549,17 @@ fn replay_pending(
     let replay_executions = progress
         .replay_executions
         .saturating_add(succeeded.len() as u64);
+    let mut replayed_case_ids = progress.replayed_case_ids.clone();
+    replayed_case_ids.extend(succeeded.iter().map(|case| case.id.clone()));
     let published = publish_snapshot(
         root,
-        fingerprint,
         snapshot,
         &indexed,
-        snapshot_json,
         &summary,
         &progress.last_summary,
         &decision,
         &succeeded,
         &failures,
-        &work_raw,
         &config.binary,
         &config.llvm_profdata,
         &config.llvm_cov,
@@ -607,11 +587,13 @@ fn replay_pending(
             "source coverage snapshot was not published".to_string(),
         ));
     }
+    let _ = fs::remove_dir_all(&work_raw);
+    let _ = fs::remove_dir_all(&rollback_raw);
     let mut updated = progress.clone();
     updated.last_summary = summary;
     updated.snapshot = snapshot;
     updated.replay_executions = replay_executions;
-    updated.fingerprint = fingerprint.to_string();
+    updated.replayed_case_ids = replayed_case_ids;
     let failure = if failed {
         let message = failures.join("; ");
         log::warn!(
@@ -1404,51 +1386,49 @@ fn profile_token(work_raw: &Path) -> Vec<(String, u64, u128)> {
     rows
 }
 
-enum Resume {
-    Ready,
-    Refuse { reason: String },
-}
-
-fn resume_or_refuse(root: &Path) -> Result<Resume, Error> {
-    let profdata = root.join("current.profdata");
-    let checkpoint = latest_checkpoint(root);
-    if profdata.is_file() && checkpoint.is_none() {
-        return Ok(Resume::Refuse {
-            reason: format!(
-                "source coverage at {} has profdata without a raw checkpoint; use a new output directory",
-                root.display()
-            ),
-        });
+/// Rebuild progress from the snapshot metadata in an existing output directory.
+///
+/// Snapshots are self-describing: metadata.json carries the snapshot number,
+/// cumulative replay count, summary, and the case ids that contributed.
+pub(crate) fn discover_progress(root: &Path) -> SourceCoverageProgress {
+    let mut progress = SourceCoverageProgress::default();
+    let Ok(entries) = fs::read_dir(root.join("snapshots")) else {
+        return progress;
+    };
+    for entry in entries.flatten() {
+        let Ok(number) = entry.file_name().to_string_lossy().parse::<u64>() else {
+            continue;
+        };
+        let Ok(text) = fs::read_to_string(entry.path().join("metadata.json")) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        progress.snapshot = progress.snapshot.max(number);
+        if let Some(summary) = value
+            .get("summary")
+            .and_then(|item| serde_json::from_value::<CoverageSummary>(item.clone()).ok())
+        {
+            progress.last_summary = summary;
+        }
+        if let Some(count) = value.get("replay_executions").and_then(Value::as_u64) {
+            progress.replay_executions = count;
+        }
+        if let Some(ids) = value.get("case_ids").and_then(Value::as_array) {
+            for id in ids.iter().filter_map(Value::as_str) {
+                progress.replayed_case_ids.insert(id.to_string());
+            }
+        }
     }
-    Ok(Resume::Ready)
+    progress
 }
 
-fn latest_checkpoint(root: &Path) -> Option<PathBuf> {
-    let snapshots = root.join("snapshots");
-    let mut names = fs::read_dir(&snapshots).ok()?.flatten().collect::<Vec<_>>();
-    names.sort_by_key(|entry| entry.file_name());
-    names.into_iter().rev().find_map(|entry| {
-        let raw = entry.path().join("checkpoint").join("raw");
-        raw.is_dir().then_some(entry.path())
-    })
-}
-
-fn load_checkpoint(root: &Path) -> Option<SourceCoverageProgress> {
-    let path = latest_checkpoint(root)?
-        .join("checkpoint")
-        .join("progress.json");
-    let text = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-fn prepare_work_raw(root: &Path, work_raw: &Path) -> Result<(), Error> {
+fn prepare_work_raw(work_raw: &Path) -> Result<(), Error> {
     if work_raw.exists() {
         fs::remove_dir_all(work_raw)?;
     }
     fs::create_dir_all(work_raw)?;
-    if let Some(previous) = latest_checkpoint(root) {
-        copy_dir(&previous.join("checkpoint").join("raw"), work_raw)?;
-    }
     Ok(())
 }
 
@@ -1464,15 +1444,18 @@ fn profile_usable(work_raw: &Path) -> bool {
         })
 }
 
-fn merge_raw(tool: &str, work_raw: &Path, output: &Path) -> Result<(), Error> {
-    let mut raws = Vec::new();
+fn merge_raw(tool: &str, work_raw: &Path, seed: &Path, output: &Path) -> Result<(), Error> {
+    let mut inputs = Vec::new();
+    if seed.is_file() {
+        inputs.push(seed.to_path_buf());
+    }
     for entry in fs::read_dir(work_raw)? {
         let path = entry?.path();
         if path.extension().and_then(|ext| ext.to_str()) == Some("profraw") {
-            raws.push(path);
+            inputs.push(path);
         }
     }
-    if raws.is_empty() {
+    if inputs.is_empty() {
         return Err(Error::unknown(
             "coverage batch produced no raw profile".to_string(),
         ));
@@ -1484,7 +1467,7 @@ fn merge_raw(tool: &str, work_raw: &Path, output: &Path) -> Result<(), Error> {
     let output_status = Command::new(tool)
         .arg("merge")
         .arg("-sparse")
-        .args(&raws)
+        .args(&inputs)
         .arg("-o")
         .arg(output)
         .output()
@@ -1572,16 +1555,13 @@ fn metric(totals: &Value, name: &str, field: &str) -> u64 {
 #[allow(clippy::too_many_arguments)]
 fn publish_snapshot(
     root: &Path,
-    fingerprint: &str,
     snapshot: u64,
     profdata: &Path,
-    json: Option<&str>,
     summary: &CoverageSummary,
     previous: &CoverageSummary,
     decision: &BatchDecision,
     succeeded: &[RecordedCase],
     failures: &[String],
-    work_raw: &Path,
     binary: &Path,
     profdata_tool: &str,
     cov_tool: &str,
@@ -1595,8 +1575,12 @@ fn publish_snapshot(
     if incoming.exists() {
         fs::remove_dir_all(&incoming)?;
     }
-    fs::create_dir_all(incoming.join("checkpoint").join("raw"))?;
-    let profdata_bytes = fs::read(profdata)?;
+    fs::create_dir_all(&incoming).map_err(|error| {
+        Error::unknown(format!("creating snapshot dir {}: {error}", incoming.display()))
+    })?;
+    let profdata_bytes = fs::read(profdata).map_err(|error| {
+        Error::unknown(format!("reading profdata {}: {error}", profdata.display()))
+    })?;
     let compress_at = Instant::now();
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(1));
     encoder
@@ -1607,12 +1591,10 @@ fn publish_snapshot(
         .map_err(|error| Error::unknown(format!("zlib coverage profile: {error}")))?;
     timings.compress = compress_at.elapsed();
     let persist_at = Instant::now();
-    fs::write(incoming.join("coverage.profdata.zlib"), &compressed)?;
-    if let Some(json) = json {
-        fs::write(incoming.join("coverage.json"), json)?;
-    }
+    fs::write(incoming.join("coverage.profdata.zlib"), &compressed).map_err(|error| {
+        Error::unknown(format!("writing compressed profdata: {error}"))
+    })?;
     let sut_copy = sut_log.copy_to(&incoming)?;
-    copy_dir(work_raw, &incoming.join("checkpoint").join("raw"))?;
     timings.persist = persist_at.elapsed();
     let metadata = serde_json::json!({
         "case_ids": succeeded.iter().map(|case| &case.id).collect::<Vec<_>>(),
@@ -1625,14 +1607,13 @@ fn publish_snapshot(
             "instantiations": summary.instantiations.saturating_sub(previous.instantiations),
             "grew": decision.summary_grew,
         },
+        "snapshot": snapshot,
+        "replay_executions": replay_executions,
         "summary": summary,
-        "json_exported": json.is_some(),
         "failures": failures,
         "binary": binary.display().to_string(),
-        "binary_sha256": file_sha256(binary).unwrap_or_default(),
         "llvm_profdata": tool_version(profdata_tool),
         "llvm_cov": tool_version(cov_tool),
-        "fingerprint": fingerprint,
         "timings_ms": {
             "replay": timings.replay.as_millis(),
             "index": timings.index.as_millis(),
@@ -1656,35 +1637,23 @@ fn publish_snapshot(
         incoming.join("metadata.json"),
         serde_json::to_vec_pretty(&metadata)
             .map_err(|error| Error::serialize(format!("coverage metadata: {error}")))?,
-    )?;
-    let mut checkpoint_progress = SourceCoverageProgress::new(fingerprint);
-    checkpoint_progress.last_summary = *summary;
-    checkpoint_progress.snapshot = snapshot;
-    checkpoint_progress.replay_executions = replay_executions;
-    fs::write(
-        incoming.join("checkpoint").join("progress.json"),
-        serde_json::to_vec_pretty(&checkpoint_progress)
-            .map_err(|error| Error::serialize(format!("coverage checkpoint: {error}")))?,
-    )?;
+    )
+    .map_err(|error| Error::unknown(format!("writing snapshot metadata: {error}")))?;
     let final_dir = root.join("snapshots").join(format!("{snapshot:06}"));
-    fs::rename(&incoming, &final_dir)?;
-    let latest_json = root.join("latest.json");
-    if let Some(json) = json {
-        atomic_write(&latest_json, json.as_bytes())?;
-    } else if latest_json.exists() {
-        // Do not leave the previous full export looking like it belongs to
-        // this newer snapshot, which intentionally has no JSON report.
-        fs::remove_file(latest_json)?;
-    }
+    fs::rename(&incoming, &final_dir).map_err(|error| {
+        Error::unknown(format!(
+            "moving snapshot {} to {}: {error}",
+            incoming.display(),
+            final_dir.display()
+        ))
+    })?;
+    // The full JSON report is written only inside the snapshot and is
+    // consumed by the coverage MCP service, which deletes it after loading.
+    // No second copy is kept at the coverage root.
     atomic_write(&root.join("current.profdata"), &profdata_bytes)?;
-    if snapshot > 1 {
-        let previous = root
-            .join("snapshots")
-            .join(format!("{:06}", snapshot - 1))
-            .join("checkpoint")
-            .join("raw");
-        let _ = fs::remove_dir_all(previous);
-    }
+    // The merged profile now lives in current.profdata and the snapshot; the
+    // staging copy is not part of the published layout.
+    let _ = fs::remove_file(profdata);
     Ok(())
 }
 
@@ -1716,28 +1685,6 @@ fn copy_dir(from: &Path, to: &Path) -> Result<(), Error> {
         }
     }
     Ok(())
-}
-
-pub(crate) fn build_fingerprint(binary: &Path, profdata: &str, cov: &str) -> Result<String, Error> {
-    let mut material = file_sha256(binary)?;
-    material.push_str(&tool_version(profdata));
-    material.push_str(&tool_version(cov));
-    material.push_str(BUILD_FLAGS);
-    Ok(sha256_bytes(material.as_bytes()))
-}
-
-fn file_sha256(path: &Path) -> Result<String, Error> {
-    let bytes = fs::read(path).map_err(|error| {
-        Error::unknown(format!(
-            "reading {} for coverage fingerprint: {error}",
-            path.display()
-        ))
-    })?;
-    Ok(sha256_bytes(&bytes))
-}
-
-fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn tool_version(tool: &str) -> String {
@@ -1812,9 +1759,10 @@ mod tests {
     #[test]
     fn coverage_shm_env_does_not_reuse_the_main_map() {
         let env = coverage_child_env("main-id", "cov-id", "/tmp/raw/%m%c.profraw").unwrap();
-        assert!(env
-            .iter()
-            .any(|(key, value)| key == "__AFL_SHM_ID" && value == "cov-id"));
+        assert!(
+            env.iter()
+                .any(|(key, value)| key == "__AFL_SHM_ID" && value == "cov-id")
+        );
         assert!(coverage_child_env("same", "same", "x").is_err());
     }
 
@@ -1861,7 +1809,7 @@ mod tests {
             fs::write(
                 corpus.join(name),
                 format!(
-                    "{{\"generator\":\"{}\",\"params\":{{\"n\":{n}}},\"step_trace\":[{{\"name\":\"probe-1\",\"step\":\"probe\",\"action\":\"send\",\"channel\":\"control\"}}]}}\n",
+                    "{{\"generator\":\"{}\",\"params\":{{\"probe-1\":{{\"n\":{n}}}}},\"step_trace\":[{{\"name\":\"probe-1\",\"step\":\"probe\",\"action\":\"send\",\"channel\":\"control\"}}]}}\n",
                     script.display()
                 ),
             )
@@ -1918,10 +1866,8 @@ mod tests {
         };
         publish_snapshot(
             &dir,
-            "finger",
             1,
             &dir.join("coverage.profdata.tmp"),
-            Some("{\"data\":[]}"),
             &CoverageSummary {
                 lines: 4,
                 functions: 2,
@@ -1935,7 +1881,6 @@ mod tests {
             &decision,
             &[recorded],
             &[],
-            &dir.join("work-raw"),
             Path::new("/tmp/missing-binary"),
             "llvm-profdata-18",
             "llvm-cov-18",
@@ -1965,38 +1910,37 @@ mod tests {
         assert!(dir.join("snapshots/000001/sut.stdout.log").is_file());
         assert!(dir.join("snapshots/000001/sut.stderr.log").is_file());
         assert!(dir.join("current.profdata").is_file());
-        assert!(dir.join("latest.json").is_file());
-        let progress: SourceCoverageProgress = serde_json::from_str(
-            &fs::read_to_string(dir.join("snapshots/000001/checkpoint/progress.json")).unwrap(),
+        assert!(!dir.join("snapshots/000001/coverage.json").exists());
+        assert!(!dir.join("snapshots/000001/checkpoint").exists());
+        assert_eq!(metadata["snapshot"], 1);
+        assert_eq!(metadata["replay_executions"], 3);
+        assert!(metadata.get("fingerprint").is_none());
+        assert!(metadata.get("binary_sha256").is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn discover_progress_reads_snapshot_metadata() {
+        let dir = std::env::temp_dir().join(format!("mcn-cov-discover-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("snapshots/000002")).unwrap();
+        fs::write(
+            dir.join("snapshots/000002/metadata.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "snapshot": 2,
+                "replay_executions": 7,
+                "summary": {"lines": 9, "branches": 4, "functions": 2},
+                "case_ids": ["corpus:1", "corpus:2"],
+            }))
+            .unwrap(),
         )
         .unwrap();
-        assert_eq!(progress.replay_executions, 3);
+        let progress = discover_progress(&dir);
+        assert_eq!(progress.snapshot, 2);
+        assert_eq!(progress.replay_executions, 7);
+        assert_eq!(progress.last_summary.lines, 9);
+        assert_eq!(progress.replayed_case_ids.len(), 2);
         let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn profdata_without_a_raw_checkpoint_is_refused() {
-        let dir = std::env::temp_dir().join(format!("mcn-cov-refuse-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("current.profdata"), b"old").unwrap();
-        match resume_or_refuse(&dir).unwrap() {
-            Resume::Refuse { reason } => assert!(reason.contains("new output directory")),
-            Resume::Ready => panic!("old profdata without raw was accepted"),
-        }
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn sha256_matches_known_digests() {
-        assert_eq!(
-            sha256_bytes(b""),
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
-        assert_eq!(
-            sha256_bytes(b"abc"),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
     }
 
     #[test]
@@ -2025,10 +1969,8 @@ mod tests {
         };
         publish_snapshot(
             &dir,
-            "finger",
             1,
             &dir.join("coverage.profdata.tmp"),
-            Some("{\"data\":[]}"),
             &CoverageSummary {
                 lines: 1,
                 ..CoverageSummary::default()
@@ -2037,7 +1979,6 @@ mod tests {
             &decision,
             &[recorded],
             &[],
-            &dir.join("raw"),
             Path::new("/tmp/missing-binary"),
             "llvm-profdata-18",
             "llvm-cov-18",
@@ -2048,37 +1989,44 @@ mod tests {
         .unwrap();
         let empty = dir.join("empty-raw");
         fs::create_dir_all(&empty).unwrap();
-        assert!(merge_raw("llvm-profdata-18", &empty, &dir.join("should-not-matter")).is_err());
-        assert!(export_cov(
-            "llvm-cov-18",
-            Path::new("/tmp/mcn-no-such-coverage-binary"),
-            &dir.join("coverage.profdata.tmp"),
-            false,
+        assert!(merge_raw(
+            "llvm-profdata-18",
+            &empty,
+            &dir.join("seed.profdata"),
+            &dir.join("should-not-matter")
         )
         .is_err());
+        assert!(
+            export_cov(
+                "llvm-cov-18",
+                Path::new("/tmp/mcn-no-such-coverage-binary"),
+                &dir.join("coverage.profdata.tmp"),
+                false,
+            )
+            .is_err()
+        );
         let blocked = dir.join("blocked-root");
         fs::write(&blocked, b"not-a-directory").unwrap();
-        assert!(publish_snapshot(
-            &blocked,
-            "finger",
-            2,
-            &dir.join("coverage.profdata.tmp"),
-            Some("{}"),
-            &CoverageSummary::default(),
-            &CoverageSummary::default(),
-            &decision,
-            &[],
-            &["disk write failed".to_string()],
-            &dir.join("raw"),
-            Path::new("/tmp/missing-binary"),
-            "llvm-profdata-18",
-            "llvm-cov-18",
-            2,
-            &mut BatchTimings::default(),
-            &test_sut_log(&dir),
-        )
-        .is_err());
-        let after = load_checkpoint(&dir).unwrap();
+        assert!(
+            publish_snapshot(
+                &blocked,
+                2,
+                &dir.join("coverage.profdata.tmp"),
+                &CoverageSummary::default(),
+                &CoverageSummary::default(),
+                &decision,
+                &[],
+                &["disk write failed".to_string()],
+                Path::new("/tmp/missing-binary"),
+                "llvm-profdata-18",
+                "llvm-cov-18",
+                2,
+                &mut BatchTimings::default(),
+                &test_sut_log(&dir),
+            )
+            .is_err()
+        );
+        let after = discover_progress(&dir);
         assert_eq!(after.snapshot, 1);
         assert_eq!(
             fs::read(dir.join("current.profdata")).unwrap(),
@@ -2101,8 +2049,9 @@ mod tests {
         corpus.add(Testcase::new(input.clone())).unwrap();
         solutions.add(Testcase::new(input)).unwrap();
         let mut cases = Vec::new();
-        collect_corpus(&corpus, "corpus", &mut cases).unwrap();
-        collect_corpus(&solutions, "solution", &mut cases).unwrap();
+        let replayed_case_ids = HashSet::new();
+        collect_corpus(&corpus, "corpus", &replayed_case_ids, &mut cases).unwrap();
+        collect_corpus(&solutions, "solution", &replayed_case_ids, &mut cases).unwrap();
         assert_eq!(cases.len(), 2);
         assert_eq!(cases[0].location.corpus_id, cases[1].location.corpus_id);
         assert_eq!(cases[0].location.corpus_id, 0);
@@ -2321,6 +2270,8 @@ fn probe_campaign(workdir: &Path, binary: &Path) -> Campaign {
             workdir: workdir.to_path_buf(),
             cleanup_script: None,
             args: vec![workdir.join("mode").display().to_string()],
+            configure_options: Vec::new(),
+            cli_args: Vec::new(),
             host: "127.0.0.1".to_string(),
             port: 0,
             extra_env: Vec::new(),
@@ -2527,9 +2478,11 @@ fn replay_captures_split_output_across_batches_and_freezes_snapshots() {
     assert_eq!(marker_positions(&live_stdout, "case_end").len(), 4);
     assert_eq!(marker_positions(&live_stdout, "batch_start").len(), 2);
     assert_eq!(marker_positions(&live_stdout, "batch_end").len(), 2);
-    assert!(frozen_stdout
-        .windows(9)
-        .any(|window| window == b"batch_end"));
+    assert!(
+        frozen_stdout
+            .windows(9)
+            .any(|window| window == b"batch_end")
+    );
     let text = String::from_utf8_lossy(&live_stdout);
     for case_id in ["corpus:a", "corpus:z", "corpus:c"] {
         let start = text.find(&format!("\"case_id\":\"{case_id}\"")).unwrap();
@@ -2624,7 +2577,8 @@ struct ProfileCounts {
 #[cfg(test)]
 fn profile_counts(binary: &Path, raw_dir: &Path) -> ProfileCounts {
     let indexed = raw_dir.join("counts.profdata");
-    merge_raw("llvm-profdata-18", raw_dir, &indexed).unwrap_or_else(|error| {
+    let seed = raw_dir.join("seed.profdata");
+    merge_raw("llvm-profdata-18", raw_dir, &seed, &indexed).unwrap_or_else(|error| {
         panic!("llvm-profdata merge failed: {error:?}");
     });
     let json = export_cov("llvm-cov-18", binary, &indexed, false).unwrap_or_else(|error| {

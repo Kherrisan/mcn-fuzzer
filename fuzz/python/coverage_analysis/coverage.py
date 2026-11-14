@@ -161,6 +161,10 @@ def load_coverage(json_path, source_root=None):
         document = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise CoverageError(f"cannot read coverage JSON {path}: {error}") from error
+    return load_coverage_document(document, source_root)
+
+
+def load_coverage_document(document, source_root=None):
     data = document.get("data")
     if not isinstance(data, list) or not data:
         raise CoverageError("coverage JSON has no data array")
@@ -192,28 +196,40 @@ def load_coverage(json_path, source_root=None):
     return CoverageData(functions, files, aliases, totals, binaries, root)
 
 
-def build_aliases(coverage, callgraph_symbols):
+def compute_aliases(coverage_names, callgraph_symbols):
     """Join coverage names to callgraph symbols without guessing collisions.
 
     Exact matches win. A ``file.c:symbol`` coverage name is accepted only when
     the suffix names exactly one callgraph symbol and no exact match exists.
+
+    The result depends only on the coverage name set and the callgraph symbol
+    set. Both contain every symbol of the build, covered or not, so callers
+    can compute this once per (build, callgraph) and reuse the mapping for
+    later snapshots instead of paying for the join again.
     """
     symbols = set(callgraph_symbols)
-    aliases = {name: name for name in coverage.functions if name in symbols}
+    names = list(coverage_names)
+    aliases = {name: name for name in names if name in symbols}
     diagnostics = []
-    for name in coverage.functions:
+    for name in names:
         if name in aliases:
             continue
         suffix = name.rsplit(":", 1)[-1] if ":" in name else name
-        matches = [symbol for symbol in symbols if symbol == suffix]
-        if len(matches) == 1:
-            aliases[name] = matches[0]
+        # The suffix names exactly one callgraph symbol exactly when the set
+        # contains it; the old code compared every symbol with the suffix.
+        if suffix in symbols:
+            aliases[name] = suffix
         elif name in symbols:
             aliases[name] = name
         else:
             diagnostics.append({"coverage_name": name, "reason": "no unique callgraph symbol"})
     for target in list(aliases.values()):
         aliases.setdefault(target, target)
+    return aliases, diagnostics
+
+
+def apply_aliases(coverage, aliases):
+    """Re-key one coverage model with an already computed alias mapping."""
     for name in list(coverage.functions):
         target = aliases.get(name, name)
         if target == name:
@@ -229,6 +245,12 @@ def build_aliases(coverage, callgraph_symbols):
         else:
             coverage.functions[target] = function
     coverage.aliases = aliases
+
+
+def build_aliases(coverage, callgraph_symbols):
+    """Compatibility wrapper: compute and apply in one call."""
+    aliases, diagnostics = compute_aliases(coverage.functions, callgraph_symbols)
+    apply_aliases(coverage, aliases)
     return diagnostics
 
 

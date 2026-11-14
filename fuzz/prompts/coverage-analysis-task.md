@@ -6,7 +6,6 @@ OUTPUT_DIR={{ output_dir }}
 SNAPSHOT={{ snapshot }}
 SNAPSHOT_DIR={{ snapshot_dir }}
 BUILD={{ build }}
-MANIFEST={{ manifest }}
 CALLGRAPH_DOT={{ callgraph_dot }}
 CFG_DIR={{ cfg_dir }}
 BINARY={{ binary }}
@@ -16,10 +15,13 @@ HANDLERS={{ handlers }}
 SOURCE_DIR={{ source_dir }}
 SUT_STDOUT_LOG={{ sut_stdout_log }}
 SUT_STDERR_LOG={{ sut_stderr_log }}
+CONFIGURE_OPTIONS={{ configure_options }}
+CLI_ARGS={{ cli_args }}
 
-The fuzzer already replayed this frozen snapshot and exported coverage JSON. Do
-not re-run coverage, call a measurement command, or open the full coverage JSON
-or CFG files directly. Use the MCP tools; they parse and page the data.
+The fuzzer already replayed this frozen snapshot. The MCP service exports
+the detailed counters from the stored profile when needed. Do not re-run
+coverage, call a measurement command, or open coverage JSON or CFG files
+directly. Use the MCP tools; they parse and page the data.
 
 ## SUT replay output
 
@@ -40,6 +42,17 @@ conversation. Absence of output does not prove that a handler or path did not
 execute; combine the log with coverage, source, handlers, and protocol
 dependencies.
 
+## Build configuration and enabled features
+
+CONFIGURE_OPTIONS lists the build-time switches used for this SUT; CLI_ARGS
+lists the runtime command-line flags. Use them together with other build
+material (configdata.pm, CMakeCache.txt, generated headers, build logs,
+linked libraries) to decide which protocol features are actually compiled in
+and enabled. Do not propose goals for features that are disabled or were not
+built. Prioritize enabled features: inspect their handlers, branches, and
+dependencies thoroughly, and make them the primary targets of proposals and
+trace selection.
+
 ## Load the request
 
 A coverage-analysis MCP service is running. Start with `get_loaded_state`, then
@@ -47,14 +60,14 @@ load exactly this request's inputs:
 
 1. `load_protocol` with `{"protocol_path": "MODEL", "catalog_path": "CATALOG"}`.
 2. `load_handlers` with `{"handlers_path": "HANDLERS"}`.
-3. `load_cfg` with `{"cfg_dir": "CFG_DIR", "manifest_path": "MANIFEST"}`.
-4. `load_callgraph` with `{"callgraph_dot": "CALLGRAPH_DOT", "manifest_path": "MANIFEST"}`.
-5. `load_profdata` with `{"request_id": "REQUEST", "snapshot_dir": "SNAPSHOT_DIR", "manifest_path": "MANIFEST"}`.
+3. `load_cfg` with `{"cfg_dir": "CFG_DIR"}`.
+4. `load_callgraph` with `{"callgraph_dot": "CALLGRAPH_DOT"}`.
+5. `load_coverage_json` with `{"request_id": "REQUEST", "snapshot_dir": "SNAPSHOT_DIR"}`.
 6. `begin_analysis` with `{"request_id": "REQUEST"}`.
 
 If a tool returns `not_loaded`, load the missing dataset and retry. If it returns
 `incompatible_data`, stop and write an error result; do not mix builds.
-Pass `request_id` to every query tool after `load_profdata` so the request keeps
+Pass `request_id` to every query tool after `load_coverage_json` so the request keeps
 reading the snapshot it registered, even if another load happens later.
 
 ## Previously submitted proposals
@@ -85,7 +98,7 @@ can alter the executed path, for example:
   omitted, or left at the model default;
 - the order of a prerequisite step, or an added or removed condition;
 - a dependency or state key that changes a derived field;
-- a duplicate count, repetition, or a different reply or data-path step.
+- an additional instance of a prerequisite step, or a different reply or data-path step.
 
 In `goal.reason`, name the earlier request id and state the exact changed
 detail and why it should reach different coverage. Do not merely rename
@@ -156,17 +169,31 @@ key; do not bind the same key to multiple producers for one dependent instance.
     "fields": []}],
  "mutations": [
    {"op": "field", "steps": ["login_first"], "field": "username",
+    "kind": "string",
     "suggestion": "explore empty and length boundaries", "evidence": "src/auth.c:120"},
-   {"op": "duplicate", "steps": "[login_first:login_first]", "count_param": "login_repeats"}]}
+   {"op": "field", "steps": ["login_first"], "field": "body",
+    "kind": "bytes", "encoding": "hex",
+    "suggestion": "mutate the encoded payload nibbles", "evidence": "src/auth.c:140"}]}
 
 `steps` is either an array of instance names or `"[start:end]"`, including both
-ends. Whitespace around the colon is allowed. A field mutation applies to the
-selected send instances and may name a field the model does not list; give the
-field name, a suggestion, and a source location. A duplicate array repeats each
-selected instance in place. A duplicate range repeats that whole block after
-the original range. `count_param` is the extra-copy count. Do not overlap
-duplicate selections or declare the same field twice on one instance. Field and
-duplicate may name the same instance. Instance names must not contain `:[]`.
+ends. Whitespace around the colon is allowed. Only `op: "field"` mutations are
+supported. A field mutation applies to the selected send instances and may name
+a field the model does not list; give the field name, a suggestion, and a source
+location. Declare the same field at most once per instance. Instance names must
+not contain `:[]`.
+
+Each field mutation may declare `kind` and, for bytes only, `encoding`:
+
+- `string` (default): free-form text.
+- `bytes`: an encoded byte string; `encoding` is `hex` (default) or `base64`.
+  Use this for protocol fields that are raw bytes.
+- `integer`: signed 64-bit integer.
+- `boolean`: true/false flag.
+- `list`: array value.
+
+A `default` value may accompany the mutation. Rust passes kind and encoding to
+synthesis so the generator validates the value and mutation preserves the
+declared representation.
 
 The service fills action, condition, and message, checks endpoints and campaign
 party binding, and freezes proposal.json for this request. If no defensible

@@ -1,18 +1,18 @@
 //! In-process artifact acceptance. Never imports generators or launches Python.
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{fs, path::Path};
 
 use rustpython_ast::{self as ast, Visitor};
 use rustpython_compiler::{compile, CompileOpts, Mode, Parse};
 use serde_json::Value;
 
-use super::ParamValue;
 use crate::agents::artifacts::{check_identity, read_json};
+use crate::engine::input::InstanceParams;
 
 pub(super) fn check(
     output: &Path,
     request: &str,
-) -> Result<(Value, BTreeMap<String, ParamValue>), String> {
+) -> Result<(Value, InstanceParams), String> {
     let result = read_json(&output.join("result.json"))?;
     check_identity(&result, &[("request_id", request)])?;
     if result.get("status").and_then(Value::as_str) != Some("ok") {
@@ -69,45 +69,86 @@ fn check_parameters(schema: &Value, params: &Value) -> Result<(), String> {
         return Err("parameter schema must describe an object".to_string());
     }
     let params = params.as_object().ok_or("params.json must be an object")?;
+    let properties = schema.get("properties").and_then(Value::as_object);
+    if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+        for instance in params.keys() {
+            let known = properties.is_some_and(|properties| properties.contains_key(instance));
+            if !known {
+                return Err(format!("params.json instance {instance} is not in the schema"));
+            }
+        }
+    }
     if let Some(required) = schema.get("required").and_then(Value::as_array) {
         for name in required.iter().filter_map(Value::as_str) {
             if !params.contains_key(name) {
-                return Err(format!("params.json is missing required field {name}"));
+                return Err(format!("params.json is missing required instance {name}"));
             }
         }
     }
-    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
-        if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
-            for key in params.keys() {
-                if !properties.contains_key(key) {
-                    return Err(format!("params.json field {key} is not in the schema"));
-                }
+    for (instance, value) in params {
+        let fields = value.as_object().ok_or_else(|| {
+            format!("params.json.{instance} must be an object of mutable fields")
+        })?;
+        if fields.is_empty() {
+            return Err(format!("params.json.{instance} is empty"));
+        }
+        let path = format!("params.json.{instance}");
+        if let Some(spec) = properties.and_then(|properties| properties.get(instance)) {
+            check_instance_schema(spec, fields, &path)?;
+        }
+        for (field, value) in fields {
+            check_value(value, &format!("{path}.{field}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn check_instance_schema(
+    spec: &Value,
+    fields: &serde_json::Map<String, Value>,
+    path: &str,
+) -> Result<(), String> {
+    if spec.get("type").and_then(Value::as_str) != Some("object") {
+        return Err(format!("{path} schema must describe an object"));
+    }
+    let properties = spec.get("properties").and_then(Value::as_object);
+    if spec.get("additionalProperties") == Some(&Value::Bool(false)) {
+        for field in fields.keys() {
+            let known = properties.is_some_and(|properties| properties.contains_key(field));
+            if !known {
+                return Err(format!("{path} field {field} is not in the schema"));
             }
         }
-        for (key, spec) in properties {
-            if let (Some(value), Some(kind)) =
-                (params.get(key), spec.get("type").and_then(Value::as_str))
-            {
-                let matches = match kind {
-                    "string" => value.is_string(),
-                    "integer" => value.as_number().is_some_and(|n| n.is_i64() || n.is_u64()),
-                    "boolean" => value.is_boolean(),
-                    "array" => value.is_array(),
-                    _ => true,
+    }
+    if let Some(required) = spec.get("required").and_then(Value::as_array) {
+        for name in required.iter().filter_map(Value::as_str) {
+            if !fields.contains_key(name) {
+                return Err(format!("{path} is missing required field {name}"));
+            }
+        }
+    }
+    for (field, value) in fields {
+        if let Some(kind) = properties
+            .and_then(|properties| properties.get(field))
+            .and_then(|spec| spec.get("type"))
+            .and_then(Value::as_str)
+        {
+            let matches = match kind {
+                "string" => value.is_string(),
+                "integer" => value.as_number().is_some_and(|n| n.is_i64() || n.is_u64()),
+                "boolean" => value.is_boolean(),
+                "array" => value.is_array(),
+                _ => true,
+            };
+            if !matches {
+                let article = if matches!(kind, "integer" | "array") {
+                    "an"
+                } else {
+                    "a"
                 };
-                if !matches {
-                    let article = if matches!(kind, "integer" | "array") {
-                        "an"
-                    } else {
-                        "a"
-                    };
-                    return Err(format!("{key} must be {article} {kind}"));
-                }
+                return Err(format!("{path}.{field} must be {article} {kind}"));
             }
         }
-    }
-    for (key, value) in params {
-        check_value(value, &format!("params.json.{key}"))?;
     }
     Ok(())
 }
@@ -244,19 +285,21 @@ mod tests {
 
     #[test]
     fn parameter_checks_match_supported_schema_and_value_subset() {
-        let schema = json!({"type":"object", "required":["value"], "additionalProperties":false,
-            "properties":{"value":{"type":"array"}}});
+        let schema = json!({"type":"object", "required":["hello"], "additionalProperties":false,
+            "properties":{"hello":{"type":"object", "required":["value"], "additionalProperties":false,
+                "properties":{"value":{"type":"array"}}}}});
         check_parameters(
             &schema,
-            &json!({"value":[i64::MIN, i64::MAX, true, "x", []]}),
+            &json!({"hello":{"value":[i64::MIN, i64::MAX, true, "x", []]}}),
         )
         .unwrap();
         for (params, expected) in [
             (json!({}), "missing required"),
-            (json!({"value":true}), "must be an array"),
-            (json!({"value":[1.0]}), "integer"),
-            (json!({"value":[null]}), "not representable"),
-            (json!({"value":[{}]}), "not representable"),
+            (json!({"hello":{"value":true}}), "must be an array"),
+            (json!({"hello":{"value":[1.0]}}), "integer"),
+            (json!({"hello":{"value":[null]}}), "not representable"),
+            (json!({"hello":{"value":[{}]}}), "not representable"),
+            (json!({"hello":{}}), "is empty"),
         ] {
             let error = check_parameters(&schema, &params).unwrap_err();
             assert!(error.contains(expected), "{params}: {error}");

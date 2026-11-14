@@ -1,8 +1,9 @@
 //! FIFO of accepted synthesis inputs waiting for their first mutation round.
 //!
 //! The synthesis stage only enqueues here. The ordinary mutation stage takes
-//! one input, runs its baseline once without feedback, then applies the normal
-//! generator mutations and evaluator. No baseline is ever added to the corpus.
+//! one input, evaluates it once through the normal feedback path, then applies
+//! the normal generator mutations and evaluator. The baseline reaches the
+//! corpus only when feedback keeps it, like any other executed input.
 
 use std::{collections::VecDeque, fs, path::Path};
 

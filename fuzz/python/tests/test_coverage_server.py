@@ -15,7 +15,6 @@ from coverage_analysis import coverage as coverage_mod
 from coverage_analysis import proposal as proposal_mod
 from coverage_analysis import protocol as protocol_mod
 from coverage_analysis.handlers import load_handlers
-from coverage_analysis.manifest import graphs_digest, write_manifest
 
 
 def model_document():
@@ -99,23 +98,18 @@ def fixture(root):
     )
     binary = root / "fftp"
     binary.write_bytes(b"binary")
-    manifest = root / "manifest.json"
-    write_manifest(manifest, binary, source, root,
-                   ["callgraph.dot", "cfg/.foo.dot", "cfg/source-map.json"])
     snapshot = root / "snapshots" / "000001"
     snapshot.mkdir(parents=True)
     (snapshot / "metadata.json").write_text(json.dumps({
-        "fingerprint": "build1", "binary": str(binary),
-        "binary_sha256": hashlib.sha256(b"binary").hexdigest(),
+        "binary": str(binary),
     }))
     (snapshot / "coverage.json").write_text(json.dumps(coverage_document(str(source / "a.c"))))
-    (snapshot / "coverage.profdata.zlib").write_bytes(b"not-really-zlib")
     out = root / "out"
     out.mkdir()
     return {
         "root": root, "source": source, "protocol": protocol, "catalog": catalog_path,
         "handlers": handlers_path, "cfg": cfg, "callgraph": callgraph,
-        "manifest": manifest, "snapshot": snapshot, "out": out, "step_name": step_name,
+        "snapshot": snapshot, "out": out, "step_name": step_name,
         "binary": binary,
     }
 
@@ -176,6 +170,49 @@ class CoverageTests(unittest.TestCase):
             diagnostics = coverage_mod.build_aliases(data, ["bar"])
             self.assertNotIn("a.c:foo", data.aliases)
             self.assertTrue(diagnostics)
+
+    def test_alias_mapping_is_computed_once_per_session(self):
+        from types import SimpleNamespace
+
+        from coverage_analysis import state as state_mod
+
+        with tempfile.TemporaryDirectory() as raw:
+            state = state_mod.State(raw)
+            graph = SimpleNamespace(successors={"foo": []}, digest="graph-1")
+            state.latest["callgraph"] = state_mod.Loaded(
+                "callgraph", 1, "graph-1", {}, graph)
+            calls = []
+            original = coverage_mod.compute_aliases
+
+            def counting(*args, **kwargs):
+                calls.append(1)
+                return original(*args, **kwargs)
+
+            coverage_mod.compute_aliases = counting
+            try:
+                first = coverage_mod.load_coverage_document(coverage_document("/s/a.c"))
+                first.functions["a.c:foo"] = first.functions.pop("foo")
+                self.assertFalse(state._alias_join(first))
+                second = coverage_mod.load_coverage_document(coverage_document("/s/a.c"))
+                second.functions["a.c:foo"] = second.functions.pop("foo")
+                self.assertTrue(state._alias_join(second))
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(second.aliases["a.c:foo"], "foo")
+                # An already aliased model is not re-keyed a second time.
+                self.assertTrue(state._alias_join(second))
+                self.assertEqual(second.function_stats("foo")["total_branches"], 2)
+            finally:
+                coverage_mod.compute_aliases = original
+
+    def test_apply_aliases_is_idempotent(self):
+        data = coverage_mod.load_coverage_document(coverage_document("/s/a.c"))
+        data.functions["a.c:foo"] = data.functions.pop("foo")
+        aliases, diagnostics = coverage_mod.compute_aliases(data.functions, ["foo"])
+        coverage_mod.apply_aliases(data, aliases)
+        coverage_mod.apply_aliases(data, aliases)
+        self.assertEqual(data.aliases["a.c:foo"], "foo")
+        self.assertEqual(data.function_stats("foo")["total_branches"], 2)
+        self.assertEqual(diagnostics, [])
 
 
 
@@ -398,7 +435,6 @@ class ServiceTests(unittest.TestCase):
                     "snapshot": "000001",
                     "output_dir": str(files["out"]),
                     "snapshot_dir": str(files["snapshot"]),
-                    "manifest": str(files["manifest"]),
                     "model": str(files["protocol"]),
                     "catalog": str(files["catalog"]),
                     "handlers": str(files["handlers"]),
@@ -408,13 +444,16 @@ class ServiceTests(unittest.TestCase):
                 tool("load_protocol", {"protocol_path": str(files["protocol"]),
                                        "catalog_path": str(files["catalog"])})
                 tool("load_handlers", {"handlers_path": str(files["handlers"])})
-                tool("load_cfg", {"cfg_dir": str(files["cfg"]),
-                                  "manifest_path": str(files["manifest"])})
-                tool("load_callgraph", {"callgraph_dot": str(files["callgraph"]),
-                                        "manifest_path": str(files["manifest"])})
-                tool("load_profdata", {"request_id": "req-1",
-                                       "snapshot_dir": str(files["snapshot"]),
-                                       "manifest_path": str(files["manifest"])})
+                tool("load_cfg", {"cfg_dir": str(files["cfg"])})
+                tool("load_callgraph", {"callgraph_dot": str(files["callgraph"])})
+                loaded = tool("load_coverage_json", {"request_id": "req-1",
+                                                     "snapshot_dir": str(files["snapshot"])})
+                self.assertFalse((files["snapshot"] / "coverage.json").exists())
+                (files["snapshot"] / "coverage.json").write_text("not-json")
+                again = tool("load_coverage_json", {"request_id": "req-1",
+                                                     "snapshot_dir": str(files["snapshot"])})
+                self.assertEqual(again["version"], loaded["version"])
+                self.assertTrue(again["reused"])
                 overview = tool("show_overview_code_coverage", {})
                 self.assertEqual(overview["total_branches"], 2)
                 self.assertEqual(overview["covered_branches"], 1)
@@ -504,7 +543,6 @@ class ServiceTests(unittest.TestCase):
                     "snapshot": "000001",
                     "output_dir": str(files["out"]),
                     "snapshot_dir": str(files["snapshot"]),
-                    "manifest": str(files["manifest"]),
                     "model": str(files["protocol"]),
                     "catalog": str(files["catalog"]),
                     "handlers": str(files["handlers"]),
@@ -524,10 +562,9 @@ class ServiceTests(unittest.TestCase):
                     )
                     async with Client(params, mode="legacy") as client:
                         listed = await client.list_tools()
-                        loaded = await client.call_tool("load_profdata", {
+                        loaded = await client.call_tool("load_coverage_json", {
                             "request_id": "req-1",
                             "snapshot_dir": str(files["snapshot"]),
-                            "manifest_path": str(files["manifest"]),
                         })
                         overview = await client.call_tool(
                             "show_overview_code_coverage", {})
@@ -535,13 +572,13 @@ class ServiceTests(unittest.TestCase):
 
                 listed, loaded, overview = asyncio.run(asyncio.wait_for(drive(), 40))
                 names = {tool.name for tool in listed.tools}
-                for required in ("load_profdata", "begin_analysis",
+                for required in ("load_coverage_json", "begin_analysis",
                                  "show_overview_code_coverage", "submit_proposal"):
                     self.assertIn(required, names)
                 self.assertFalse(loaded.is_error, loaded)
                 body = json.loads(loaded.content[0].text)
                 self.assertEqual(body["snapshot"], "000001")
-                self.assertEqual(body["profdata"], "coverage.profdata.zlib")
+                self.assertEqual(body["coverage"], "coverage.json")
                 self.assertFalse(overview.is_error, overview)
                 summary = json.loads(overview.content[0].text)
                 self.assertEqual(summary["total_branches"], 2)

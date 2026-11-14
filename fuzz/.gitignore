@@ -9,6 +9,9 @@ targets/lightftp/cases.jsonl
 targets/lightftp/accept-*/
 targets/lightftp/generator.log
 targets/openssl/build/
+targets/openssl/build-pcguard-asan/
+targets/openssl/build-llvm-cov/
+targets/openssl/fixture/
 targets/openssl/work/
 targets/openssl/corpus/
 targets/openssl/crashes/

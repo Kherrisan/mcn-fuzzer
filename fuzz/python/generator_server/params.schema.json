@@ -1,4 +1,5 @@
 {
+  "$comment": "Each property is a per-instance object holding that instance's mutable fields.",
   "type": "object",
   "properties": {},
   "required": [],

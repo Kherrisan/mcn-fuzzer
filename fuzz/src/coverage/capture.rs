@@ -9,8 +9,9 @@ use std::{
     io::{self, Write},
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc,
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -18,19 +19,19 @@ use std::{
 
 use pcap::{Capture, Direction, Packet};
 use pcap_file::{
-    pcap::{PcapHeader, PcapPacket, PcapWriter},
     DataLink, Endianness, TsResolution,
+    pcap::{PcapHeader, PcapPacket, PcapWriter},
 };
 
-use flate2::{write::ZlibEncoder, Compression};
+use flate2::{Compression, write::ZlibEncoder};
 use libafl::{
+    Error, HasMetadata,
     corpus::Testcase,
     executors::ExitKind,
     feedbacks::{Feedback, StateInitializer},
     observers::Observer,
-    Error, HasMetadata,
 };
-use libafl_bolts::{impl_serdeany, Named};
+use libafl_bolts::{Named, impl_serdeany};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -1501,9 +1502,11 @@ mod tests {
         frame.extend_from_slice(b"pad");
         frame.extend_from_slice(PREFLIGHT_BACK);
         assert!(both_preflight_directions(&frame));
-        assert!(PREFLIGHT_FORWARD
-            .windows(18)
-            .all(|window| window != PREFLIGHT_FORWARD));
+        assert!(
+            PREFLIGHT_FORWARD
+                .windows(18)
+                .all(|window| window != PREFLIGHT_FORWARD)
+        );
         assert!(!contains_marker(
             &frame[..PREFLIGHT_FORWARD.len() - 1],
             PREFLIGHT_FORWARD
@@ -1651,11 +1654,7 @@ mod tests {
         let script = dir.join("gen.py");
         std::fs::write(&script, "def generate(ctx, params):\n    pass\n").unwrap();
         let seed = dir.join("seed.json");
-        std::fs::write(
-            &seed,
-            format!("{{\"generator\":\"{}\"}}", script.display()),
-        )
-        .unwrap();
+        std::fs::write(&seed, format!("{{\"generator\":\"{}\"}}", script.display())).unwrap();
         let base = GeneratorInput::from_file(&seed).unwrap();
         let engine = Arc::new(CaptureEngine::new(CaptureConfig::default()));
         let mut feedback = PcapToMetadataFeedback::new(Arc::clone(&engine));

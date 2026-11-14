@@ -1,0 +1,35 @@
+[target]
+binary = "build/asan-server"
+workdir = "work"
+args = ["@PORT@"]
+host = "127.0.0.1"
+port = 0
+map_size = 65536
+debug_child = false
+
+[timeouts]
+connect_ms = 2000
+io_ms = 1000
+case_ms = 5000
+exit_grace_ms = 1000
+
+[campaign]
+seeds = "seeds"
+corpus = "corpus"
+crashes = "crashes"
+python = "/home/user/mcn-fuzzer/fuzz/.venv/bin/python"
+pythonpath = "/home/user/mcn-fuzzer/fuzz/python"
+iterations = 2
+timeout_secs = 10
+bitmap_stagnation_limit = 256
+
+[capture]
+enabled = false
+
+[coverage]
+enabled = true
+binary = "build/cov-server"
+output = "coverage"
+analysis_enabled = false
+llvm_profdata = "llvm-profdata-18"
+llvm_cov = "llvm-cov-18"
