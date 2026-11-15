@@ -17,15 +17,31 @@ Retain specified defaults alongside optional negotiation; negotiation is a prere
 on the branch using its result. Preserve source-described multi-peer/third-party flows and
 their endpoint/state forwarding. Do not merge distinct peers just because they share a type.
 Keep comparison operands, polarity and fallback qualifiers for EACH stated operation/direction.
-Local checks/state stay in conditions, not invented transmitted fields or network messages.
+Put local computations, checks and persistence needed to execute later exchanges in step
+processing. Keep branch and ordering constraints in step_dependencies. Do not invent
+transmitted fields or network messages for local state.
+For each message send step, before_send and after_send belong to the sender, and on_receive
+belongs to the receiver. Within a hook, use source order. Each operation has reads, writes
+and rule. Use state.<name> for that party's state, message.<field> for a current associated
+field, and message_bytes for the actual deframed message after sending or receiving. Only
+before_send writes message fields. Rules specify applicable branches, transformations,
+validation outcomes, and state initialization, reset or retention across connections.
+Trace later reads back to their producers. Declare only values needed across steps as states
+with name, party_name and source (processing or external). Include evidence for definitions
+and each processing rule on its item. Keep intermediate values inside rules; record required
+details missing from the sources as unresolved. On cryptographic handshakes, capture the
+key schedule inputs, transcript boundaries and exceptional updates, proof and message
+verification, and resumption inputs from the earlier connection. On transfer protocols,
+trace stored negotiation or restart parameters to the exchanges that set and consume them.
 Conditions enable their dependent actions. When a comparison disqualifies an operation,
 encode the permitted comparison on its enabling edge, rather than the disqualifying state.
 Retain source-defined error/abort behavior separately.
 For one shared reply wire form, code/outcome classifications are conditions, not separate
 fieldless messages. Retain genuinely distinct wire forms and fields needed by later exchanges.
 Link prerequisites to the exchange that supplies the state, not merely the command requesting it.
-For field relations, record source-supported calculations in `derive`; use an empty string
-when the dependent field directly reuses the prior field. Do not invent calculations.
+Use field_relations for direct relationships between two transmitted fields. Existing
+derive relations may be retained. Use processing for new multi-input or local-state
+computations, without duplicating the same rule in a field relation.
 Retain request selectors that identify the object whose returned metadata is used later; bind
 subsequent uses to that same object as supported by the source, alongside the returned values.
 Retain base mechanisms alongside extensions unless explicitly replaced. Track abort/error
@@ -65,7 +81,8 @@ End your turn only when the tool response says stop_turn=true.
 
 PHASES = {
     "parse": """Extract all assigned source ranges into a coherent complete checkpoint. Names
-must be unique per kind within this file; unify repeated definitions and accumulate evidence.
+must be unique per kind within this file (state names are unique per party); unify repeated
+definitions and accumulate evidence.
 Preserve partial progress with submit_parse_result(path=...): each file contains ALL accumulated
 items, unresolved issues, complete=false, and completed_batches=[fully processed batch names].
 Continue the remaining batches in the same turn. Final checkpoint sets complete=true and
@@ -75,6 +92,8 @@ or Merge. Do not fabricate external facts. A partial checkpoint is not task comp
     "merge": """You are the single fresh merger. Read ALL input parser files, not selected
 concept groups. Build one whole candidate with items and unresolved. Unify true synonyms,
 disambiguate distinct concepts sharing a name, and rewrite all references consistently.
+Unify states by owning party and concept; update state.<name> references in that party's
+processing when renaming a state, and update state owners when renaming parties.
 Preserve every valid source-backed constraint, dependency and evidence citation. Consult source
 text when deciding whether concepts match. Submit the complete candidate using submit_model_result.
 The original parser files remain immutable; there are no replacement/deletion tables.""",
@@ -92,6 +111,9 @@ An independent reviewer will examine the result again. Do not submit review find
     "review": """You are an independent semantic reviewer. Read the frozen candidate and EVERY
 assigned source range in full; use shell files or the read tools. Check coverage, names,
 references, roles, defaults, optional branches, conditions, field relations and error lifecycles.
+For each processing read, check the producer is available before use on its branch, message
+bytes and transcript boundaries are precise, and state resets or survives reconnects only
+where source-supported. Review the listed state inputs, computations and failure outcomes.
 Finish the entire assigned audit before submitting; do not stop after finding a few defects.
 For each source-defined scenario, check its participating roles, supported directions and
 modes, initial/default state, success and failure outcomes, and closure/reuse behavior.

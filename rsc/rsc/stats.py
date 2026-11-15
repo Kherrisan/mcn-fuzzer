@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from rsc.artifacts import read_json
-from rsc.protocol.contract import COLLECTIONS
+from rsc.protocol.contract import BASE, COLLECTIONS, INTERACTIONS
 from rsc.protocol.models import Protocol
 from rsc.schemas import legacy_metadata_errors
 
@@ -15,7 +15,7 @@ def collect_protocol(path: str | Path) -> tuple[Path, dict]:
     if path.is_dir():
         path /= "protocol.json"
     model = read_json(path)
-    if not isinstance(model, dict) or any(key not in model for key in COLLECTIONS):
+    if not isinstance(model, dict) or any(key not in model for key in (*BASE, *INTERACTIONS)):
         raise ValueError(f"{path} is not a protocol model")
     if errors := legacy_metadata_errors(model):
         raise ValueError("; ".join(errors))
@@ -32,7 +32,7 @@ def compute_stats(model: dict) -> dict:
     return {
         "protocol": model["meta"]["protocol"],
         "complete": model["meta"]["complete"],
-        "counts": {key: len(model[key]) for key in (*COLLECTIONS, "unresolved")},
+        "counts": {key: len(model.get(key, [])) for key in (*COLLECTIONS, "unresolved")},
         "channel_coverage": {
             channel["name"]: sum(step["channel_name"] == channel["name"] for step in steps)
             for channel in model["channels"]

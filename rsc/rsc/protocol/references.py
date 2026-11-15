@@ -1,6 +1,6 @@
 """Name, field-carrier, endpoint and network-action checks shared with scoped merging."""
 
-from .contract import COLLECTIONS
+from .contract import COLLECTIONS, record_identity
 
 NETWORK_ACTIONS = ("listen", "connect", "close")
 
@@ -21,7 +21,8 @@ def reference_issues(records: dict, bindings=None) -> list[dict]:
         names[kind] = {}
         if kind != "step_dependencies":
             for key in keys:
-                names[kind].setdefault(records[key]["value"]["name"], []).append(key)
+                _, name = record_identity(kind, records[key]["value"])
+                names[kind].setdefault(name, []).append(key)
     issues = []
 
     def issue(description, *keys, path, type_="structure"):
@@ -54,6 +55,8 @@ def reference_issues(records: dict, bindings=None) -> list[dict]:
         for name, keys in values.items():
             if len(keys) != 1:
                 issue(f"ambiguous {kind} name {name!r}", *keys, path=("name",), type_="same_name")
+    for key in model["states"]:
+        ref(key, ("party_name",), "parties", records[key]["value"]["party_name"])
     for key in model["channels"]:
         c = records[key]["value"]
         for i, party in enumerate(c["endpoint_party_names"]):
@@ -76,13 +79,55 @@ def reference_issues(records: dict, bindings=None) -> list[dict]:
                     path=("endpoint_sources", i, "party_name"),
                 )
     network_nodes = {}
+    state_reads = []
+    state_writes = set()
     for key in model["steps"]:
         s = records[key]["value"]
         action = s.get("action")
         channel_key = ref(key, ("channel_name",), "channels", s.get("channel_name"))
         channel = records[channel_key]["value"] if channel_key is not None else None
         if action == "send":
-            ref(key, ("message_name",), "messages", s.get("message_name"))
+            message_key = ref(key, ("message_name",), "messages", s.get("message_name"))
+            fields = (
+                {f["name"] for f in records[message_key]["value"]["associated_fields"]}
+                if message_key is not None
+                else set()
+            )
+            for hook, operations in s.get("processing", {}).items():
+                party = s["receiver_name" if hook == "on_receive" else "sender_name"]
+                for i, operation in enumerate(operations):
+                    for access in ("reads", "writes"):
+                        for j, value in enumerate(operation[access]):
+                            path = ("processing", hook, i, access, j)
+                            namespace, _, name = value.partition(".")
+                            if namespace == "state" and name:
+                                state = ref(key, path, "states", (party, name))
+                                if state is not None:
+                                    if access == "reads":
+                                        state_reads.append((key, path, state))
+                                    else:
+                                        state_writes.add(state)
+                            elif namespace == "message" and name:
+                                if access == "writes" and hook != "before_send":
+                                    issue(
+                                        "only before_send may write message fields", key, path=path
+                                    )
+                                if message_key is not None and name not in fields:
+                                    issue(
+                                        f"field {name!r} is not carried by {s['name']!r}",
+                                        key,
+                                        message_key,
+                                        path=path,
+                                    )
+                            elif value == "message_bytes":
+                                if access != "reads" or hook == "before_send":
+                                    issue(
+                                        "message_bytes is read-only after send or on receive",
+                                        key,
+                                        path=path,
+                                    )
+                            else:
+                                issue(f"invalid processing reference {value!r}", key, path=path)
             party_fields = ("sender_name", "receiver_name")
         elif action in NETWORK_ACTIONS:
             party_fields = ("party_name",)
@@ -138,6 +183,15 @@ def reference_issues(records: dict, bindings=None) -> list[dict]:
                             party,
                             path=(field,),
                         )
+    for key, path, state in state_reads:
+        definition = records[state]["value"]
+        if definition["source"] == "processing" and state not in state_writes:
+            issue(
+                f"state {definition['name']!r} has no processing producer",
+                key,
+                state,
+                path=path,
+            )
     for key in model["step_dependencies"]:
         d = records[key]["value"]
         ends = {

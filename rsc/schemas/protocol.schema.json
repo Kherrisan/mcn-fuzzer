@@ -337,6 +337,70 @@
       "title": "Party",
       "type": "object"
     },
+    "processing": {
+      "additionalProperties": false,
+      "properties": {
+        "before_send": {
+          "items": {
+            "$ref": "#/$defs/processing_operation"
+          },
+          "title": "Before Send",
+          "type": "array"
+        },
+        "after_send": {
+          "items": {
+            "$ref": "#/$defs/processing_operation"
+          },
+          "title": "After Send",
+          "type": "array"
+        },
+        "on_receive": {
+          "items": {
+            "$ref": "#/$defs/processing_operation"
+          },
+          "title": "On Receive",
+          "type": "array"
+        }
+      },
+      "title": "Processing",
+      "type": "object"
+    },
+    "processing_operation": {
+      "additionalProperties": false,
+      "properties": {
+        "reads": {
+          "description": "Inputs: state.<name>, message.<field>, or message_bytes after send/receive.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Reads",
+          "type": "array"
+        },
+        "writes": {
+          "description": "Outputs: state.<name>, or message.<field> before send.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Writes",
+          "type": "array"
+        },
+        "rule": {
+          "description": "Short calculation or check, including applicable branches and failure behavior.",
+          "minLength": 1,
+          "title": "Rule",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reads",
+        "writes",
+        "rule"
+      ],
+      "title": "ProcessingOperation",
+      "type": "object"
+    },
     "message": {
       "additionalProperties": false,
       "properties": {
@@ -431,6 +495,9 @@
           "minLength": 1,
           "title": "Receiver Name",
           "type": "string"
+        },
+        "processing": {
+          "$ref": "#/$defs/processing"
         }
       },
       "required": [
@@ -470,6 +537,37 @@
         "path"
       ],
       "title": "Source",
+      "type": "object"
+    },
+    "state": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "party_name": {
+          "minLength": 1,
+          "title": "Party Name",
+          "type": "string"
+        },
+        "source": {
+          "description": "Local processing produces this state, or external configuration supplies it.",
+          "enum": [
+            "processing",
+            "external"
+          ],
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "party_name",
+        "source"
+      ],
+      "title": "State",
       "type": "object"
     },
     "dependency": {
@@ -560,6 +658,13 @@
         "$ref": "#/$defs/channel"
       },
       "title": "Channels",
+      "type": "array"
+    },
+    "states": {
+      "items": {
+        "$ref": "#/$defs/state"
+      },
+      "title": "States",
       "type": "array"
     },
     "steps": {

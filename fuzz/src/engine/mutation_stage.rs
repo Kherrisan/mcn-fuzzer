@@ -28,8 +28,31 @@ use crate::engine::{
 };
 use crate::runtime::report::append_event;
 
-/// Mutation iterations for both candidate baselines and ordinary corpus input.
+/// Mutation iterations for ordinary corpus input.
 const MAX_MUTATIONS: usize = 128;
+
+/// Candidate evaluations granted per declared mutable field.
+const CANDIDATE_FIELD_BUDGET: usize = 64;
+/// Lower bound for one synthesis candidate's evaluation budget.
+const CANDIDATE_MIN_MUTATIONS: usize = 512;
+/// Upper bound for one synthesis candidate's evaluation budget.
+const CANDIDATE_MAX_MUTATIONS: usize = 2048;
+
+/// Evaluation budget for one synthesis candidate: `clamp(64 * fields, 512, 2048)`.
+///
+/// A candidate is the only source of structurally new traces, so it gets a
+/// budget that scales with how many values the generator exposes instead of the
+/// ordinary corpus schedule.
+fn candidate_budget(input: &GeneratorInput) -> usize {
+    let fields = input
+        .param_kinds
+        .values()
+        .map(std::collections::BTreeMap::len)
+        .sum::<usize>();
+    fields
+        .saturating_mul(CANDIDATE_FIELD_BUDGET)
+        .clamp(CANDIDATE_MIN_MUTATIONS, CANDIDATE_MAX_MUTATIONS)
+}
 
 pub struct GeneratorMutationStage {
     mutator: GeneratorMutator,
@@ -168,6 +191,11 @@ impl GeneratorMutationStage {
                 log::warn!("could not attach TraceOrigin to baseline corpus {id:?}: {error:?}");
             }
         }
+        let budget = candidate_budget(&candidate.input);
+        log::info!(
+            "synthesis input {} gets {budget} mutation evaluations",
+            candidate.request
+        );
         self.run_mutations(
             fuzzer,
             executor,
@@ -175,6 +203,7 @@ impl GeneratorMutationStage {
             manager,
             &candidate.input,
             Some(&candidate.origin),
+            budget,
         )
     }
 
@@ -186,6 +215,7 @@ impl GeneratorMutationStage {
         manager: &mut EM,
         input: &GeneratorInput,
         origin: Option<&TraceOrigin>,
+        budget: usize,
     ) -> Result<(), Error>
     where
         S: HasRand + HasCorpus<GeneratorInput> + HasMetadata,
@@ -193,8 +223,13 @@ impl GeneratorMutationStage {
         E: Executor<EM, GeneratorInput, S, Z>,
         Z: Evaluator<E, EM, GeneratorInput, S>,
     {
-        let iterations = 1 + state.rand_mut().below_or_zero(MAX_MUTATIONS);
-        for _ in 0..iterations {
+        // Skipped or unchanged mutations do not consume the evaluation budget.
+        // The attempt cap only guards against a mutator that never changes input.
+        let attempt_limit = budget.saturating_mul(4);
+        let mut attempts = 0usize;
+        let mut evaluations = 0usize;
+        while evaluations < budget && attempts < attempt_limit {
+            attempts += 1;
             let mut mutated = input.clone();
             if self.mutator.mutate(state, &mut mutated)? == MutationResult::Skipped
                 || mutated == *input
@@ -204,6 +239,7 @@ impl GeneratorMutationStage {
                 // were a mutation.
                 continue;
             }
+            evaluations += 1;
             let (_, corpus_id) = fuzzer.evaluate_filtered(state, executor, manager, &mutated)?;
             self.mutator.post_exec(state, corpus_id)?;
             if let (Some(id), Some(origin)) = (corpus_id, origin) {
@@ -287,7 +323,16 @@ where
             .current_testcase()
             .ok()
             .and_then(|testcase| testcase.metadata::<TraceOrigin>().ok().cloned());
-        self.run_mutations(fuzzer, executor, state, manager, &input, origin.as_ref())
+        let budget = 1 + state.rand_mut().below_or_zero(MAX_MUTATIONS);
+        self.run_mutations(
+            fuzzer,
+            executor,
+            state,
+            manager,
+            &input,
+            origin.as_ref(),
+            budget,
+        )
     }
 }
 
@@ -310,6 +355,31 @@ mod tests {
     use super::*;
     use libafl::corpus::{OnDiskCorpus, Testcase};
     use std::{collections::BTreeMap, fs, path::PathBuf};
+
+    fn input_with_fields(fields: usize) -> GeneratorInput {
+        let mut input = GeneratorInput::new(PathBuf::from("/tmp/generator.py"), BTreeMap::new());
+        let mut specs = BTreeMap::new();
+        for index in 0..fields {
+            specs.insert(
+                format!("field_{index}"),
+                crate::engine::input::FieldSpec::default(),
+            );
+        }
+        input.param_kinds.insert("instance".into(), specs);
+        input
+    }
+
+    #[test]
+    fn candidate_budget_scales_with_fields_and_clamps() {
+        assert_eq!(candidate_budget(&input_with_fields(0)), 512);
+        assert_eq!(candidate_budget(&input_with_fields(1)), 512);
+        assert_eq!(candidate_budget(&input_with_fields(7)), 512);
+        assert_eq!(candidate_budget(&input_with_fields(8)), 512);
+        assert_eq!(candidate_budget(&input_with_fields(16)), 1024);
+        assert_eq!(candidate_budget(&input_with_fields(24)), 1536);
+        assert_eq!(candidate_budget(&input_with_fields(32)), 2048);
+        assert_eq!(candidate_budget(&input_with_fields(200)), 2048);
+    }
 
     #[test]
     fn trace_origin_survives_ondisk_corpus_replace() {

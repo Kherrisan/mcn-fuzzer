@@ -3,7 +3,7 @@
 import time
 from pathlib import Path
 
-from rsc.protocol.contract import COLLECTIONS
+from rsc.protocol.contract import COLLECTIONS, record_identity
 from rsc.protocol.validate import validate_protocol
 
 from . import partition
@@ -222,8 +222,7 @@ class Workflow:
         for item in payload["items"]:
             validate_record(item["kind"], item["value"])
             self.validate_evidence(item["evidence"])
-            if item["kind"] != "step_dependencies":
-                key = (item["kind"], item["value"]["name"])
+            if (key := record_identity(item["kind"], item["value"])) is not None:
                 if key in named:
                     raise WorkflowError(f"duplicate kind/name in checkpoint: {key}")
                 named.add(key)
@@ -589,7 +588,7 @@ class Workflow:
 
         def index(checkpoint):
             return {
-                (i["kind"], i["value"]["name"]): i
+                record_identity(i["kind"], i["value"]): i
                 for i in checkpoint["items"]
                 if i["kind"] != "step_dependencies"
             }
@@ -600,8 +599,11 @@ class Workflow:
             return all_batches  # A rename can affect unconstrained prose as well as references.
         changed = {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)}
         if any(
-            k[0] in {"parties", "channels"}
+            k[0] in {"parties", "channels", "states"}
             and before.get(k, {}).get("value") != after.get(k, {}).get("value")
+            or k[0] == "steps"
+            and before.get(k, {}).get("value", {}).get("processing")
+            != after.get(k, {}).get("value", {}).get("processing")
             for k in changed
         ):
             return all_batches
@@ -717,7 +719,12 @@ class Workflow:
         ]
         if args.get("view") == "index":
             rows = [
-                {"kind": r["kind"], "name": r["value"]["name"], "input_file": r["input_file"]}
+                {
+                    "kind": r["kind"],
+                    "name": r["value"]["name"],
+                    "input_file": r["input_file"],
+                    **({"party_name": r["value"]["party_name"]} if r["kind"] == "states" else {}),
+                }
                 for r in rows
                 if "name" in r["value"]
             ]
@@ -739,6 +746,17 @@ class Workflow:
         if candidate is None:
             candidate = self.checkpoint(self.data.get("reviewed_candidate", "candidate.json"))
         unresolved = self.data.get("unresolved", candidate["unresolved"])
+        collections = {kind: [] for kind in COLLECTIONS}
+        for item in candidate["items"]:
+            kind, value = item["kind"], item["value"]
+            if kind == "steps" and "processing" in value:
+                value = dict(value)
+                processing = {hook: ops for hook, ops in value.pop("processing").items() if ops}
+                if processing:
+                    value["processing"] = processing
+            collections[kind].append(value)
+        if not collections["states"]:
+            del collections["states"]
         return {
             "meta": {
                 "protocol": self.data["protocol"],
@@ -748,10 +766,7 @@ class Workflow:
                     for n, d in self.documents.items()
                 ],
             },
-            **{
-                kind: [r["value"] for r in candidate["items"] if r["kind"] == kind]
-                for kind in COLLECTIONS
-            },
+            **collections,
             "unresolved": unresolved,
         }
 

@@ -54,6 +54,8 @@ def prune_invalid(
     issues = []
     while errors := object_errors(model, documents, schemas_dir):
         for key in COLLECTIONS:
+            if key not in model:
+                continue
             retained = []
             for index, row in enumerate(model[key]):
                 token = (
@@ -105,12 +107,12 @@ def validate_protocol(model: dict, documents: dict[str, dict], schemas_dir=None)
         records = {
             f"{kind}:{index}": {"kind": kind, "value": value}
             for kind in COLLECTIONS
-            for index, value in enumerate(model[kind])
+            for index, value in enumerate(model.get(kind, []))
         }
         errors.extend(reference_errors(records))
     if model["meta"]["complete"] and model["unresolved"]:
         errors.append("complete model cannot contain unresolved issues")
-    if not any(model[key] for key in COLLECTIONS):
+    if not any(model.get(key) for key in COLLECTIONS):
         errors.append("protocol model must not be empty")
     return errors
 

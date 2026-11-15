@@ -5,10 +5,82 @@ from copy import deepcopy
 import pytest
 import test_result_workflow as h
 
+from rsc.protocol.validate import validate_protocol_file
 from rsc.workflow import WorkflowError
 from rsc.workflow.store import read_json
 
 run = h.run
+
+
+def test_processing_cross_partition_rename_and_publication(run):
+    assignments = h.active(run)
+    first, second = (h.checkpoint(run, a) for a in assignments)
+    receive, send = [item for item in first["items"] if item["kind"] == "steps"]
+    receive["value"]["processing"] = {
+        "on_receive": [
+            {
+                "reads": ["message.Session", "message_bytes"],
+                "writes": ["state.session"],
+                "rule": "Store the request's session for use in the response.",
+            }
+        ],
+        "after_send": [],
+    }
+    send["value"]["processing"] = {
+        "before_send": [
+            {
+                "reads": ["state.session"],
+                "writes": ["message.Session"],
+                "rule": "Echo the stored session.",
+            }
+        ],
+    }
+    first["items"] = [receive, send]
+    for party, source in (("responder", "processing"), ("requester", "external")):
+        second["items"].append(
+            {
+                "kind": "states",
+                "value": {"name": "session", "party_name": party, "source": source},
+                "evidence": second["items"][0]["evidence"],
+            }
+        )
+    h.submit(run, assignments[0]["worker"], first)
+    h.submit(run, assignments[1]["worker"], second)
+    h.dispatch(run)
+    index = h.call(run, "merge-1", "query_model", view="index", kind="states")
+    assert {item["party_name"] for item in index["items"]} == {"requester", "responder"}
+
+    second["items"] = [i for i in second["items"] if i["kind"] != "steps"]
+    payload = {"items": [*first["items"], *second["items"]], "unresolved": []}
+    second["items"][-2]["value"]["name"] = "reply_session"
+    with pytest.raises(WorkflowError, match="states reference"):
+        h.submit(run, "merge-1", payload)
+
+    write = receive["value"]["processing"]["on_receive"][0]
+    read = send["value"]["processing"]["before_send"][0]
+    write["writes"] = ["state.reply_session"]
+    read["reads"] = ["state.reply_session"]
+    for bad, expected in (
+        ("message.Session", "only before_send"),
+        ("message_bytes", "message_bytes is read-only"),
+        ("state.missing", "states reference"),
+    ):
+        write["writes"] = [bad]
+        with pytest.raises(WorkflowError, match=expected):
+            h.submit(run, "merge-1", payload)
+    write["writes"] = []
+    with pytest.raises(WorkflowError, match="no processing producer"):
+        h.submit(run, "merge-1", payload)
+    write["writes"] = ["state.reply_session"]
+    h.submit(run, "merge-1", payload)
+    h.dispatch(run)
+    h.review(run)
+    output = run.root / "protocol.json"
+    assert validate_protocol_file(output) == []
+    published = read_json(output)
+    assert len(published["states"]) == 2
+    assert published["steps"][0]["processing"] == {"on_receive": [write]}
+    assert published["steps"][1]["processing"] == {"before_send": [read]}
 
 
 def test_same_name_inputs_are_allowed_but_one_checkpoint_is_unique(run):

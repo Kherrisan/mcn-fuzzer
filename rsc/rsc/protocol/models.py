@@ -14,7 +14,7 @@ from .rules import (
 )
 
 NonEmpty = Annotated[str, Field(min_length=1)]
-ObjectKind = Literal["parties", "messages", "channels", "steps", "step_dependencies"]
+ObjectKind = Literal["parties", "messages", "channels", "states", "steps", "step_dependencies"]
 Phase = Literal["objects", "interactions"]
 
 
@@ -96,6 +96,34 @@ class Channel(StrictModel):
     )
 
 
+class State(StrictModel):
+    name: NonEmpty
+    party_name: NonEmpty
+    source: Literal["processing", "external"] = Field(
+        description="Local processing produces this state, or external configuration supplies it."
+    )
+
+
+class ProcessingOperation(StrictModel):
+    reads: list[NonEmpty] = Field(
+        description="Inputs: state.<name>, message.<field>, or message_bytes after send/receive."
+    )
+    writes: list[NonEmpty] = Field(
+        description="Outputs: state.<name>, or message.<field> before send."
+    )
+    rule: NonEmpty = Field(
+        description=(
+            "Short calculation or check, including applicable branches and failure behavior."
+        )
+    )
+
+
+class Processing(StrictModel):
+    before_send: list[ProcessingOperation] = Field(default_factory=list)
+    after_send: list[ProcessingOperation] = Field(default_factory=list)
+    on_receive: list[ProcessingOperation] = Field(default_factory=list)
+
+
 class SendStep(StrictModel):
     """One directional protocol message, including protocol termination messages."""
 
@@ -113,6 +141,7 @@ class SendStep(StrictModel):
     message_name: NonEmpty
     sender_name: NonEmpty
     receiver_name: NonEmpty
+    processing: Processing = Field(default_factory=Processing)
 
 
 class ListenStep(StrictModel):
@@ -210,6 +239,7 @@ class ProtocolModel(StrictModel):
     parties: list[Party] = Field(default_factory=list)
     messages: list[ProtocolMessage] = Field(default_factory=list)
     channels: list[Channel] = Field(default_factory=list)
+    states: list[State] = Field(default_factory=list)
     steps: list[Step] = Field(default_factory=list)
     step_dependencies: list[StepDependency] = Field(default_factory=list)
 
@@ -231,6 +261,7 @@ class Protocol(StrictModel):
     parties: list[Party]
     messages: list[ProtocolMessage]
     channels: list[Channel]
+    states: list[State] = Field(default_factory=list)
     steps: list[Step]
     step_dependencies: list[StepDependency]
     unresolved: list[Issue]
@@ -245,6 +276,9 @@ def protocol_json_schema() -> dict[str, Any]:
         "ProtocolMessage": "message",
         "Channel": "channel",
         "EndpointSource": "endpoint_source",
+        "State": "state",
+        "Processing": "processing",
+        "ProcessingOperation": "processing_operation",
         "SendStep": "send_step",
         "ListenStep": "listen_step",
         "ConnectStep": "connect_step",

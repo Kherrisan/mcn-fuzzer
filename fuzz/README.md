@@ -179,7 +179,11 @@ scheduler: a non-empty queue supplies the input for this round, while an empty
 queue uses the normal scheduler/corpus testcase. For a queued synthesis input,
 the same mutation stage first runs its original initial parameters once through
 normal feedback, then applies the existing `GeneratorMutator` and ordinary
-mutation iterations/evaluation/feedback. The baseline enters the corpus only
+mutation iterations/evaluation/feedback. A candidate receives
+`clamp(64 * mutable_fields_total, 512, 2048)` evaluations, where the field total
+sums `param_kinds`; ordinary corpus rounds keep the `1 + rand(0..127)` schedule.
+Skipped or unchanged mutations do not consume the candidate budget. The baseline
+enters the corpus only
 when feedback keeps it. Only mutated inputs that pass normal feedback enter the corpus,
 where subsequent mutation rounds continue to evolve them. There is no separate
 candidate stage, no bypass mutation stage, and no temporary corpus insertion.

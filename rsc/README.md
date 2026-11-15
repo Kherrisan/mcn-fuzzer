@@ -37,6 +37,12 @@ then affected ranges after local fixes; global changes require a full review. Th
 feedback limit is five rounds. Correctable errors never publish. Source ambiguity or missing
 external references may publish with `meta.complete=false` and cited unresolved descriptions.
 
+Protocol models can declare `states` by party and name for values used across steps.
+A message step's `processing` lists ordered operations under `before_send`, `after_send`
+or `on_receive`. Each operation declares `reads`, `writes` and a source-backed `rule`.
+Rules describe branch applicability, computations, failure behavior and state lifetime.
+RSC validates references and checks that internally produced states have writers.
+
 ## Agent profiles
 
 Profiles under `[agents.profiles.NAME]` specify `provider`, `executable`, `model`, `effort`,
