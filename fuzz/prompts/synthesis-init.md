@@ -6,8 +6,9 @@ is to turn each later proposal into a reusable Python generator that implements
 the external environment needed to exercise those steps against the real SUT.
 The generator can carry several parties at once, including server, upstream, and user
 roles. Implement generator parties; the real target implements SUT parties.
-Steps are send, listen, connect, or close. send is one protocol message.
-listen means that party is ready to accept connections and does not wait for
+Steps are send, recv, listen, connect, or close. send is one generator message
+with a receiver. recv reads one SUT message identified by its sender. listen
+means that party is ready to accept connections and does not wait for
 the peer before later steps. connect opens the transport connection. close
 closes that party's transport connection. A trace may repeat the same step.
 Generator parties perform their own network actions with the existing socket
@@ -29,6 +30,7 @@ OUTPUT_DIR={{ output_dir }}
 
 - Protocol: {{ protocol_name }}; model complete flag: {{ model_complete }}.
 - Agent launch directory and campaign synthesis root: {{ campaign.workspace }}
+- Shared helper directory (writable, campaign-scoped): {{ campaign.workspace }}/lib
 - Initialization output directory: {{ output_dir }}
 - Campaign configuration directory: {{ campaign.campaign_dir }}
 - Full protocol model: {{ campaign.model }}
@@ -52,6 +54,47 @@ Use absolute OUTPUT_DIR paths for all task artifacts. Do not write generator.py,
 params.schema.json, params.json, or result.json at the WORKSPACE root, and never
 overwrite an earlier request's artifacts. The terminal's current directory does
 not automatically change when a new request arrives.
+
+WORKSPACE/lib is a writable, campaign-scoped directory for reusable synthesis
+helpers. You may create new generic helper modules there when the same codec,
+framing, crypto, record, or transport-adapter work is useful across requests.
+Reuse existing helpers as-is; do not edit or overwrite an existing helper file.
+Do not write case-specific state, credentials, SUT fixtures, or
+proposal-specific handlers there. Do not implement protocol-specific helpers in
+advance; the repository and skill contain library guidance, not prebuilt
+protocol generators. The generator server adds WORKSPACE/lib to `sys.path` when
+loading a generator; import helpers directly rather than adding a path
+bootstrap.
+
+## Reuse modules and own state transitions
+
+Reuse Python modules at the codec and primitive layer:
+
+- message/packet/field construction and parsing;
+- record, frame, length-prefix, compression, and checksum helpers;
+- crypto primitives, key-schedule helpers, AEAD, hashing, and signatures;
+- bounded transport adapters and buffered readers;
+- generic validation and fixture encoding.
+
+Keep the following in your generator handlers:
+
+- the phase and the expected next message;
+- trace order, conditions, dependencies, retries, and field reuse;
+- transcript, negotiated state, sequence numbers, and key epochs;
+- channels/listeners, per-case resources, and cleanup.
+
+Do not let a high-level SDK run several selected trace steps internally or hide
+intermediate messages. Prefer lower-level message/codec APIs when the proposal
+selects those intermediate steps. A reusable helper must be pure or accept an
+explicit state object; no module-level socket, session, credential, or case
+state.
+
+Inspect WORKSPACE/lib before writing. Reuse existing helpers as-is. If they do
+not fit or need different behavior, add a new versioned helper module (for
+example `tls_record_v2.py`); never edit an existing helper file under the same
+name. Helpers may already be imported by a running generator server, so an
+in-place edit would make accepted generators see different behavior without
+their own change.
 
 ## Party assignment
 
@@ -182,8 +225,10 @@ publish matching IDs, a non-ok status, and a specific error in result.json.
 A conversational answer alone is not a completion signal.
 
 Only generator.py and params.schema.json are copied to the published generator
-directory. Runtime step_trace arrives in memory; the script cannot depend on the
-proposal, params.json, extra sibling modules, or synthesis workspace files.
-Keep support code inside generator.py or use Python modules already installed in
-the campaign interpreter. Do not install packages, edit fuzzer/SUT configuration or source,
-or overwrite artifacts from earlier requests.
+directory. generator.py may import generic shared helpers under WORKSPACE/lib;
+that directory is campaign-scoped and remains a runtime dependency for replay.
+The script must not depend on the proposal, params.json, another request's
+OUTPUT_DIR, or other mutable workspace files. Keep task-specific mock
+implementations, handlers, and SDK glue in generator.py; use installed packages
+or the shared helper modules for generic code. Do not install packages, edit
+fuzzer/SUT configuration or source, or overwrite artifacts from earlier requests.

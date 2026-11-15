@@ -71,9 +71,12 @@ below are relative to this SKILL.md, independent of the agent's working director
   shut down event loops and join threads within the case budget. Do not leave a
   daemon thread or an unbounded `serve_forever()` running. Twisted's global
   reactor is not restartable; prefer message codecs or a case-local integration.
-- Only generator.py and params.schema.json are published. Inline service glue
-  in generator.py and use installed libraries; do not import this skill's audit
-  script or depend on request-directory files at runtime.
+- Only generator.py and params.schema.json are published into the request's
+  `published/` directory. generator.py may import generic shared helper modules
+  from `WORKSPACE/lib`; that campaign-scoped directory remains a runtime
+  dependency. Inline task-specific mock implementations, handlers, and SDK glue
+  in generator.py. Do not depend at runtime on proposal.json, params.json, the
+  request directory, or another request's files.
 - The calling prompt points to `generator_server/template.py` and
   `generator_server/params.schema.json`. The scaffold's imports, helpers and
   per-target handler examples are copy references; adapt only the relevant
@@ -82,6 +85,42 @@ below are relative to this SKILL.md, independent of the agent's working director
   parameter representation, lifecycle, verification and result.json rules from
   that prompt still apply. Report checks performed; module imports or codec
   roundtrips do not prove that a target trace succeeded against the SUT.
+
+## Reusable helpers versus handler-owned state
+
+Synthesis may create reusable helpers under `WORKSPACE/lib` for work that repeats
+across requests. Keep that layer generic and stateless:
+
+- message, packet, field and framing codecs;
+- record/stream buffering and bounded transport adapters;
+- compression, checksum and encoding helpers;
+- crypto primitives, key-schedule helpers, AEAD, signatures and verification
+  primitives;
+- generic fixture and validation utilities.
+
+The generator server adds `WORKSPACE/lib` to `sys.path` before importing
+generator.py. Import shared helpers directly; do not add a parent-directory
+bootstrap in the generator.
+
+Keep the protocol state machine in generator handlers:
+
+- phase and expected next message;
+- trace order, conditions, dependencies and retries;
+- transcript, negotiated algorithms, sequence numbers and key epochs;
+- channels, listeners, per-case resources and cleanup.
+
+Do not let a high-level SDK run several selected trace steps internally or hide
+intermediate messages. Use lower-level message/codec APIs when the trace selects
+those steps. A helper must be pure or accept an explicit state object; it must not
+hold module-level sockets, sessions, credentials or case state.
+
+Inspect existing helpers before writing and reuse them as-is. Do not edit or
+overwrite an existing helper file. If behavior must change or a new helper is
+needed, add a versioned module name (for example `tls_record_v2.py`); the
+generator server caches imported modules for the life of the campaign, so an
+in-place edit could change behavior for already accepted generators. Do not add
+protocol-specific helper implementations to the repository or skill; they are
+generated in the campaign workspace.
 
 ## Validate before publishing (every successful generation)
 

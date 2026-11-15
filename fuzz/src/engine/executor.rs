@@ -39,7 +39,7 @@ use crate::{
         GeneratorOutcome, PidCheck, PidObservation, ProcessReason, StartupEnd, SutKillReason,
         TimeoutStreaks,
     },
-    runtime::report::{append_jsonl, CaseReport, TargetStop},
+    runtime::report::{append_case_event, CaseReport, TargetStop},
 };
 
 /// Hitcount observer over the shared PCGUARD map, with novelty indexes.
@@ -85,7 +85,7 @@ pub struct CaseExecutor {
     cleanup_script: Option<PathBuf>,
     workdir: PathBuf,
     binary: PathBuf,
-    report_path: PathBuf,
+    event_path: PathBuf,
     asan_log_dir: PathBuf,
     last_report: Option<CaseReport>,
     last_identity: Option<TraceIdentity>,
@@ -127,10 +127,12 @@ impl CaseExecutor {
         })?;
         let asan = AsanBacktraceObserver::new("asan");
         let log_path = log_root.join("generator.log");
-        let generator = GeneratorClient::spawn(
+        let shared_lib = campaign.generator_synthesis.output.join("lib");
+        let generator = GeneratorClient::spawn_with_shared_lib(
             &campaign.campaign.python,
             &campaign.campaign.pythonpath,
             &log_path,
+            Some(&shared_lib),
         )?;
         if campaign.capture.enabled {
             capture.preflight()?;
@@ -156,7 +158,7 @@ impl CaseExecutor {
             cleanup_script: campaign.target.cleanup_script.clone(),
             workdir: campaign.target.workdir.clone(),
             binary: campaign.target.binary.clone(),
-            report_path: log_root.join("cases.jsonl"),
+            event_path: log_root.join("events.jsonl"),
             asan_log_dir,
             last_report: None,
             last_identity: None,
@@ -238,8 +240,8 @@ impl CaseExecutor {
     }
 
     /// Path of the JSONL case log.
-    pub fn report_path(&self) -> &Path {
-        &self.report_path
+    pub fn event_path(&self) -> &Path {
+        &self.event_path
     }
 
     /// Replace the whole-case and exit-grace budgets. Used by the timeout check.
@@ -302,7 +304,7 @@ impl CaseExecutor {
             self.streaks.startup,
             self.streaks.result,
         );
-        append_jsonl(&self.report_path, &report)?;
+        append_case_event(&self.event_path, &report)?;
         self.last_report = Some(report);
         Ok(())
     }

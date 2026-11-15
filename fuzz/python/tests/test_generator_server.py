@@ -68,6 +68,36 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             registry.get("ftp_cmd.py")
 
+    def test_shared_lib_env_is_added_to_import_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            lib = Path(directory) / "lib"
+            lib.mkdir()
+            helper = f"shared_helper_{os.getpid()}"
+            (lib / f"{helper}.py").write_text("VALUE = 42\n")
+            generator = Path(directory) / "generator.py"
+            generator.write_text(
+                "from generator_server import step_handler\n"
+                f"from {helper} import VALUE\n"
+                f"EXPECTED = {42}\n"
+                "@step_handler('test')\n"
+                "def handler(ctx, params):\n"
+                "    return VALUE\n"
+            )
+            old = os.environ.get("MCN_SHARED_LIB")
+            os.environ["MCN_SHARED_LIB"] = str(lib)
+            try:
+                generate = Registry().get(str(generator))
+                self.assertIsNotNone(generate)
+                self.assertIn(str(lib), sys.path)
+            finally:
+                if old is None:
+                    os.environ.pop("MCN_SHARED_LIB", None)
+                else:
+                    os.environ["MCN_SHARED_LIB"] = old
+                if str(lib) in sys.path:
+                    sys.path.remove(str(lib))
+                sys.modules.pop(helper, None)
+
 
 class FtpGeneratorTests(unittest.TestCase):
     def test_user_command_roundtrip(self):

@@ -201,9 +201,11 @@ except BaseException as exc:
 '''
 
 
-def check_imports(generator, pythonpath, timeout):
+def check_imports(generator, pythonpath, timeout, shared_lib=None):
     env = os.environ.copy()
     env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if shared_lib:
+        env["MCN_SHARED_LIB"] = str(shared_lib)
     # Match publication: the request directory is not an import path for helpers.
     with tempfile.TemporaryDirectory(prefix="mcn-generator-check-") as cwd:
         try:
@@ -220,7 +222,7 @@ def check_imports(generator, pythonpath, timeout):
 
 
 def validate(output_dir, request_id, result_path=None,
-             *, import_check=False, pythonpath="", timeout=5.0):
+             *, import_check=False, pythonpath="", shared_lib=None, timeout=5.0):
     output_dir = Path(output_dir).resolve()
     checks = []
     result = read_json(result_path or output_dir / "result.json")
@@ -234,7 +236,7 @@ def validate(output_dir, request_id, result_path=None,
     check_generator(generator)
     checks.append("Python compilation and synchronous generator interface")
     if import_check:
-        check_imports(generator, pythonpath, timeout)
+        check_imports(generator, pythonpath, timeout, shared_lib)
         checks.append("isolated import, callable signature and import-time resource guard")
     return {"status": "ok", "checks": checks, "schema_validation": "production_subset",
             "imports_checked": import_check, "runtime_executed": False,
@@ -252,6 +254,7 @@ def main():
     parser.add_argument("--result", type=Path, help="draft completion JSON; default: OUTPUT_DIR/result.json")
     parser.add_argument("--check-imports", action="store_true")
     parser.add_argument("--pythonpath", default=os.environ.get("PYTHONPATH", ""))
+    parser.add_argument("--shared-lib", type=Path, help="campaign WORKSPACE/lib helper directory")
     parser.add_argument("--import-timeout", type=float, default=5.0)
     args = parser.parse_args()
     if not 0 < args.import_timeout <= 60:
@@ -259,7 +262,9 @@ def main():
     try:
         report = validate(args.output_dir, args.request_id, args.result,
                           import_check=args.check_imports,
-                          pythonpath=args.pythonpath, timeout=args.import_timeout)
+                          pythonpath=args.pythonpath,
+                          shared_lib=args.shared_lib,
+                          timeout=args.import_timeout)
     except (ValidationError, RecursionError) as exc:
         print(json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False))
         return 1

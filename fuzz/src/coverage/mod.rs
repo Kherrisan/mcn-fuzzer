@@ -690,11 +690,13 @@ impl CoverageSession {
                 .as_deref()
                 .unwrap_or(&campaign.base)
                 .join("coverage-generator.log");
-            let generator = GeneratorClient::spawn_tagged(
+            let shared_lib = campaign.generator_synthesis.output.join("lib");
+            let generator = GeneratorClient::spawn_tagged_with_shared_lib(
                 &campaign.campaign.python,
                 &campaign.campaign.pythonpath,
                 &log_path,
                 "-cov",
+                Some(&shared_lib),
             )?;
             Ok((backend, generator, owned, port))
         })();

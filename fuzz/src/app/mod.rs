@@ -189,9 +189,18 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
     if campaign.coverage.analysis_enabled {
         analysis.initialize()?;
     }
+    let event_root = campaign.output_root.clone().unwrap_or_else(|| {
+        campaign
+            .campaign
+            .corpus
+            .parent()
+            .unwrap_or(campaign.campaign.corpus.as_path())
+            .to_path_buf()
+    });
     let mut mutation = GeneratorMutationStage::with_queue(
         campaign.generator_synthesis.output.join("candidates.json"),
-    );
+    )
+    .with_events(event_root.join("events.jsonl"));
     if campaign.generator_synthesis.enabled {
         mutation.load_queue(&mut session.state)?;
     }

@@ -1,0 +1,3482 @@
+{
+  "meta": {
+    "protocol": "TLS 1.3 with RFC 6066 and RFC 7301 extensions",
+    "complete": true,
+    "documents": [
+      {
+        "doc_id": "rfc6066",
+        "rfc": "RFC 6066",
+        "path": "snapshots/rfc6066.json"
+      },
+      {
+        "doc_id": "rfc7301",
+        "rfc": "RFC 7301",
+        "path": "snapshots/rfc7301.json"
+      },
+      {
+        "doc_id": "rfc8446",
+        "rfc": "RFC 8446",
+        "path": "snapshots/rfc8446.json"
+      }
+    ]
+  },
+  "parties": [
+    {
+      "name": "TLS client",
+      "description": "Initiates TLS connections and sends ClientHello."
+    },
+    {
+      "name": "TLS server",
+      "description": "Accepts TLS connections and selects handshake parameters."
+    },
+    {
+      "name": "Certificate URL host",
+      "description": "Serves client certificates requested by URL."
+    }
+  ],
+  "messages": [
+    {
+      "name": "ClientHello",
+      "associated_fields": [
+        {
+          "name": "legacy_version"
+        },
+        {
+          "name": "random"
+        },
+        {
+          "name": "legacy_session_id"
+        },
+        {
+          "name": "cipher_suites"
+        },
+        {
+          "name": "legacy_compression_methods"
+        },
+        {
+          "name": "extensions"
+        },
+        {
+          "name": "supported_versions"
+        },
+        {
+          "name": "supported_groups"
+        },
+        {
+          "name": "key_share"
+        },
+        {
+          "name": "signature_algorithms"
+        },
+        {
+          "name": "signature_algorithms_cert"
+        },
+        {
+          "name": "psk_key_exchange_modes"
+        },
+        {
+          "name": "pre_shared_key"
+        },
+        {
+          "name": "early_data"
+        },
+        {
+          "name": "post_handshake_auth"
+        },
+        {
+          "name": "server_name"
+        },
+        {
+          "name": "application_layer_protocol_negotiation"
+        },
+        {
+          "name": "max_fragment_length"
+        },
+        {
+          "name": "client_certificate_url"
+        },
+        {
+          "name": "trusted_ca_keys"
+        },
+        {
+          "name": "truncated_hmac"
+        },
+        {
+          "name": "status_request"
+        },
+        {
+          "name": "certificate_authorities"
+        },
+        {
+          "name": "pre_shared_key.identity"
+        },
+        {
+          "name": "pre_shared_key.obfuscated_ticket_age"
+        },
+        {
+          "name": "pre_shared_key.binder"
+        },
+        {
+          "name": "max_fragment_length_request"
+        },
+        {
+          "name": "cookie"
+        }
+      ]
+    },
+    {
+      "name": "HelloRetryRequest",
+      "associated_fields": [
+        {
+          "name": "legacy_version"
+        },
+        {
+          "name": "legacy_session_id_echo"
+        },
+        {
+          "name": "cipher_suite"
+        },
+        {
+          "name": "legacy_compression_method"
+        },
+        {
+          "name": "supported_versions"
+        },
+        {
+          "name": "cookie"
+        },
+        {
+          "name": "key_share"
+        }
+      ]
+    },
+    {
+      "name": "ServerHello",
+      "associated_fields": [
+        {
+          "name": "legacy_version"
+        },
+        {
+          "name": "random"
+        },
+        {
+          "name": "legacy_session_id_echo"
+        },
+        {
+          "name": "cipher_suite"
+        },
+        {
+          "name": "legacy_compression_method"
+        },
+        {
+          "name": "supported_versions"
+        },
+        {
+          "name": "key_share"
+        },
+        {
+          "name": "pre_shared_key"
+        },
+        {
+          "name": "server_name"
+        },
+        {
+          "name": "application_layer_protocol_negotiation"
+        },
+        {
+          "name": "max_fragment_length"
+        },
+        {
+          "name": "client_certificate_url"
+        },
+        {
+          "name": "trusted_ca_keys"
+        },
+        {
+          "name": "truncated_hmac"
+        },
+        {
+          "name": "status_request"
+        },
+        {
+          "name": "max_fragment_length_response"
+        },
+        {
+          "name": "trusted_ca_keys_response"
+        }
+      ]
+    },
+    {
+      "name": "EncryptedExtensions",
+      "associated_fields": [
+        {
+          "name": "extensions"
+        },
+        {
+          "name": "server_name"
+        },
+        {
+          "name": "application_layer_protocol_negotiation"
+        },
+        {
+          "name": "early_data"
+        },
+        {
+          "name": "max_fragment_length"
+        }
+      ]
+    },
+    {
+      "name": "CertificateRequest",
+      "associated_fields": [
+        {
+          "name": "certificate_request_context"
+        },
+        {
+          "name": "extensions"
+        },
+        {
+          "name": "status_request"
+        },
+        {
+          "name": "certificate_authorities"
+        },
+        {
+          "name": "oid_filters"
+        },
+        {
+          "name": "signature_algorithms"
+        },
+        {
+          "name": "signature_algorithms_cert"
+        },
+        {
+          "name": "status_request_request"
+        }
+      ]
+    },
+    {
+      "name": "Certificate",
+      "associated_fields": [
+        {
+          "name": "certificate_request_context"
+        },
+        {
+          "name": "certificate_list"
+        },
+        {
+          "name": "status_request"
+        },
+        {
+          "name": "certificate_list.status_request"
+        }
+      ]
+    },
+    {
+      "name": "CertificateVerify",
+      "associated_fields": [
+        {
+          "name": "algorithm"
+        },
+        {
+          "name": "signature"
+        }
+      ]
+    },
+    {
+      "name": "Finished",
+      "associated_fields": [
+        {
+          "name": "verify_data"
+        }
+      ]
+    },
+    {
+      "name": "EndOfEarlyData",
+      "associated_fields": []
+    },
+    {
+      "name": "ApplicationData",
+      "associated_fields": [
+        {
+          "name": "data"
+        }
+      ]
+    },
+    {
+      "name": "NewSessionTicket",
+      "associated_fields": [
+        {
+          "name": "ticket_lifetime"
+        },
+        {
+          "name": "ticket_age_add"
+        },
+        {
+          "name": "ticket_nonce"
+        },
+        {
+          "name": "ticket"
+        },
+        {
+          "name": "extensions"
+        },
+        {
+          "name": "max_early_data_size"
+        }
+      ]
+    },
+    {
+      "name": "KeyUpdate",
+      "associated_fields": [
+        {
+          "name": "request_update"
+        }
+      ]
+    },
+    {
+      "name": "Alert",
+      "associated_fields": [
+        {
+          "name": "level"
+        },
+        {
+          "name": "description"
+        }
+      ]
+    },
+    {
+      "name": "CertificateURL",
+      "associated_fields": [
+        {
+          "name": "type"
+        },
+        {
+          "name": "url_and_hash_list"
+        },
+        {
+          "name": "url"
+        },
+        {
+          "name": "sha1_hash"
+        }
+      ]
+    },
+    {
+      "name": "CertificateStatus",
+      "associated_fields": [
+        {
+          "name": "status_type"
+        },
+        {
+          "name": "response"
+        }
+      ]
+    },
+    {
+      "name": "HTTP certificate request",
+      "associated_fields": [
+        {
+          "name": "url"
+        }
+      ]
+    },
+    {
+      "name": "HTTP certificate response",
+      "associated_fields": [
+        {
+          "name": "certificate_object"
+        },
+        {
+          "name": "body"
+        }
+      ]
+    },
+    {
+      "name": "TLS 1.2 ServerHelloDone",
+      "associated_fields": []
+    },
+    {
+      "name": "TLS 1.2 ServerKeyExchange",
+      "associated_fields": []
+    },
+    {
+      "name": "TLS 1.2 CertificateRequest",
+      "associated_fields": []
+    },
+    {
+      "name": "TLS 1.2 ClientKeyExchange",
+      "associated_fields": []
+    },
+    {
+      "name": "TLS 1.2 ChangeCipherSpec",
+      "associated_fields": []
+    },
+    {
+      "name": "TLS 1.2 Finished",
+      "associated_fields": []
+    },
+    {
+      "name": "TLS 1.2 Certificate",
+      "associated_fields": []
+    },
+    {
+      "name": "TLS 1.2 CertificateVerify",
+      "associated_fields": []
+    }
+  ],
+  "channels": [
+    {
+      "name": "TLS 1.3 connection",
+      "description": "Carries the TLS 1.3 handshake and protected records.",
+      "transport": "reliable, in-order data stream",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "TLS client",
+        "TLS server"
+      ],
+      "initiator_party_name": "TLS client",
+      "acceptor_party_name": "TLS server",
+      "endpoint_sources": []
+    },
+    {
+      "name": "TLS 1.2 extension connection",
+      "description": "Carries TLS 1.2 extension negotiation and handshake messages.",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "TLS client",
+        "TLS server"
+      ],
+      "initiator_party_name": "TLS client",
+      "acceptor_party_name": "TLS server",
+      "endpoint_sources": []
+    },
+    {
+      "name": "Certificate URL retrieval",
+      "description": "Server retrieves client certificate objects from advertised URLs.",
+      "transport": "HTTP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "TLS server",
+        "Certificate URL host"
+      ],
+      "initiator_party_name": "TLS server",
+      "acceptor_party_name": "Certificate URL host",
+      "endpoint_sources": []
+    },
+    {
+      "name": "TLS 1.3 resumed connection",
+      "description": "Carries a new TLS 1.3 PSK resumption handshake and protected records.",
+      "transport": "reliable, in-order data stream",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "TLS client",
+        "TLS server"
+      ],
+      "initiator_party_name": "TLS client",
+      "acceptor_party_name": "TLS server",
+      "endpoint_sources": []
+    },
+    {
+      "name": "TLS 1.2 resumed connection",
+      "description": "Carries a TLS 1.2 resumed-session handshake.",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "TLS client",
+        "TLS server"
+      ],
+      "initiator_party_name": "TLS client",
+      "acceptor_party_name": "TLS server",
+      "endpoint_sources": []
+    },
+    {
+      "name": "TLS 0-RTT disabled retry",
+      "description": "Carries a new handshake retry after 0-RTT backward-compatibility failure.",
+      "transport": "reliable, in-order data stream",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "TLS client",
+        "TLS server"
+      ],
+      "initiator_party_name": "TLS client",
+      "acceptor_party_name": "TLS server",
+      "endpoint_sources": []
+    }
+  ],
+  "steps": [
+    {
+      "name": "TLS 1.3 client connect",
+      "action": "connect",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "party_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 server listen",
+      "action": "listen",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "party_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 ClientHello send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "ClientHello",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 HelloRetryRequest send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "ClientHello lacks sufficient information to proceed; acceptable parameters are available.",
+      "message_name": "HelloRetryRequest",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 ServerHello send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "Acceptable handshake parameters selected.",
+      "message_name": "ServerHello",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 EncryptedExtensions send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "EncryptedExtensions",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 server CertificateRequest send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "CertificateRequest",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 server Certificate send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "Certificate-based server authentication selected.",
+      "message_name": "Certificate",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 server CertificateVerify send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "Certificate-based server authentication selected.",
+      "message_name": "CertificateVerify",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 server Finished send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "Finished",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 client Certificate send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "Certificate",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 client CertificateVerify send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "CertificateVerify",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 client Finished send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "Finished",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 EndOfEarlyData send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "EndOfEarlyData",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 client ApplicationData send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "ApplicationData",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 server ApplicationData send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "ApplicationData",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 NewSessionTicket send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "Server has received client Finished.",
+      "message_name": "NewSessionTicket",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 client KeyUpdate send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "KeyUpdate",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 server KeyUpdate send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "",
+      "message_name": "KeyUpdate",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 client connect",
+      "action": "connect",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "party_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 server listen",
+      "action": "listen",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "party_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 ClientHello send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "ClientHello",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 ServerHello send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "ServerHello",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 Certificate send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "Server sends certificate.",
+      "message_name": "TLS 1.2 Certificate",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 CertificateStatus send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "Client requested status_request and server echoed status_request in ServerHello; response available.",
+      "message_name": "CertificateStatus",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 client CertificateURL send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "client_certificate_url negotiated and client selects URL certificate form instead of Certificate.",
+      "message_name": "CertificateURL",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 client Certificate send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "Client authentication requested and client sends certificate form.",
+      "message_name": "TLS 1.2 Certificate",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 server retrieves certificate",
+      "action": "send",
+      "channel_name": "Certificate URL retrieval",
+      "condition": "CertificateURL received; retrieve each advertised URL without following HTTP redirects.",
+      "message_name": "HTTP certificate request",
+      "sender_name": "TLS server",
+      "receiver_name": "Certificate URL host"
+    },
+    {
+      "name": "Certificate URL host returns object",
+      "action": "send",
+      "channel_name": "Certificate URL retrieval",
+      "condition": "Return the certificate object for the requested URL.",
+      "message_name": "HTTP certificate response",
+      "sender_name": "Certificate URL host",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 resumed client connect",
+      "action": "connect",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "party_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumed server listen",
+      "action": "listen",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "party_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 resumption ClientHello send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "Client offers a previously issued PSK identity and corresponding psk_key_exchange_modes.",
+      "message_name": "ClientHello",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 resumption ServerHello send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "Server sends ServerHello after processing the resumption ClientHello; it may select an acceptable PSK and offered mode, or decline PSK and continue a full handshake when possible.",
+      "message_name": "ServerHello",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumption EncryptedExtensions send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "EncryptedExtensions",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumption server Finished send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "Finished",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumption client Finished send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "Finished",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 client Alert send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "Sender sends close_notify when closing its write side, or sends an alert after detecting an error.",
+      "message_name": "Alert",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 server Alert send",
+      "action": "send",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "Sender sends close_notify when closing its write side, or sends an alert after detecting an error.",
+      "message_name": "Alert",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumption server Certificate send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "Certificate",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumption server CertificateVerify send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "CertificateVerify",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumed client connect",
+      "action": "connect",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "party_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumed server listen",
+      "action": "listen",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "party_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 resumption ClientHello send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "ClientHello",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 resumption ServerHello send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "ServerHello",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumed client Alert send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "Sender sends close_notify when closing its write side, or sends an alert after detecting an error.",
+      "message_name": "Alert",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 resumed server Alert send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "Sender sends close_notify when closing its write side, or sends an alert after detecting an error.",
+      "message_name": "Alert",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 client Alert send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "Alert",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 server Alert send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "Alert",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 client ApplicationData send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "ApplicationData",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 server ApplicationData send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "ApplicationData",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumption server Certificate send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "TLS 1.2 Certificate",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumption server CertificateStatus send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "CertificateStatus",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumed client ApplicationData send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "ApplicationData",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 resumed server ApplicationData send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "ApplicationData",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 client fatal connection close",
+      "action": "close",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "Upon transmission or receipt of a fatal alert; terminate the connection and exchange no further data.",
+      "party_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 server fatal connection close",
+      "action": "close",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "Upon transmission or receipt of a fatal alert; terminate the connection and exchange no further data.",
+      "party_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 resumed client Alert send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "Alert",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 resumed server Alert send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "Alert",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumed client fatal connection close",
+      "action": "close",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "Upon transmission or receipt of a fatal alert; terminate the connection and exchange no further data.",
+      "party_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumed server fatal connection close",
+      "action": "close",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "Upon transmission or receipt of a fatal alert; terminate the connection and exchange no further data.",
+      "party_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 client close handling",
+      "action": "close",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "On orderly close, close the relevant write side after sending close_notify; on peer close_notify, indicate end-of-data and ignore further data; on fatal alert transmission or receipt, close the whole connection and send/receive no further data.",
+      "party_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 server close handling",
+      "action": "close",
+      "channel_name": "TLS 1.3 connection",
+      "condition": "On orderly close, close the relevant write side after sending close_notify; on peer close_notify, indicate end-of-data and ignore further data; on fatal alert transmission or receipt, close the whole connection and send/receive no further data.",
+      "party_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 resumed client close handling",
+      "action": "close",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "On orderly close, close the relevant write side after sending close_notify; on peer close_notify, indicate end-of-data and ignore further data; on fatal alert transmission or receipt, close the whole connection and send/receive no further data.",
+      "party_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumed server close handling",
+      "action": "close",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "On orderly close, close the relevant write side after sending close_notify; on peer close_notify, indicate end-of-data and ignore further data; on fatal alert transmission or receipt, close the whole connection and send/receive no further data.",
+      "party_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 resumption server CertificateRequest send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "CertificateRequest",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumption client Certificate send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "Certificate",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.3 resumption client CertificateVerify send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "CertificateVerify",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "Certificate URL server connect",
+      "action": "connect",
+      "channel_name": "Certificate URL retrieval",
+      "condition": "",
+      "party_name": "TLS server"
+    },
+    {
+      "name": "Certificate URL host listen",
+      "action": "listen",
+      "channel_name": "Certificate URL retrieval",
+      "condition": "",
+      "party_name": "Certificate URL host"
+    },
+    {
+      "name": "TLS 1.3 resumed HelloRetryRequest send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "ClientHello lacks sufficient key_share information; acceptable parameters are available.",
+      "message_name": "HelloRetryRequest",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.3 resumed EndOfEarlyData send",
+      "action": "send",
+      "channel_name": "TLS 1.3 resumed connection",
+      "condition": "",
+      "message_name": "EndOfEarlyData",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 ServerKeyExchange send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "Selected cipher suite requires ServerKeyExchange.",
+      "message_name": "TLS 1.2 ServerKeyExchange",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 CertificateRequest send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "Server requests client certificate authentication.",
+      "message_name": "TLS 1.2 CertificateRequest",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 ServerHelloDone send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "TLS 1.2 ServerHelloDone",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 ClientKeyExchange send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "TLS 1.2 ClientKeyExchange",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 client CertificateVerify send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "Client sent a non-empty Certificate or successful non-empty CertificateURL chain and proves possession of its private key.",
+      "message_name": "TLS 1.2 CertificateVerify",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 client ChangeCipherSpec send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "TLS 1.2 ChangeCipherSpec",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 client Finished send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "TLS 1.2 Finished",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 server ChangeCipherSpec send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "TLS 1.2 ChangeCipherSpec",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 server Finished send",
+      "action": "send",
+      "channel_name": "TLS 1.2 extension connection",
+      "condition": "",
+      "message_name": "TLS 1.2 Finished",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumption server ChangeCipherSpec send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "TLS 1.2 ChangeCipherSpec",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumption server Finished send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "TLS 1.2 Finished",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumption client ChangeCipherSpec send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "TLS 1.2 ChangeCipherSpec",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 resumption client Finished send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "TLS 1.2 Finished",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 resumption ServerHelloDone send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "TLS 1.2 ServerHelloDone",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumption ServerKeyExchange send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "Selected cipher suite requires ServerKeyExchange.",
+      "message_name": "TLS 1.2 ServerKeyExchange",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumption CertificateRequest send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "Server requests client certificate authentication.",
+      "message_name": "TLS 1.2 CertificateRequest",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumption ClientKeyExchange send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "",
+      "message_name": "TLS 1.2 ClientKeyExchange",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 resumption client CertificateVerify send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "Client sent a non-empty certificate and proves possession of its private key.",
+      "message_name": "TLS 1.2 CertificateVerify",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 1.2 resumption client Certificate send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "Server requested client authentication; client sends Certificate form.",
+      "message_name": "TLS 1.2 Certificate",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry client connect",
+      "action": "connect",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "party_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry server listen",
+      "action": "listen",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "party_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT disabled ClientHello send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "Retry with 0-RTT disabled while retaining TLS 1.3 support.",
+      "message_name": "ClientHello",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry ServerHello send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "Server selects a protocol version and parameters offered by the retry ClientHello.",
+      "message_name": "ServerHello",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry EncryptedExtensions send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "EncryptedExtensions",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry server CertificateRequest send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "CertificateRequest",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS13 server Certificate send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "Certificate",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS13 server CertificateVerify send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "CertificateVerify",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS13 server Finished send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "Finished",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS13 client Certificate send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "Certificate",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS13 client CertificateVerify send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "CertificateVerify",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS13 client Finished send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "Finished",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS13 client ApplicationData send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "ApplicationData",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS13 server ApplicationData send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "ApplicationData",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry server alert send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "Alert",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 server Certificate send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "TLS 1.2 Certificate",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 ServerKeyExchange send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "Selected cipher suite requires ServerKeyExchange.",
+      "message_name": "TLS 1.2 ServerKeyExchange",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 CertificateRequest send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "Server requests client certificate authentication.",
+      "message_name": "TLS 1.2 CertificateRequest",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 ServerHelloDone send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "TLS 1.2 ServerHelloDone",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 client Certificate send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "TLS 1.2 Certificate",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 ClientKeyExchange send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "TLS 1.2 ClientKeyExchange",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 client CertificateVerify send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "Client sent a non-empty certificate.",
+      "message_name": "TLS 1.2 CertificateVerify",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 client ChangeCipherSpec send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "TLS 1.2 ChangeCipherSpec",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 client Finished send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "TLS 1.2 Finished",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 server ChangeCipherSpec send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "TLS 1.2 ChangeCipherSpec",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 server Finished send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "TLS 1.2 Finished",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 client ApplicationData send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "ApplicationData",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry TLS12 server ApplicationData send",
+      "action": "send",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "",
+      "message_name": "ApplicationData",
+      "sender_name": "TLS server",
+      "receiver_name": "TLS client"
+    },
+    {
+      "name": "TLS 1.2 resumption client CertificateURL send",
+      "action": "send",
+      "channel_name": "TLS 1.2 resumed connection",
+      "condition": "Full handshake fallback; client_certificate_url negotiated and client selects URL form instead of Certificate.",
+      "message_name": "CertificateURL",
+      "sender_name": "TLS client",
+      "receiver_name": "TLS server"
+    },
+    {
+      "name": "TLS 0-RTT retry client fatal close",
+      "action": "close",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "Upon transmission or receipt of a fatal alert; terminate the connection and exchange no further data.",
+      "party_name": "TLS client"
+    },
+    {
+      "name": "TLS 0-RTT retry server fatal close",
+      "action": "close",
+      "channel_name": "TLS 0-RTT disabled retry",
+      "condition": "Upon transmission or receipt of a fatal alert; terminate the connection and exchange no further data.",
+      "party_name": "TLS server"
+    }
+  ],
+  "step_dependencies": [
+    {
+      "prior_step": "TLS 1.3 client connect",
+      "dependent_step": "TLS 1.3 ClientHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server listen",
+      "dependent_step": "TLS 1.3 ClientHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 HelloRetryRequest send",
+      "condition": "Server selects a supported group but client did not offer a compatible key_share.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 HelloRetryRequest send",
+      "dependent_step": "TLS 1.3 ClientHello send",
+      "condition": "Updated ClientHello changes as requested; no second HelloRetryRequest is permitted; omit early_data.",
+      "field_relations": [
+        {
+          "prior_field": "key_share",
+          "dependent_field": "key_share",
+          "derive": "Generate a new KeyShareEntry in the group selected by HelloRetryRequest."
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 ServerHello send",
+      "dependent_step": "TLS 1.3 EncryptedExtensions send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 server CertificateRequest send",
+      "condition": "Server requests certificate-based client authentication; server is not authenticating with a PSK.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 server Certificate send",
+      "condition": "Certificate-based server authentication selected.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Certificate send",
+      "dependent_step": "TLS 1.3 server CertificateVerify send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server CertificateVerify send",
+      "dependent_step": "TLS 1.3 server Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 server Finished send",
+      "condition": "PSK authentication selected; no server Certificate or CertificateVerify.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Finished send",
+      "dependent_step": "TLS 1.3 client Certificate send",
+      "condition": "Client authentication requested and client supplies a certificate.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Certificate send",
+      "dependent_step": "TLS 1.3 client CertificateVerify send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client CertificateVerify send",
+      "dependent_step": "TLS 1.3 client Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Finished send",
+      "dependent_step": "TLS 1.3 client Certificate send",
+      "condition": "Client authentication requested; client declines or has no suitable certificate.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Certificate send",
+      "dependent_step": "TLS 1.3 client Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Finished send",
+      "dependent_step": "TLS 1.3 client Finished send",
+      "condition": "No client authentication requested and early_data was not accepted.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client ApplicationData send",
+      "dependent_step": "TLS 1.3 ServerHello send",
+      "condition": "Client has a PSK and sends early data while awaiting the server handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Finished send",
+      "dependent_step": "TLS 1.3 EndOfEarlyData send",
+      "condition": "Server accepted early data in EncryptedExtensions.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 EndOfEarlyData send",
+      "dependent_step": "TLS 1.3 client Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Finished send",
+      "dependent_step": "TLS 1.3 client ApplicationData send",
+      "condition": "Handshake complete.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Finished send",
+      "dependent_step": "TLS 1.3 server ApplicationData send",
+      "condition": "Handshake complete.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Finished send",
+      "dependent_step": "TLS 1.3 NewSessionTicket send",
+      "condition": "Server has received client Finished.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Finished send",
+      "dependent_step": "TLS 1.3 server CertificateRequest send",
+      "condition": "Client offered post_handshake_auth.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server CertificateRequest send",
+      "dependent_step": "TLS 1.3 client Certificate send",
+      "condition": "Client elects to authenticate.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Certificate send",
+      "dependent_step": "TLS 1.3 client CertificateVerify send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client CertificateVerify send",
+      "dependent_step": "TLS 1.3 client Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server CertificateRequest send",
+      "dependent_step": "TLS 1.3 client Certificate send",
+      "condition": "Client declines authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Certificate send",
+      "dependent_step": "TLS 1.3 client Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Finished send",
+      "dependent_step": "TLS 1.3 client KeyUpdate send",
+      "condition": "Client has sent Finished.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Finished send",
+      "dependent_step": "TLS 1.3 server KeyUpdate send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client KeyUpdate send",
+      "dependent_step": "TLS 1.3 server KeyUpdate send",
+      "condition": "Received request_update=update_requested; outgoing request_update=update_not_requested.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server KeyUpdate send",
+      "dependent_step": "TLS 1.3 client KeyUpdate send",
+      "condition": "Received request_update=update_requested; outgoing request_update=update_not_requested.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 client connect",
+      "dependent_step": "TLS 1.2 ClientHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server listen",
+      "dependent_step": "TLS 1.2 ClientHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 ServerHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ServerHello send",
+      "dependent_step": "TLS 1.2 Certificate send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 Certificate send",
+      "dependent_step": "TLS 1.2 CertificateStatus send",
+      "condition": "Server sent status_request extension in ServerHello and elects to return a response.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 client CertificateURL send",
+      "dependent_step": "TLS 1.2 server retrieves certificate",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server retrieves certificate",
+      "dependent_step": "Certificate URL host returns object",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed client connect",
+      "dependent_step": "TLS 1.3 resumption ClientHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed server listen",
+      "dependent_step": "TLS 1.3 resumption ClientHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 NewSessionTicket send",
+      "dependent_step": "TLS 1.3 resumption ClientHello send",
+      "condition": "Client resumes using this ticket as the same PSK identity.",
+      "field_relations": [
+        {
+          "prior_field": "ticket",
+          "dependent_field": "pre_shared_key.identity",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumption ServerHello send",
+      "condition": "Initial resumption ClientHello; proceed without HelloRetryRequest.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ServerHello send",
+      "dependent_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 resumption server Finished send",
+      "condition": "PSK selected; certificate authentication messages are omitted.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server Finished send",
+      "dependent_step": "TLS 1.3 resumption client Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 ServerHello send",
+      "condition": "Client offered ALPN and server selects one advertised protocol.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 server Alert send",
+      "condition": "Server supports no protocols in the client ALPN list; send fatal no_application_protocol.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 ServerHello send",
+      "condition": "Client offered server_name and server uses it for certificate or security-policy selection.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 ServerHello send",
+      "condition": "Server accepts max_fragment_length; response value equals the requested value.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 ServerHello send",
+      "condition": "Both peers negotiate client_certificate_url.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 ServerHello send",
+      "condition": "Server uses client trusted_ca_keys indication to guide certificate-chain selection; response trusted_ca_keys extension_data is empty.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 ServerHello send",
+      "condition": "Server agrees to truncated_hmac; negotiated cipher suite uses HMAC.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ServerHello send",
+      "dependent_step": "TLS 1.3 EncryptedExtensions send",
+      "condition": "Client offered ALPN and server selects a protocol from the client list.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Alert send",
+      "dependent_step": "TLS 1.3 client close handling",
+      "condition": "Alert.description=close_notify; close only the sender write side.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Alert send",
+      "dependent_step": "TLS 1.3 client close handling",
+      "condition": "Alert.description is a fatal error alert.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Alert send",
+      "dependent_step": "TLS 1.3 server close handling",
+      "condition": "Alert.description is a fatal error alert.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Alert send",
+      "dependent_step": "TLS 1.3 server close handling",
+      "condition": "Alert.description=close_notify; close only the sender write side.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Alert send",
+      "dependent_step": "TLS 1.3 server close handling",
+      "condition": "Alert.description is a fatal error alert.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Alert send",
+      "dependent_step": "TLS 1.3 client close handling",
+      "condition": "Alert.description is a fatal error alert.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 server Alert send",
+      "condition": "No acceptable common parameters; send fatal handshake_failure or insufficient_security.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 server Alert send",
+      "condition": "No acceptable PSK identity; server may send fatal unknown_psk_identity or decrypt_error.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 server Alert send",
+      "condition": "Client offered ALPN protocols but none are supported; send fatal no_application_protocol.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 server Alert send",
+      "condition": "Required server_name is absent; send missing_extension.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ServerHello send",
+      "dependent_step": "TLS 1.3 client Alert send",
+      "condition": "Server selected an unoffered version, cipher suite, or inconsistent PSK identity; send fatal illegal_parameter.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ServerHello send",
+      "dependent_step": "TLS 1.3 client Alert send",
+      "condition": "Server selected version differs from HelloRetryRequest selected_version; send fatal illegal_parameter.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ServerHello send",
+      "dependent_step": "TLS 1.3 client Alert send",
+      "condition": "Received a second HelloRetryRequest; send fatal unexpected_message.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 ServerHello send",
+      "condition": "Server ignores early_data and continues the regular 1-RTT response; it skips early-data records using handshake keys.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 HelloRetryRequest send",
+      "condition": "Server requests another ClientHello; early data is discarded and server skips encrypted application_data records.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 HelloRetryRequest send",
+      "dependent_step": "TLS 1.3 ClientHello send",
+      "condition": "HelloRetryRequest supplies cookie; copy its contents to retry ClientHello, use the requested key_share group, and omit early_data.",
+      "field_relations": [
+        {
+          "prior_field": "cookie",
+          "dependent_field": "cookie",
+          "derive": ""
+        },
+        {
+          "prior_field": "key_share",
+          "dependent_field": "key_share",
+          "derive": "Generate a new KeyShareEntry in the group selected by HelloRetryRequest."
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 server Finished send",
+      "dependent_step": "TLS 1.3 client ApplicationData send",
+      "condition": "Handshake complete; early data was rejected and the application elects to retransmit suitable data.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 NewSessionTicket send",
+      "dependent_step": "TLS 1.3 resumption ClientHello send",
+      "condition": "Ticket is within lifetime; client computes obfuscated ticket age.",
+      "field_relations": [
+        {
+          "prior_field": "ticket_age_add",
+          "dependent_field": "pre_shared_key.obfuscated_ticket_age",
+          "derive": "(ticket_age_ms + ticket_age_add) mod 2^32"
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 NewSessionTicket send",
+      "dependent_step": "TLS 1.3 resumption ClientHello send",
+      "condition": "Client offers the ticket identity and computes a binder binding that PSK to the current handshake transcript.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumption ServerHello send",
+      "condition": "No HelloRetryRequest; server selects psk_ke, the PSK-only mode, with no key_share in ServerHello.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumption ServerHello send",
+      "condition": "No HelloRetryRequest; server selects psk_dhe_ke with (EC)DHE shares in ClientHello and ServerHello.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumption ServerHello send",
+      "condition": "No HelloRetryRequest; no acceptable PSK identity; client supplied a key_share so server can decline resumption and proceed with a full handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 resumption server Certificate send",
+      "condition": "No acceptable PSK; server falls back to certificate authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server Certificate send",
+      "dependent_step": "TLS 1.3 resumption server CertificateVerify send",
+      "condition": "No acceptable PSK; server falls back to certificate authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server CertificateVerify send",
+      "dependent_step": "TLS 1.3 resumption server Finished send",
+      "condition": "No acceptable PSK; certificate authentication fallback.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumed client connect",
+      "dependent_step": "TLS 1.2 resumption ClientHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumed server listen",
+      "dependent_step": "TLS 1.2 resumption ClientHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 resumption ClientHello send",
+      "condition": "A session resumption is attempted; client sends the same extension set as for a full handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ServerHello send",
+      "dependent_step": "TLS 1.2 resumption ClientHello send",
+      "condition": "Resume the session established by the prior full handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumption ServerHello send",
+      "condition": "Server resumes prior session: ignore extensions and send no extension types; apply extension behavior negotiated in original session.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumption ServerHello send",
+      "condition": "If server_name differs from original session, reject resumption and proceed with a full handshake on this connection.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed client Alert send",
+      "dependent_step": "TLS 1.3 resumed client close handling",
+      "condition": "Alert.description is a fatal error alert.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed client Alert send",
+      "dependent_step": "TLS 1.3 resumed server close handling",
+      "condition": "Alert.description is a fatal error alert.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed server Alert send",
+      "dependent_step": "TLS 1.3 resumed client close handling",
+      "condition": "Alert.description is a fatal error alert.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed server Alert send",
+      "dependent_step": "TLS 1.3 resumed server close handling",
+      "condition": "Alert.description is a fatal error alert.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 client CertificateURL send",
+      "dependent_step": "TLS 1.2 server retrieves certificate",
+      "condition": "For each URLAndHash entry, request its absolute URL; do not follow redirects.",
+      "field_relations": [
+        {
+          "prior_field": "url",
+          "dependent_field": "url",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.2 server retrieves certificate",
+      "dependent_step": "Certificate URL host returns object",
+      "condition": "Return object for the same requested URL; server retains the hash paired with that URL for local verification.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Certificate URL host returns object",
+      "dependent_step": "TLS 1.2 server Alert send",
+      "condition": "Retrieved object SHA-1 differs from its paired hash after MIME transfer decoding; fatal bad_certificate_hash_value.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server retrieves certificate",
+      "dependent_step": "TLS 1.2 server Alert send",
+      "condition": "Certificate retrieval fails and server requires it to complete handshake; fatal certificate_unobtainable.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server retrieves certificate",
+      "dependent_step": "TLS 1.2 Certificate send",
+      "condition": "Certificate retrieval fails but server does not require it; continue handshake, warning alert is optional.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 CertificateStatus send",
+      "dependent_step": "TLS 1.2 client Alert send",
+      "condition": "OCSP response fails client validation; fatal bad_certificate_status_response.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 server Alert send",
+      "condition": "Invalid max_fragment_length value; fatal illegal_parameter.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ServerHello send",
+      "dependent_step": "TLS 1.2 client Alert send",
+      "condition": "max_fragment_length response differs from request; fatal illegal_parameter.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 server Alert send",
+      "condition": "Client server_name is unrecognized and server chooses fatal unrecognized_name; it may instead continue handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientHello send",
+      "dependent_step": "TLS 1.2 ServerHello send",
+      "condition": "Server accepts max_fragment_length.",
+      "field_relations": [
+        {
+          "prior_field": "max_fragment_length_request",
+          "dependent_field": "max_fragment_length_response",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 server Certificate send",
+      "condition": "Client requested status_request and server includes OCSP response in the corresponding server CertificateEntry status_request extension.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server CertificateRequest send",
+      "dependent_step": "TLS 1.3 client Certificate send",
+      "condition": "Server requested client OCSP status with an empty status_request extension; client opts to include CertificateStatus response in its CertificateEntry extension.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Certificate send",
+      "dependent_step": "TLS 1.3 client Alert send",
+      "condition": "Client OCSP response in CertificateEntry is invalid or unacceptable; fatal bad_certificate_status_response.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Certificate send",
+      "dependent_step": "TLS 1.3 client Alert send",
+      "condition": "Client OCSP response in server CertificateEntry is invalid or unacceptable; fatal bad_certificate_status_response.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 client ApplicationData send",
+      "condition": "PSK and early_data extensions offered; early data enabled by the application and permitted for the selected ticket; use parameters associated with this PSK.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server KeyUpdate send",
+      "dependent_step": "TLS 1.3 client KeyUpdate send",
+      "condition": "Received KeyUpdate with request_update=update_requested; response sets request_update=update_not_requested before client next ApplicationData.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client KeyUpdate send",
+      "dependent_step": "TLS 1.3 server KeyUpdate send",
+      "condition": "Received KeyUpdate with request_update=update_requested; response sets request_update=update_not_requested before server next ApplicationData.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumed server Alert send",
+      "condition": "Selected PSK binder invalid or no acceptable parameter set; fatal decrypt_error or handshake_failure.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ServerHello send",
+      "dependent_step": "TLS 1.3 resumed client Alert send",
+      "condition": "Selected PSK identity, hash-compatible cipher suite, or required key_share is inconsistent; fatal illegal_parameter.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Alert send",
+      "dependent_step": "TLS 1.3 server close handling",
+      "condition": "Alert.description=close_notify.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Alert send",
+      "dependent_step": "TLS 1.3 client close handling",
+      "condition": "Alert.description=close_notify.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumption ServerHello send",
+      "condition": "Ticket age outside tolerance: reject early_data but continue the 1-RTT handshake if PSK and parameters are acceptable.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ServerHello send",
+      "dependent_step": "TLS 1.2 resumption server Certificate send",
+      "condition": "Server_name differs from the original session; resumption was declined and full handshake proceeds.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server retrieves certificate",
+      "dependent_step": "TLS 1.2 server Alert send",
+      "condition": "Certificate retrieval fails but certificate is not required; server may send a warning alert and continue.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ServerHello send",
+      "dependent_step": "TLS 1.2 resumption server Certificate send",
+      "condition": "Server_name differs from original session; full handshake selected.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Certificate send",
+      "dependent_step": "TLS 1.2 resumption server CertificateStatus send",
+      "condition": "Full handshake branch; client requested status_request and server echoed it, and OCSP response is available.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption client Finished send",
+      "dependent_step": "TLS 1.3 resumed client ApplicationData send",
+      "condition": "Handshake complete.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed client Alert send",
+      "dependent_step": "TLS 1.3 resumed client close handling",
+      "condition": "Alert.description=close_notify; close only the sender write side.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed server Alert send",
+      "dependent_step": "TLS 1.3 resumed client close handling",
+      "condition": "Alert.description=close_notify.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server Finished send",
+      "dependent_step": "TLS 1.3 resumed server ApplicationData send",
+      "condition": "Handshake complete.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed server Alert send",
+      "dependent_step": "TLS 1.3 resumed server close handling",
+      "condition": "Alert.description=close_notify; close only the sender write side.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed client Alert send",
+      "dependent_step": "TLS 1.3 resumed server close handling",
+      "condition": "Alert.description=close_notify.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 client Alert send",
+      "dependent_step": "TLS 1.2 client fatal connection close",
+      "condition": "Alert is fatal.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server Alert send",
+      "dependent_step": "TLS 1.2 client fatal connection close",
+      "condition": "Alert is fatal.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 client Alert send",
+      "dependent_step": "TLS 1.2 server fatal connection close",
+      "condition": "Alert is fatal.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server Alert send",
+      "dependent_step": "TLS 1.2 server fatal connection close",
+      "condition": "Alert is fatal.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumed client Alert send",
+      "dependent_step": "TLS 1.2 resumed client fatal connection close",
+      "condition": "Alert is fatal.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumed server Alert send",
+      "dependent_step": "TLS 1.2 resumed client fatal connection close",
+      "condition": "Alert is fatal.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumed client Alert send",
+      "dependent_step": "TLS 1.2 resumed server fatal connection close",
+      "condition": "Alert is fatal.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumed server Alert send",
+      "dependent_step": "TLS 1.2 resumed server fatal connection close",
+      "condition": "Alert is fatal.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 ServerHello send",
+      "condition": "Initial ClientHello proceeds without HelloRetryRequest.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 ServerHello send",
+      "condition": "Retry ClientHello after HelloRetryRequest; client retained the HRR-selected version and cipher suite, and ServerHello selects that same version and suite with the requested key_share group.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumption ServerHello send",
+      "condition": "Client offered ALPN; server selects one protocol advertised in this connection’s ClientHello.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumed server Alert send",
+      "condition": "Client offered ALPN protocols; none are supported; fatal no_application_protocol.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "condition": "Client offered ALPN; server selects one protocol advertised in this connection’s ClientHello.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumed server Alert send",
+      "condition": "Client offered ALPN protocols; none are supported; fatal no_application_protocol.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumed server Alert send",
+      "condition": "No common supported handshake parameter set; fatal handshake_failure or insufficient_security.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumed client ApplicationData send",
+      "condition": "Ticket’s early_data extension permits 0-RTT; client offers that PSK and early_data, and the application enables sending within max_early_data_size.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumption ServerHello send",
+      "condition": "Server ignores early_data and continues a regular 1-RTT response, skipping early-data records using handshake keys.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumed HelloRetryRequest send",
+      "condition": "Server selects an (EC)DHE group but initial ClientHello has no compatible key_share; reject early data and discard it.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 resumption server Certificate send",
+      "condition": "No acceptable PSK; server declines PSK and proceeds with a full certificate-authenticated handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server Certificate send",
+      "dependent_step": "TLS 1.3 resumption server CertificateVerify send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server CertificateVerify send",
+      "dependent_step": "TLS 1.3 resumption server Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 resumption server CertificateRequest send",
+      "condition": "No acceptable PSK; certificate authentication fallback; server requests certificate-based client authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server Finished send",
+      "dependent_step": "TLS 1.3 resumption client Certificate send",
+      "condition": "Certificate authentication fallback; client authentication requested and client supplies a certificate.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption client Certificate send",
+      "dependent_step": "TLS 1.3 resumption client CertificateVerify send",
+      "condition": "Certificate authentication fallback; client sends a non-empty certificate.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption client CertificateVerify send",
+      "dependent_step": "TLS 1.3 resumption client Finished send",
+      "condition": "Certificate authentication fallback.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server Finished send",
+      "dependent_step": "TLS 1.3 resumption client Certificate send",
+      "condition": "Certificate authentication fallback; client authentication requested and client declines or has no suitable certificate; send empty certificate_list.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption client Certificate send",
+      "dependent_step": "TLS 1.3 resumption client Finished send",
+      "condition": "Certificate authentication fallback; client sends empty certificate_list.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server Finished send",
+      "dependent_step": "TLS 1.3 resumption client Finished send",
+      "condition": "PSK selected, no client authentication requested, and early_data was not accepted.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server CertificateRequest send",
+      "dependent_step": "TLS 1.3 client Certificate send",
+      "condition": "Post-handshake request; client elects to authenticate; echo certificate_request_context.",
+      "field_relations": [
+        {
+          "prior_field": "certificate_request_context",
+          "dependent_field": "certificate_request_context",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 server CertificateRequest send",
+      "dependent_step": "TLS 1.3 client Certificate send",
+      "condition": "Post-handshake request; client declines or has no suitable certificate; send empty certificate_list and echo certificate_request_context.",
+      "field_relations": [
+        {
+          "prior_field": "certificate_request_context",
+          "dependent_field": "certificate_request_context",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 client Certificate send",
+      "dependent_step": "TLS 1.3 client CertificateVerify send",
+      "condition": "Post-handshake authentication; client certificate is non-empty.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client CertificateVerify send",
+      "dependent_step": "TLS 1.3 client Finished send",
+      "condition": "Post-handshake client authentication response.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client Certificate send",
+      "dependent_step": "TLS 1.3 client Finished send",
+      "condition": "Post-handshake client declines or sends empty certificate_list.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server CertificateRequest send",
+      "dependent_step": "TLS 1.3 resumption client Certificate send",
+      "condition": "Post-handshake request; client elects to authenticate; echo certificate_request_context.",
+      "field_relations": [
+        {
+          "prior_field": "certificate_request_context",
+          "dependent_field": "certificate_request_context",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server CertificateRequest send",
+      "dependent_step": "TLS 1.3 resumption client Certificate send",
+      "condition": "Post-handshake request; client declines or has no suitable certificate; send empty certificate_list and echo certificate_request_context.",
+      "field_relations": [
+        {
+          "prior_field": "certificate_request_context",
+          "dependent_field": "certificate_request_context",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 resumption client Certificate send",
+      "dependent_step": "TLS 1.3 resumption client CertificateVerify send",
+      "condition": "Post-handshake authentication; client certificate is non-empty.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption client CertificateVerify send",
+      "dependent_step": "TLS 1.3 resumption client Finished send",
+      "condition": "Post-handshake client authentication response.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption client Certificate send",
+      "dependent_step": "TLS 1.3 resumption client Finished send",
+      "condition": "Post-handshake client declines or sends empty certificate_list.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Certificate URL server connect",
+      "dependent_step": "TLS 1.2 server retrieves certificate",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Certificate URL host listen",
+      "dependent_step": "TLS 1.2 server retrieves certificate",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ClientHello send",
+      "dependent_step": "TLS 1.3 EncryptedExtensions send",
+      "condition": "Server accepts max_fragment_length; EncryptedExtensions response value equals the ClientHello request.",
+      "field_relations": [
+        {
+          "prior_field": "max_fragment_length",
+          "dependent_field": "max_fragment_length",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 client ApplicationData send",
+      "condition": "No max_fragment_length negotiated; retain the default TLSPlaintext fragment limit of 2^14 bytes.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 client ApplicationData send",
+      "condition": "max_fragment_length negotiated; fragment handshake and record plaintext immediately to the negotiated bound for the session duration.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 server ApplicationData send",
+      "condition": "No max_fragment_length negotiated; retain the default TLSPlaintext fragment limit of 2^14 bytes.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 server ApplicationData send",
+      "condition": "max_fragment_length negotiated; fragment handshake and record plaintext immediately to the negotiated bound for the session duration.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "condition": "Server accepts max_fragment_length; EncryptedExtensions response value equals the ClientHello request.",
+      "field_relations": [
+        {
+          "prior_field": "max_fragment_length",
+          "dependent_field": "max_fragment_length",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 resumed client ApplicationData send",
+      "condition": "No max_fragment_length negotiated; retain the default TLSPlaintext fragment limit of 2^14 bytes.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 resumed client ApplicationData send",
+      "condition": "max_fragment_length negotiated; fragment handshake and record plaintext immediately to the negotiated bound for the session duration.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 resumed server ApplicationData send",
+      "condition": "No max_fragment_length negotiated; retain the default TLSPlaintext fragment limit of 2^14 bytes.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "dependent_step": "TLS 1.3 resumed server ApplicationData send",
+      "condition": "max_fragment_length negotiated; fragment handshake and record plaintext immediately to the negotiated bound for the session duration.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed HelloRetryRequest send",
+      "dependent_step": "TLS 1.3 resumption ClientHello send",
+      "condition": "Updated ClientHello retains the selected version and cipher suite, supplies key_share for the requested group, omits early_data, and copies cookie if provided.",
+      "field_relations": [
+        {
+          "prior_field": "cookie",
+          "dependent_field": "cookie",
+          "derive": ""
+        },
+        {
+          "prior_field": "key_share",
+          "dependent_field": "key_share",
+          "derive": "Generate a new KeyShareEntry in the group selected by HelloRetryRequest."
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ClientHello send",
+      "dependent_step": "TLS 1.3 resumption ServerHello send",
+      "condition": "Retry ClientHello after HelloRetryRequest; client retained selected version/cipher suite and server selects those values plus the requested key_share group.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server Finished send",
+      "dependent_step": "TLS 1.3 resumed EndOfEarlyData send",
+      "condition": "Server accepted early_data in resumed EncryptedExtensions.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed EndOfEarlyData send",
+      "dependent_step": "TLS 1.3 resumption client Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption client Finished send",
+      "dependent_step": "TLS 1.3 resumption server CertificateRequest send",
+      "condition": "Client offered post_handshake_auth in this resumption ClientHello; resumed handshake is complete; server requests post-handshake client authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 Certificate send",
+      "dependent_step": "TLS 1.2 ServerKeyExchange send",
+      "condition": "Selected cipher suite requires ServerKeyExchange.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 Certificate send",
+      "dependent_step": "TLS 1.2 CertificateRequest send",
+      "condition": "Server requests client certificate authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 Certificate send",
+      "dependent_step": "TLS 1.2 ServerHelloDone send",
+      "condition": "No ServerKeyExchange or CertificateRequest is sent.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 CertificateStatus send",
+      "dependent_step": "TLS 1.2 ServerKeyExchange send",
+      "condition": "Selected cipher suite requires ServerKeyExchange.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 CertificateStatus send",
+      "dependent_step": "TLS 1.2 CertificateRequest send",
+      "condition": "Server requests client certificate authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 CertificateStatus send",
+      "dependent_step": "TLS 1.2 ServerHelloDone send",
+      "condition": "No ServerKeyExchange or CertificateRequest is sent.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ServerKeyExchange send",
+      "dependent_step": "TLS 1.2 CertificateRequest send",
+      "condition": "Server requests client certificate authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ServerKeyExchange send",
+      "dependent_step": "TLS 1.2 ServerHelloDone send",
+      "condition": "No CertificateRequest is sent.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 CertificateRequest send",
+      "dependent_step": "TLS 1.2 ServerHelloDone send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ServerHelloDone send",
+      "dependent_step": "TLS 1.2 client Certificate send",
+      "condition": "Server requested client authentication and client uses Certificate form.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ServerHelloDone send",
+      "dependent_step": "TLS 1.2 client CertificateURL send",
+      "condition": "Server requested client authentication; client_certificate_url negotiated and client chooses CertificateURL form.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ServerHelloDone send",
+      "dependent_step": "TLS 1.2 ClientKeyExchange send",
+      "condition": "Server did not request client authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 client Certificate send",
+      "dependent_step": "TLS 1.2 ClientKeyExchange send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Certificate URL host returns object",
+      "dependent_step": "TLS 1.2 ClientKeyExchange send",
+      "condition": "TLS server verifies the SHA-1 of this requested URL object after transfer decoding and processes the client CertificateURL chain; continue the handshake with ClientKeyExchange.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server retrieves certificate",
+      "dependent_step": "TLS 1.2 ClientKeyExchange send",
+      "condition": "Retrieval failed but the server does not require the certificate; continue handshake (warning alert is optional).",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientKeyExchange send",
+      "dependent_step": "TLS 1.2 client CertificateVerify send",
+      "condition": "Client sent a non-empty Certificate or successful non-empty CertificateURL chain and proves possession of its private key.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 ClientKeyExchange send",
+      "dependent_step": "TLS 1.2 client ChangeCipherSpec send",
+      "condition": "No non-empty client certificate requires CertificateVerify.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 client CertificateVerify send",
+      "dependent_step": "TLS 1.2 client ChangeCipherSpec send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 client ChangeCipherSpec send",
+      "dependent_step": "TLS 1.2 client Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 client Finished send",
+      "dependent_step": "TLS 1.2 server ChangeCipherSpec send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server ChangeCipherSpec send",
+      "dependent_step": "TLS 1.2 server Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server Finished send",
+      "dependent_step": "TLS 1.2 client ApplicationData send",
+      "condition": "No max_fragment_length negotiated: plaintext fragment limit remains 2^14; if truncated_hmac was negotiated and suite uses HMAC, transmit and verify 10-byte HMAC tags.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server Finished send",
+      "dependent_step": "TLS 1.2 client ApplicationData send",
+      "condition": "max_fragment_length negotiated: immediately fragment handshake and record plaintext to requested bound for session duration, including resumptions; if truncated_hmac was negotiated and suite uses HMAC, use 10-byte tags.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server Finished send",
+      "dependent_step": "TLS 1.2 server ApplicationData send",
+      "condition": "No max_fragment_length negotiated: plaintext fragment limit remains 2^14; if truncated_hmac was negotiated and suite uses HMAC, transmit and verify 10-byte HMAC tags.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server Finished send",
+      "dependent_step": "TLS 1.2 server ApplicationData send",
+      "condition": "max_fragment_length negotiated: immediately fragment handshake and record plaintext to requested bound for session duration, including resumptions; if truncated_hmac was negotiated and suite uses HMAC, use 10-byte tags.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server Finished send",
+      "dependent_step": "TLS 1.2 client ApplicationData send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server Finished send",
+      "dependent_step": "TLS 1.2 server ApplicationData send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ServerHello send",
+      "dependent_step": "TLS 1.2 resumption server ChangeCipherSpec send",
+      "condition": "Session resumed; abbreviated handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server ChangeCipherSpec send",
+      "dependent_step": "TLS 1.2 resumption server Finished send",
+      "condition": "Abbreviated session-resumption handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Finished send",
+      "dependent_step": "TLS 1.2 resumption client ChangeCipherSpec send",
+      "condition": "Abbreviated session-resumption handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption client ChangeCipherSpec send",
+      "dependent_step": "TLS 1.2 resumption client Finished send",
+      "condition": "Abbreviated session-resumption handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption client Finished send",
+      "dependent_step": "TLS 1.2 client ApplicationData send",
+      "condition": "Abbreviated session-resumption handshake complete; Resumed session uses original negotiated maximum fragment length and truncated-HMAC state, if present.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption client Finished send",
+      "dependent_step": "TLS 1.2 server ApplicationData send",
+      "condition": "Abbreviated session-resumption handshake complete; Resumed session uses original negotiated maximum fragment length and truncated-HMAC state, if present.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption client Finished send",
+      "dependent_step": "TLS 1.2 client ApplicationData send",
+      "condition": "Abbreviated session-resumption handshake complete.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption client Finished send",
+      "dependent_step": "TLS 1.2 server ApplicationData send",
+      "condition": "Abbreviated session-resumption handshake complete.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Certificate send",
+      "dependent_step": "TLS 1.2 resumption ServerKeyExchange send",
+      "condition": "Server_name changed; resumption declined; selected cipher suite requires ServerKeyExchange.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Certificate send",
+      "dependent_step": "TLS 1.2 resumption CertificateRequest send",
+      "condition": "Server_name changed; resumption declined; server requests client authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Certificate send",
+      "dependent_step": "TLS 1.2 resumption ServerHelloDone send",
+      "condition": "Server_name changed; resumption declined.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server CertificateStatus send",
+      "dependent_step": "TLS 1.2 resumption ServerHelloDone send",
+      "condition": "No ServerKeyExchange or CertificateRequest is sent.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ServerHelloDone send",
+      "dependent_step": "TLS 1.2 resumption ClientKeyExchange send",
+      "condition": "Server did not request client authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ServerHelloDone send",
+      "dependent_step": "TLS 1.2 resumption client Certificate send",
+      "condition": "Server requested client authentication; client sends Certificate form.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption client Certificate send",
+      "dependent_step": "TLS 1.2 resumption ClientKeyExchange send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientKeyExchange send",
+      "dependent_step": "TLS 1.2 resumption client CertificateVerify send",
+      "condition": "Server_name fallback client sent a non-empty certificate and proves possession of its private key.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientKeyExchange send",
+      "dependent_step": "TLS 1.2 resumption client ChangeCipherSpec send",
+      "condition": "No non-empty client certificate requires CertificateVerify.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption client CertificateVerify send",
+      "dependent_step": "TLS 1.2 resumption client ChangeCipherSpec send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption client Finished send",
+      "dependent_step": "TLS 1.2 resumption server ChangeCipherSpec send",
+      "condition": "Server_name changed; resumption declined; full handshake fallback.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 server Finished send",
+      "dependent_step": "TLS 1.3 server ApplicationData send",
+      "condition": "Server sends ApplicationData before receiving the client authentication messages; client is not yet authenticated.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption server Finished send",
+      "dependent_step": "TLS 1.3 resumed server ApplicationData send",
+      "condition": "Certificate-authentication fallback; server sends ApplicationData before receiving client authentication messages; client is not yet authenticated.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Certificate send",
+      "dependent_step": "TLS 1.2 resumption ServerHelloDone send",
+      "condition": "Server_name changed; resumption declined; no ServerKeyExchange or CertificateRequest is sent.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server CertificateStatus send",
+      "dependent_step": "TLS 1.2 resumption ServerKeyExchange send",
+      "condition": "Selected cipher suite requires ServerKeyExchange.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server CertificateStatus send",
+      "dependent_step": "TLS 1.2 resumption CertificateRequest send",
+      "condition": "Server requests client certificate authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ServerKeyExchange send",
+      "dependent_step": "TLS 1.2 resumption CertificateRequest send",
+      "condition": "Server requests client certificate authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ServerKeyExchange send",
+      "dependent_step": "TLS 1.2 resumption ServerHelloDone send",
+      "condition": "No CertificateRequest is sent.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption CertificateRequest send",
+      "dependent_step": "TLS 1.2 resumption ServerHelloDone send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Finished send",
+      "dependent_step": "TLS 1.2 client ApplicationData send",
+      "condition": "Server_name changed; full handshake fallback; no max_fragment_length negotiated, so default plaintext fragment limit is 2^14.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Finished send",
+      "dependent_step": "TLS 1.2 client ApplicationData send",
+      "condition": "Server_name changed; full handshake fallback; negotiated max_fragment_length applies to handshake and record fragments for the session duration.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Finished send",
+      "dependent_step": "TLS 1.2 server ApplicationData send",
+      "condition": "Server_name changed; full handshake fallback; no max_fragment_length negotiated, so default plaintext fragment limit is 2^14.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Finished send",
+      "dependent_step": "TLS 1.2 server ApplicationData send",
+      "condition": "Server_name changed; full handshake fallback; negotiated max_fragment_length applies to handshake and record fragments for the session duration.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 EndOfEarlyData send",
+      "dependent_step": "TLS 1.3 client Certificate send",
+      "condition": "Server accepted early_data in EncryptedExtensions.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed EndOfEarlyData send",
+      "dependent_step": "TLS 1.3 resumption client Certificate send",
+      "condition": "Server accepted early_data in resumed EncryptedExtensions.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 EndOfEarlyData send",
+      "dependent_step": "TLS 1.3 client Finished send",
+      "condition": "Server accepted early_data in EncryptedExtensions.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumed EndOfEarlyData send",
+      "dependent_step": "TLS 1.3 resumption client Finished send",
+      "condition": "Server accepted early_data in resumed EncryptedExtensions.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ServerHello send",
+      "dependent_step": "TLS 1.3 EncryptedExtensions send",
+      "condition": "Server accepts early_data only if selected PSK identity is first offered identity, selected version and cipher suite match those saved with that PSK, and selected ALPN matches the saved ALPN if any.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 resumption ServerHello send",
+      "dependent_step": "TLS 1.3 resumption EncryptedExtensions send",
+      "condition": "Server accepts early_data only if selected PSK identity is first offered identity, selected version and cipher suite match those saved with that PSK, and selected ALPN matches the saved ALPN if any.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry client connect",
+      "dependent_step": "TLS 0-RTT disabled ClientHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry server listen",
+      "dependent_step": "TLS 0-RTT disabled ClientHello send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT disabled ClientHello send",
+      "dependent_step": "TLS 0-RTT retry ServerHello send",
+      "condition": "Server selects TLS 1.3.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT disabled ClientHello send",
+      "dependent_step": "TLS 0-RTT retry ServerHello send",
+      "condition": "Server selects TLS 1.2 or older supported by the client.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry ServerHello send",
+      "dependent_step": "TLS 0-RTT retry EncryptedExtensions send",
+      "condition": "TLS 1.3 selected.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry EncryptedExtensions send",
+      "dependent_step": "TLS 0-RTT retry TLS13 server Certificate send",
+      "condition": "TLS 1.3 selected; server authenticates with a certificate.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 server Certificate send",
+      "dependent_step": "TLS 0-RTT retry TLS13 server CertificateVerify send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 server CertificateVerify send",
+      "dependent_step": "TLS 0-RTT retry TLS13 server Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry EncryptedExtensions send",
+      "dependent_step": "TLS 0-RTT retry server CertificateRequest send",
+      "condition": "TLS 1.3 selected; server requests certificate-based client authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 server Finished send",
+      "dependent_step": "TLS 0-RTT retry TLS13 client Certificate send",
+      "condition": "Client authentication requested; client supplies a certificate.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 client Certificate send",
+      "dependent_step": "TLS 0-RTT retry TLS13 client CertificateVerify send",
+      "condition": "Client sent a non-empty certificate.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 client CertificateVerify send",
+      "dependent_step": "TLS 0-RTT retry TLS13 client Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 server Finished send",
+      "dependent_step": "TLS 0-RTT retry TLS13 client Finished send",
+      "condition": "No client authentication requested.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 client Finished send",
+      "dependent_step": "TLS 0-RTT retry TLS13 client ApplicationData send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 client Finished send",
+      "dependent_step": "TLS 0-RTT retry TLS13 server ApplicationData send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 server Finished send",
+      "dependent_step": "TLS 0-RTT retry TLS13 server ApplicationData send",
+      "condition": "Server may send before receiving client authentication messages; client is unauthenticated.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry ServerHello send",
+      "dependent_step": "TLS 0-RTT retry TLS12 server Certificate send",
+      "condition": "TLS 1.2 or older selected.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 server Certificate send",
+      "dependent_step": "TLS 0-RTT retry TLS12 ServerKeyExchange send",
+      "condition": "Selected cipher suite requires ServerKeyExchange.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 server Certificate send",
+      "dependent_step": "TLS 0-RTT retry TLS12 CertificateRequest send",
+      "condition": "Server requests client certificate authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 server Certificate send",
+      "dependent_step": "TLS 0-RTT retry TLS12 ServerHelloDone send",
+      "condition": "No ServerKeyExchange or CertificateRequest is sent.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 ServerKeyExchange send",
+      "dependent_step": "TLS 0-RTT retry TLS12 CertificateRequest send",
+      "condition": "Server requests client certificate authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 ServerKeyExchange send",
+      "dependent_step": "TLS 0-RTT retry TLS12 ServerHelloDone send",
+      "condition": "No CertificateRequest is sent.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 CertificateRequest send",
+      "dependent_step": "TLS 0-RTT retry TLS12 ServerHelloDone send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 ServerHelloDone send",
+      "dependent_step": "TLS 0-RTT retry TLS12 client Certificate send",
+      "condition": "Server requests client authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 ServerHelloDone send",
+      "dependent_step": "TLS 0-RTT retry TLS12 ClientKeyExchange send",
+      "condition": "Server does not request client authentication.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 client Certificate send",
+      "dependent_step": "TLS 0-RTT retry TLS12 ClientKeyExchange send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 ClientKeyExchange send",
+      "dependent_step": "TLS 0-RTT retry TLS12 client CertificateVerify send",
+      "condition": "Client sent a non-empty certificate.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 ClientKeyExchange send",
+      "dependent_step": "TLS 0-RTT retry TLS12 client ChangeCipherSpec send",
+      "condition": "No non-empty client certificate requires CertificateVerify.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 client CertificateVerify send",
+      "dependent_step": "TLS 0-RTT retry TLS12 client ChangeCipherSpec send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 client ChangeCipherSpec send",
+      "dependent_step": "TLS 0-RTT retry TLS12 client Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 client Finished send",
+      "dependent_step": "TLS 0-RTT retry TLS12 server ChangeCipherSpec send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 server ChangeCipherSpec send",
+      "dependent_step": "TLS 0-RTT retry TLS12 server Finished send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 server Finished send",
+      "dependent_step": "TLS 0-RTT retry TLS12 client ApplicationData send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS12 server Finished send",
+      "dependent_step": "TLS 0-RTT retry TLS12 server ApplicationData send",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT disabled ClientHello send",
+      "dependent_step": "TLS 0-RTT retry ServerHello send",
+      "condition": "Client offered ALPN; server selects one advertised protocol when TLS 1.2 or older is negotiated.",
+      "field_relations": [
+        {
+          "prior_field": "application_layer_protocol_negotiation",
+          "dependent_field": "application_layer_protocol_negotiation",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 0-RTT disabled ClientHello send",
+      "dependent_step": "TLS 0-RTT retry EncryptedExtensions send",
+      "condition": "Client offered ALPN; server selects one advertised protocol when TLS 1.3 is negotiated.",
+      "field_relations": [
+        {
+          "prior_field": "application_layer_protocol_negotiation",
+          "dependent_field": "application_layer_protocol_negotiation",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 0-RTT disabled ClientHello send",
+      "dependent_step": "TLS 0-RTT retry server alert send",
+      "condition": "Client offered ALPN but no offered protocol is supported; fatal no_application_protocol.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumption ServerHello send",
+      "condition": "Server_name differs; client requested max_fragment_length; server accepts it and echoes the requested value.",
+      "field_relations": [
+        {
+          "prior_field": "max_fragment_length_request",
+          "dependent_field": "max_fragment_length_response",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumed server Alert send",
+      "condition": "Server_name differs from original session; full handshake fallback; invalid max_fragment_length value; fatal illegal_parameter.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ServerHello send",
+      "dependent_step": "TLS 1.2 resumed client Alert send",
+      "condition": "Server_name differs from original session; max_fragment_length response differs from request; fatal illegal_parameter.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumption ServerHello send",
+      "condition": "Server_name differs; client did not negotiate max_fragment_length; TLS plaintext fragment default remains 2^14.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumption ServerHello send",
+      "condition": "Server_name differs; client offered truncated_hmac; server agrees with empty extension_data only when selected cipher suite uses HMAC.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumption ServerHello send",
+      "condition": "Server_name differs; client offered trusted_ca_keys; server uses the indication for certificate-chain selection and response extension_data is empty.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumption ServerHello send",
+      "condition": "Server_name differs; client requested status_request; server echoes status_request with empty extension_data, permitting CertificateStatus.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ClientHello send",
+      "dependent_step": "TLS 1.2 resumption ServerHello send",
+      "condition": "Server_name differs; both peers negotiate client_certificate_url with empty extension_data.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ServerHelloDone send",
+      "dependent_step": "TLS 1.2 resumption client CertificateURL send",
+      "condition": "Server_name fallback full handshake; server requested client authentication; client chooses negotiated CertificateURL form.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption client CertificateURL send",
+      "dependent_step": "TLS 1.2 server retrieves certificate",
+      "condition": "Full handshake fallback; for each URLAndHash entry, server fetches the absolute URL without redirects.",
+      "field_relations": [
+        {
+          "prior_field": "url",
+          "dependent_field": "url",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "Certificate URL host returns object",
+      "dependent_step": "TLS 1.2 resumption ClientKeyExchange send",
+      "condition": "Server verifies the SHA-1 for this requested URL after MIME transfer decoding and processes the CertificateURL chain; continue full handshake.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server retrieves certificate",
+      "dependent_step": "TLS 1.2 resumed server Alert send",
+      "condition": "Full handshake fallback; retrieval failed and server requires certificate; fatal certificate_unobtainable.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Certificate URL host returns object",
+      "dependent_step": "TLS 1.2 resumed server Alert send",
+      "condition": "Full handshake fallback; retrieved object hash mismatches paired SHA-1 after MIME decoding; fatal bad_certificate_hash_value.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 server retrieves certificate",
+      "dependent_step": "TLS 1.2 resumption ClientKeyExchange send",
+      "condition": "Full handshake fallback; retrieval fails but server does not require certificate; continue, warning alert optional.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Finished send",
+      "dependent_step": "TLS 1.2 client ApplicationData send",
+      "condition": "Server_name changed; full handshake fallback; truncated_hmac negotiated and selected cipher suite uses HMAC; send and verify 10-byte HMAC tags.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption server Finished send",
+      "dependent_step": "TLS 1.2 server ApplicationData send",
+      "condition": "Server_name changed; full handshake fallback; truncated_hmac negotiated and selected cipher suite uses HMAC; send and verify 10-byte HMAC tags.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry EncryptedExtensions send",
+      "dependent_step": "TLS 0-RTT retry server CertificateRequest send",
+      "condition": "TLS 1.3 selected; server requests certificate-based client authentication and is not authenticating with PSK.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry server CertificateRequest send",
+      "dependent_step": "TLS 0-RTT retry TLS13 client Certificate send",
+      "condition": "Client authentication requested; client sends a Certificate response.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 server Finished send",
+      "dependent_step": "TLS 0-RTT retry TLS13 client Certificate send",
+      "condition": "Client authentication requested; client elects to authenticate.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry server CertificateRequest send",
+      "dependent_step": "TLS 0-RTT retry TLS13 client Certificate send",
+      "condition": "Client declines or has no suitable certificate; send empty certificate_list.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry TLS13 client Certificate send",
+      "dependent_step": "TLS 0-RTT retry TLS13 client Finished send",
+      "condition": "Client declines authentication or sends an empty certificate_list.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 0-RTT retry EncryptedExtensions send",
+      "dependent_step": "TLS 0-RTT retry TLS13 server Finished send",
+      "condition": "TLS 1.3 PSK authentication selected; omit server Certificate and CertificateVerify.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.2 resumption ServerHelloDone send",
+      "dependent_step": "TLS 1.2 resumption client Certificate send",
+      "condition": "Server_name fallback full handshake; server requested client authentication; client selects Certificate form.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 ServerHello send",
+      "dependent_step": "TLS 1.3 client close handling",
+      "condition": "Client attempted 0-RTT and received ServerHello selecting TLS 1.2 or older; fail this connection.",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TLS 1.3 client close handling",
+      "dependent_step": "TLS 0-RTT retry client connect",
+      "condition": "Client may retry on a new connection with early_data disabled while retaining TLS 1.3 support.",
+      "field_relations": []
+    }
+  ],
+  "unresolved": []
+}

@@ -115,17 +115,30 @@ impl CaseReport {
     }
 }
 
-/// Append one JSON object per line.
-pub fn append_jsonl(path: &Path, report: &CaseReport) -> Result<(), Error> {
+/// Append one unified event object per line.
+pub fn append_event(path: &Path, kind: &str, body: serde_json::Value) -> Result<(), Error> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let event = serde_json::json!({
+        "time_ms": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_millis())
+            .unwrap_or(0),
+        "kind": kind,
+        "body": body,
+    });
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    let line = serde_json::to_string(report)
-        .map_err(|error| Error::serialize(format!("case report: {error}")))?;
-    writeln!(file, "{line}")?;
+    writeln!(file, "{event}")?;
     file.flush()?;
     Ok(())
+}
+
+/// Append one case outcome as a unified `kind: "case"` event.
+pub fn append_case_event(path: &Path, report: &CaseReport) -> Result<(), Error> {
+    let body = serde_json::to_value(report)
+        .map_err(|error| Error::serialize(format!("case report: {error}")))?;
+    append_event(path, "case", body)
 }
 
 /// Read the whole log. Used by tests that want the last line.
@@ -140,4 +153,40 @@ pub fn read_log(path: &Path) -> Result<String, Error> {
             )))
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn case_event_uses_the_shared_envelope() {
+        let dir = std::env::temp_dir().join(format!("mcn-case-event-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("events.jsonl");
+        let report = CaseReport {
+            exit_kind: "ok".into(),
+            target_status: "exited:0".into(),
+            generator_status: "ok".into(),
+            generator_exit: "exited".into(),
+            generator_code: Some(0),
+            generator_error: None,
+            cleanup_signal: None,
+            edges: 7,
+            coverage: "pcguard".into(),
+            elapsed_ms: 12,
+            note: String::new(),
+            valid: true,
+            startup_timeout_streak: 0,
+            result_timeout_streak: 0,
+        };
+        append_case_event(&path, &report).unwrap();
+        let line = std::fs::read_to_string(&path).unwrap();
+        let event: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(event["kind"], "case");
+        assert_eq!(event["body"]["exit_kind"], "ok");
+        assert_eq!(event["body"]["edges"], 7);
+        assert!(event["time_ms"].is_number());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

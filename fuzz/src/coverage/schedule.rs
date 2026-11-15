@@ -229,6 +229,8 @@ pub struct CoverageAnalysisStage {
     model: Option<IndexedModel>,
     binding: Binding,
     sut_parties: Vec<String>,
+    generator_parties: Vec<String>,
+    unavailable_parties: Vec<String>,
     session: String,
     fingerprint: String,
     analysis_root: PathBuf,
@@ -320,17 +322,24 @@ impl CoverageAnalysisStage {
                 "mcp_socket": crate::coverage::mcp::socket_path(),
             }),
         );
-        let sut_parties = binding
-            .entries()
-            .filter(|(_, role)| *role == PartyRole::Sut)
-            .map(|(name, _)| name.to_string())
-            .collect();
+        let mut sut_parties = Vec::new();
+        let mut generator_parties = Vec::new();
+        let mut unavailable_parties = Vec::new();
+        for (name, role) in binding.entries() {
+            match role {
+                PartyRole::Sut => sut_parties.push(name.to_string()),
+                PartyRole::Generator => generator_parties.push(name.to_string()),
+                PartyRole::Unavailable => unavailable_parties.push(name.to_string()),
+            }
+        }
         let mut stage = Self {
             enabled: true,
             campaign: campaign.clone(),
             model: Some(model),
             binding,
             sut_parties,
+            generator_parties,
+            unavailable_parties,
             session: boot.session.clone(),
             fingerprint,
             analysis_root,
@@ -363,6 +372,8 @@ impl CoverageAnalysisStage {
             model: None,
             binding: Binding::default(),
             sut_parties: Vec::new(),
+            generator_parties: Vec::new(),
+            unavailable_parties: Vec::new(),
             session: String::new(),
             fingerprint: String::new(),
             analysis_root: PathBuf::new(),
@@ -887,6 +898,14 @@ fn render_init(
         )
         .replace("{{ catalog }}", &stage.catalog.display().to_string())
         .replace("{{ sut_parties }}", &json!(stage.sut_parties).to_string())
+        .replace(
+            "{{ generator_parties }}",
+            &json!(stage.generator_parties).to_string(),
+        )
+        .replace(
+            "{{ unavailable_parties }}",
+            &json!(stage.unavailable_parties).to_string(),
+        )
         .replace("{{ steps }}", &json!(steps).to_string())
         .replace(
             "{{ handlers_path }}",
@@ -952,6 +971,15 @@ fn render_task(
         )
         .replace("{{ catalog }}", &stage.catalog.display().to_string())
         .replace("{{ handlers }}", &stage.handlers_path.display().to_string())
+        .replace("{{ sut_parties }}", &json!(stage.sut_parties).to_string())
+        .replace(
+            "{{ generator_parties }}",
+            &json!(stage.generator_parties).to_string(),
+        )
+        .replace(
+            "{{ unavailable_parties }}",
+            &json!(stage.unavailable_parties).to_string(),
+        )
         .replace(
             "{{ sut_stdout_log }}",
             &sut_stdout_log.display().to_string(),

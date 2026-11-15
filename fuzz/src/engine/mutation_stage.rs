@@ -6,11 +6,10 @@
 //! ordinary corpus inputs. The baseline is kept only when feedback decides it
 //! is interesting, exactly like any other executed input.
 
-use std::borrow::Cow;
-use std::path::PathBuf;
+use std::{borrow::Cow, path::PathBuf};
 
 use libafl::{
-    corpus::{Corpus, CorpusId},
+    corpus::{Corpus, CorpusId, HasCurrentCorpusId},
     executors::Executor,
     fuzzer::Evaluator,
     mutators::{MutationResult, Mutator},
@@ -19,6 +18,7 @@ use libafl::{
     Error, HasMetadata,
 };
 use libafl_bolts::{rands::Rand, Named};
+use serde_json::{json, Value};
 
 use crate::engine::{
     input::GeneratorInput,
@@ -26,6 +26,7 @@ use crate::engine::{
     stagnation::BitmapProgress,
     synthesis::{SynthesisCandidate, SynthesisCandidates, TraceOrigin},
 };
+use crate::runtime::report::append_event;
 
 /// Mutation iterations for both candidate baselines and ordinary corpus input.
 const MAX_MUTATIONS: usize = 128;
@@ -33,6 +34,7 @@ const MAX_MUTATIONS: usize = 128;
 pub struct GeneratorMutationStage {
     mutator: GeneratorMutator,
     queue_path: Option<PathBuf>,
+    event_path: Option<PathBuf>,
     name: Cow<'static, str>,
 }
 
@@ -41,6 +43,7 @@ impl GeneratorMutationStage {
         Self {
             mutator: GeneratorMutator::new(),
             queue_path: None,
+            event_path: None,
             name: Cow::Borrowed("generator-mutation"),
         }
     }
@@ -50,6 +53,12 @@ impl GeneratorMutationStage {
             queue_path: Some(path),
             ..Self::new()
         }
+    }
+
+    /// Append one JSONL event per selected corpus case or synthesis candidate.
+    pub fn with_events(mut self, path: PathBuf) -> Self {
+        self.event_path = Some(path);
+        self
     }
 
     /// Restore pending synthesis inputs from the persistent FIFO.
@@ -109,6 +118,15 @@ impl GeneratorMutationStage {
             if let Err(error) = candidates.save(path) {
                 log::warn!("persisting synthesis candidate queue failed: {error:?}");
             }
+        }
+    }
+
+    fn log_event(&self, kind: &str, body: Value) {
+        let Some(path) = &self.event_path else {
+            return;
+        };
+        if let Err(error) = append_event(path, kind, body) {
+            log::warn!("mutation event log failed: {error}");
         }
     }
 
@@ -222,7 +240,11 @@ impl<S> Restartable<S> for GeneratorMutationStage {
 
 impl<E, EM, S, Z> Stage<E, EM, S, Z> for GeneratorMutationStage
 where
-    S: HasRand + HasCorpus<GeneratorInput> + HasMetadata + HasCurrentTestcase<GeneratorInput>,
+    S: HasRand
+        + HasCorpus<GeneratorInput>
+        + HasMetadata
+        + HasCurrentTestcase<GeneratorInput>
+        + HasCurrentCorpusId,
     S::Rand: Rand,
     E: Executor<EM, GeneratorInput, S, Z>,
     Z: Evaluator<E, EM, GeneratorInput, S>,
@@ -235,11 +257,31 @@ where
         manager: &mut EM,
     ) -> Result<(), Error> {
         if let Some(candidate) = self.take_candidate(state) {
+            self.log_event(
+                "candidate_selected",
+                json!({
+                    "request": candidate.request,
+                    "corpus_count": state.corpus().count(),
+                }),
+            );
             return self.perform_candidate(fuzzer, executor, state, manager, candidate);
         }
         if state.corpus().count() == 0 {
             return Ok(());
         }
+        let case_id = state
+            .current_corpus_id()
+            .ok()
+            .flatten()
+            .map(|id| format!("corpus:{}", id.0))
+            .unwrap_or_else(|| "corpus:unknown".to_string());
+        self.log_event(
+            "corpus_selected",
+            json!({
+                "case_id": case_id,
+                "corpus_count": state.corpus().count(),
+            }),
+        );
         let input = state.current_input_cloned()?;
         let origin = state
             .current_testcase()
@@ -293,6 +335,36 @@ mod tests {
             .expect("metadata sidecar");
         let text = fs::read_to_string(metadata_path).unwrap();
         assert!(text.contains("\"request_id\": \"r\""), "{text}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mutation_events_append_jsonl() {
+        let dir = std::env::temp_dir().join(format!("mcn-events-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("events.jsonl");
+        append_event(
+            &path,
+            "corpus_selected",
+            json!({"case_id": "corpus:1", "corpus_count": 3}),
+        )
+        .unwrap();
+        append_event(
+            &path,
+            "candidate_selected",
+            json!({"request": "000001", "corpus_count": 3}),
+        )
+        .unwrap();
+        let lines: Vec<Value> = fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["kind"], "corpus_selected");
+        assert_eq!(lines[0]["body"]["case_id"], "corpus:1");
+        assert_eq!(lines[1]["kind"], "candidate_selected");
+        assert_eq!(lines[1]["body"]["request"], "000001");
         let _ = fs::remove_dir_all(&dir);
     }
 }

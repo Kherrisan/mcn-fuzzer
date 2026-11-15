@@ -241,6 +241,34 @@ transcripts, key derivation, Finished and record sequence numbers; they may not
 expose malformed extensions or arbitrary record ordering. Reuse their valid
 setup or lower-level message/crypto helpers rather than faking Finished.
 
+When the trace selects individual TLS messages, do **not** let a high-level
+`TLSConnection`/`ssl` handshake execute the whole conversation. Use
+`tlslite.messages`/`tlslite.extensions` or Scapy TLS as message/record codecs,
+and keep phase, transcript, key epochs and record sequence numbers in the
+generator handlers. Key-schedule helpers are available as
+`scapy.layers.tls.crypto.hkdf.TLS13_HKDF` (`extract`, `expand_label`,
+`derive_secret`, `compute_verify_data`) and
+`tlslite.utils.cryptomath.derive_secret` / `HKDF_expand_label` / `secureHMAC`.
+Derive record key/IV with `HKDF-Expand-Label(secret, b"key"/b"iv", b"", len)`;
+use `cryptography` AEAD for record protection. TLSLite `Checker` checks only an
+end-entity fingerprint, not a full trust chain; `X509CertChain`/`X509` expose the
+end-entity public key for `publicKey.verify` of CertificateVerify. A client does
+not need certificate trust validation merely to complete a handshake, but it
+must maintain the transcript and Finished keys correctly.
+
+Handler-owned state can stay compact while codecs do the wire work:
+
+```python
+# e.g. inside a ServerHello recv handler; not a complete generator
+body = record_io.decrypt_handshake(...)
+msg = ServerHello().parse(body)
+state.transcript.update(raw_handshake_bytes)
+state.phase = "wait_encrypted_extensions"
+```
+
+Keep `phase`, transcript bytes, key epochs, record sequence numbers, and
+connection ownership in the generator handler state, not inside a shared codec.
+
 For encryption/decryption: `cryptography` AEAD (AESGCM, AESCCM,
 ChaCha20Poly1305), HKDF, HMAC, RSA/ECDSA/Ed25519, ECDH/X25519;
 `Crypto.Cipher.AES`/`ChaCha20_Poly1305`; `nacl` for libsodium operations.

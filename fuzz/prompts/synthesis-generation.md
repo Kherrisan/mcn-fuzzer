@@ -14,12 +14,15 @@ REQUEST={{ request_id }}
 GENERATOR_PARTIES={{ generator_parties | join(", ") }}
 
 On success, write generator.py, params.schema.json, params.json (initial field defaults), then atomically publish result.json in OUTPUT_DIR.
-Trace steps use action send, listen, connect, or close. Implement listen,
-connect, and close only for GENERATOR_PARTIES. SUT parties perform those
-actions themselves; wait for or observe them. listen means the socket is
-listening, not that a peer has connected. Repeated step instances are repeated occurrences. Rust inserts, drops,
-duplicates, reorders, and mutates instances; the generator must not infer or
-apply those operations. A step instance's `mutable_fields` declares fields the
+Trace steps use action send, recv, listen, connect, or close. The coverage
+proposal has already been projected to the generator perspective: a send step
+has `receiver` (the SUT destination) and no `sender`; a recv step has `sender`
+(the SUT source) and no `receiver`; SUT setup steps are absent. Implement
+listen, connect, and close only for GENERATOR_PARTIES. listen means the socket
+is listening, not that a peer has connected. A recv handler reads and parses
+the SUT message. Repeated step instances are repeated occurrences. Rust
+inserts, drops, duplicates, reorders, and mutates instances; the generator must
+not infer or apply those operations. A step instance's `mutable_fields` declares fields the
 generator may fill, including fields the model does not list. Keep each
 instance's field values separate. Do not drop a step to make the script validate.
 Read the proposal at {{ proposal }} before implementing. Use its ordered step
@@ -29,19 +32,22 @@ mutation operations and contains `mutable_fields` for each trace instance. The
 proposal takes precedence over memories of previous requests. Do not construct a receipt.
 WORKSPACE is the fixed agent working directory for this campaign. OUTPUT_DIR is
 the new, separate artifact directory assigned to this request; the fuzzer has
-already created it. Write all artifacts using absolute paths under OUTPUT_DIR.
-Never write generator.py, params.schema.json, params.json, or result.json at the
-WORKSPACE root, reuse an earlier OUTPUT_DIR, or modify an earlier request's files.
+already created it. Write request artifacts using absolute paths under
+OUTPUT_DIR. You may create new generic shared helpers under
+WORKSPACE/lib and reuse existing helpers as-is; do not edit or overwrite an
+existing helper file. Never write request artifacts at the WORKSPACE root,
+reuse an earlier OUTPUT_DIR, or modify an earlier request's files.
 The agent's launch directory remains {{ campaign.workspace }} and does not change
 with the request. Rust reads completion only from this request's OUTPUT_DIR.
 The synthesis budget is {{ campaign.budgets.generation_secs }} seconds.
 
-## Read-only campaign context
+## Campaign context
 
 - Protocol model: {{ campaign.model }}
 - Campaign directory: {{ campaign.campaign_dir }}
 - Campaign Python interpreter: {{ campaign.python }}
 - PYTHONPATH: {{ campaign.pythonpath }}
+- Shared helper directory (writable, campaign-scoped): {{ campaign.workspace }}/lib
 - Generator module skill (read-only): {{ campaign.generator_skill }}
 - Artifact validator: {{ campaign.generator_validator }}
 - Public API source: {{ campaign.pythonpath }}/generator_server/context.py
@@ -164,6 +170,45 @@ claiming it was verified.
 5. Choose installed SDKs or implement peers with the public I/O API/native
    sockets. Implement, check, and publish the artifacts below.
 
+## Reuse generated helpers, own state transitions
+
+Before writing, inspect {{ campaign.workspace }}/lib. Reuse a compatible helper
+instead of repeating the same code in every request. Create or extend generic
+modules there when several tasks need the same:
+
+- message/packet/field construction and parsing;
+- record, frame, length-prefix, compression, and checksum handling;
+- crypto primitives, key-schedule helpers, AEAD, hashing, and signatures;
+- bounded transport adapters and buffered readers;
+- generic fixture/encoding/validation helpers.
+
+Keep task-specific protocol behavior, phase, expected message, ordering,
+conditions, dependencies, retries, transcript/key state, sequence numbers,
+listeners, and cleanup in generator.py handlers. Do not call a high-level SDK
+that executes several selected trace steps internally or hides intermediate
+messages; use its lower-level message/codec APIs when the trace selects those
+steps. A helper must be pure or receive an explicit state object, and must not
+hold module-level sockets, sessions, credentials, or case state.
+
+The generator server automatically adds WORKSPACE/lib to `sys.path` when it
+loads generator.py. Import shared helpers directly after their module names:
+
+~~~python
+from tls_record_v1 import read_record, write_record
+~~~
+
+Do not add a `sys.path` bootstrap or scan parent directories from generator.py.
+The artifact validator is given the same shared-lib path through `--shared-lib`
+so its import probe sees the same modules.
+
+Reuse existing helper modules as-is. If they do not fit or need different
+behavior, add a new versioned module name (for example
+`tls_record_v2.py`); never edit an existing helper file under the same name. The
+generator server can cache an imported module for the life of the campaign, so
+an in-place edit could change behavior for already accepted generators without
+changing them. Do not add protocol-specific helper implementations to the
+repository or skill. The skill and scaffold provide library/API guidance only.
+
 # Reference scaffold and params schema
 
 Read these two reference files before writing handlers:
@@ -208,10 +253,13 @@ def handler_example(ctx, params):
 
 `step_trace` is the ordered list of concrete step instances selected and
 mutated by Rust. Each instance has `name`, `step`, `action`, `channel`,
-endpoint fields, `omitted_fields` (fields deliberately absent), `inputs`
-(target field -> `"prior_instance.field"` dependency bindings), and
-`broken_dependencies`. Mutable values are not embedded in the instance; they
-live in `params`, keyed by the instance's concrete `name`. Execute instances in order and
+endpoint fields (`sender` for recv, `receiver` for send), `omitted_fields`
+(fields deliberately absent), `inputs` (target field -> `"prior_instance.field"`
+dependency bindings), and `broken_dependencies`. Mutable values are not embedded in the instance; they
+live in `params`, keyed by the instance's concrete `name`. Instance names are
+trace-local labels, not the action: `recv_server_hello` may have `action=recv`
+while its `step` names a model send step whose sender is the SUT. Dispatch uses
+`step`, not the name's verb. Execute instances in order and
 do not insert, duplicate, reorder, or delete them. Do not inspect mutation
 operations; none are present.
 
@@ -227,8 +275,8 @@ Both functions receive the same recursively read-only params. During a handler,
 its concrete instance name; both are `None` during init.
 
 Each handler resolves its instance's fields, loads bound prior values with
-`ctx.load_depending_state(field_name)`, performs the step's send, receive, listen,
-connect, or close action as appropriate for its party, and saves outputs needed
+`ctx.load_depending_state(field_name)`, performs the instance's `send` or
+`recv`/listen/connect/close action, and saves outputs needed
 later with `ctx.save_state(field_name, value)`. Do not
 substitute the latest value or a hard-coded instance name for an `inputs` binding:
 duplicate steps have distinct state. Handlers may
@@ -236,7 +284,8 @@ share helpers and case-local connection state via ctx; create resources inside
 the worker and clean them up in handlers. Do not perform another trace step's
 message exchange as an implicit substitute for its handler.
 
-Implement every handler and helper in generator.py. The example above only
+Implement every handler in generator.py; put only generic reusable helpers in
+WORKSPACE/lib. The example above only
 illustrates the API; omit the initializer if it has no work. Submit no stubs, ellipsis,
 unimplemented branches, or unconditional
 success paths. The return value is ignored. Do not use async def as the entrypoint,
@@ -265,11 +314,14 @@ contact the SUT during import. Import SDKs with possible thread/service side
 effects inside the initializer or handlers. Create case resources there; the
 runtime closes ctx-managed resources after dispatch. No resources or state should need to survive worker exit.
 
-Only generator.py and params.schema.json are published. Inline mock implementations,
-helpers, and SDK glue in generator.py, or use installed packages. Do not depend
-at runtime on proposal.json, params.json, the request output directory, additional sibling
-files, or a particular cwd. Existing stable campaign fixture files may be read
-if needed; do not modify them. Create and clean transient case data explicitly.
+Only generator.py and params.schema.json are published into the request's
+published directory. generator.py may import generic shared helpers under
+WORKSPACE/lib; that campaign-scoped directory remains a runtime dependency for
+replay. Keep task-specific mock implementations, handlers, and SDK glue in
+generator.py. Do not depend at runtime on proposal.json, params.json, the
+request output directory, another request's files, or a particular cwd.
+Existing stable campaign fixture files may be read if needed; do not modify
+them. Create and clean transient case data explicitly.
 
 # Public I/O API
 
@@ -382,6 +434,9 @@ wire content back to fixed valid values.
 - result.json: final completion signal. It is read immediately when it appears.
   Echo the exact IDs below; added_steps must be an array of strings, even if empty.
 
+Optional shared helpers belong under WORKSPACE/lib, never in OUTPUT_DIR. They are
+campaign-scoped code reused by later requests, not per-request artifacts.
+
 Successful result (list local support setup in added_steps, if any):
 
 ~~~json
@@ -408,7 +463,8 @@ then run this exact command with the campaign Python:
   --request-id "{{ request_id }}" \
   --proposal "{{ output_dir }}/proposal.json" \
   --result "{{ output_dir }}/result.draft.json" \
-  --check-imports --pythonpath "{{ campaign.pythonpath }}"
+  --check-imports --pythonpath "{{ campaign.pythonpath }}" \
+  --shared-lib "{{ campaign.workspace }}/lib"
 ~~~
 
 The command prints JSON and exits 0 on success. Fix reported errors and rerun;

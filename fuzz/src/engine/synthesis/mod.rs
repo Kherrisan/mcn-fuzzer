@@ -382,7 +382,7 @@ impl GeneratorSynthesisStage {
             fs::create_dir_all(&output_dir)?;
             let synthesis_proposal = accepted
                 .proposal
-                .synthesis_copy()
+                .synthesis_copy(&self.binding)
                 .map_err(Error::illegal_state)?;
             let body = serde_json::to_vec_pretty(&synthesis_proposal).map_err(|error| {
                 Error::serialize(format!("writing synthesis proposal: {error}"))

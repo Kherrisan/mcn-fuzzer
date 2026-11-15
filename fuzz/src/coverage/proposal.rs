@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use super::mutations;
 use crate::{
     engine::input::{BytesEncoding, FieldKind, ParamValue},
-    protocol::{Binding, IndexedModel, StepRecord},
+    protocol::{Binding, IndexedModel, PartyRole, StepRecord},
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -452,16 +452,23 @@ impl Proposal {
         Ok(())
     }
 
-    /// Downstream copy for synthesis: strip mutation strategy and expose only
-    /// the mutable field descriptions. The original proposal remains available
-    /// for handoff/audit.
-    pub fn synthesis_copy(&self) -> Result<Self, String> {
+    /// Downstream copy for synthesis: strip mutation strategy, expose mutable
+    /// fields, and project the trace onto generator-owned actions.
+    ///
+    /// Model `send` steps keep their direction in `sender`/`receiver`:
+    /// - sender is the generator: `action = "send"`, drop `sender`;
+    /// - sender is the SUT: `action = "recv"`, drop `receiver`;
+    /// - SUT `listen`/`connect`/`close` steps are omitted;
+    /// - generator network actions are kept as-is.
+    pub fn synthesis_copy(&self, binding: &Binding) -> Result<Self, String> {
         let names = mutations::instance_names(&self.trace)?;
-        let mut copy = self.clone();
-        copy.mutations.clear();
-        for item in &mut copy.trace {
-            item.mutable_fields.clear();
-        }
+        let role_of = |instance: &str| -> Result<PartyRole, String> {
+            let model_party = self.parties.get(instance).ok_or_else(|| {
+                format!("instance {instance} does not name a proposal party")
+            })?;
+            Ok(binding.role(model_party))
+        };
+        let mut expanded: Vec<Vec<MutableField>> = vec![Vec::new(); self.trace.len()];
         let mut declared = BTreeSet::new();
         for mutation in &self.mutations {
             let op = mutation
@@ -483,37 +490,125 @@ impl Proposal {
                 continue;
             }
             let (kind, encoding, default) = mutations::field_type(mutation)?;
-            match mutations::selection(mutation.get("steps").unwrap_or(&Value::Null), &names)? {
-                mutations::Selector::Each(indexes) => {
-                    for index in indexes {
-                        let key = (index, field.clone());
-                        if declared.insert(key) {
-                            copy.trace[index].mutable_fields.push(MutableField {
-                                field: field.clone(),
-                                kind,
-                                encoding,
-                                default: default.clone(),
-                                source: "proposal".into(),
-                            });
-                        }
-                    }
+            let indexes = match mutations::selection(
+                mutation.get("steps").unwrap_or(&Value::Null),
+                &names,
+            )? {
+                mutations::Selector::Each(indexes) => indexes,
+                mutations::Selector::Range(start, end) => (start..=end).collect(),
+            };
+            for index in indexes {
+                let step = &self.trace[index];
+                if step.action != "send" {
+                    return Err(format!("mutation targets non-send instance {}", step.name));
                 }
-                mutations::Selector::Range(start, end) => {
-                    for index in start..=end {
-                        let key = (index, field.clone());
-                        if declared.insert(key) {
-                            copy.trace[index].mutable_fields.push(MutableField {
-                                field: field.clone(),
-                                kind,
-                                encoding,
-                                default: default.clone(),
-                                source: "proposal".into(),
-                            });
-                        }
-                    }
+                let sender = step.sender.as_deref().unwrap_or("");
+                if role_of(sender)? != PartyRole::Generator {
+                    return Err(format!(
+                        "mutation targets SUT-sent step {}; generator cannot fill it",
+                        step.name
+                    ));
+                }
+                let key = (index, field.clone());
+                if declared.insert(key) {
+                    expanded[index].push(MutableField {
+                        field: field.clone(),
+                        kind,
+                        encoding,
+                        default: default.clone(),
+                        source: "proposal".into(),
+                    });
                 }
             }
         }
+
+        let mut trace = Vec::new();
+        for (index, item) in self.trace.iter().enumerate() {
+            match item.action.as_str() {
+                "send" => {
+                    let sender = item
+                        .sender
+                        .as_deref()
+                        .ok_or_else(|| format!("send instance {} needs a sender", item.name))?;
+                    match role_of(sender)? {
+                        PartyRole::Generator => {
+                            if item.receiver.is_none() {
+                                return Err(format!(
+                                    "generator send instance {} needs a receiver",
+                                    item.name
+                                ));
+                            }
+                            let mut step = item.clone();
+                            step.action = "send".into();
+                            step.sender = None;
+                            step.mutable_fields = std::mem::take(&mut expanded[index]);
+                            trace.push(step);
+                        }
+                        PartyRole::Sut => {
+                            let receiver = item.receiver.as_deref().ok_or_else(|| {
+                                format!("SUT send instance {} needs a receiver", item.name)
+                            })?;
+                            if role_of(receiver)? != PartyRole::Generator {
+                                return Err(format!(
+                                    "SUT send instance {} receiver {receiver} is not a generator party",
+                                    item.name
+                                ));
+                            }
+                            let mut step = item.clone();
+                            step.action = "recv".into();
+                            step.receiver = None;
+                            step.mutable_fields.clear();
+                            trace.push(step);
+                        }
+                        PartyRole::Unavailable => {
+                            return Err(format!(
+                                "send instance {} uses unavailable sender {sender}",
+                                item.name
+                            ));
+                        }
+                    }
+                }
+                "recv" => {
+                    return Err(format!(
+                        "proposal instance {} already uses recv; synthesis_copy adds it",
+                        item.name
+                    ));
+                }
+                "listen" | "connect" | "close" => {
+                    let party = item
+                        .party
+                        .as_deref()
+                        .ok_or_else(|| format!("network instance {} needs a party", item.name))?;
+                    match role_of(party)? {
+                        PartyRole::Generator => {
+                            let mut step = item.clone();
+                            step.mutable_fields.clear();
+                            trace.push(step);
+                        }
+                        PartyRole::Sut => {}
+                        PartyRole::Unavailable => {
+                            return Err(format!(
+                                "network instance {} uses unavailable party {party}",
+                                item.name
+                            ));
+                        }
+                    }
+                }
+                other => {
+                    return Err(format!("instance {} has unknown action {other}", item.name));
+                }
+            }
+        }
+        if trace.is_empty() {
+            return Err("synthesis trace has no generator action".into());
+        }
+        let kept: BTreeSet<String> = trace.iter().map(|step| step.name.clone()).collect();
+        let mut copy = self.clone();
+        copy.mutations.clear();
+        copy.trace = trace;
+        copy.dependencies.retain(|dependency| {
+            kept.contains(&dependency.prior) && kept.contains(&dependency.dependent)
+        });
         Ok(copy)
     }
 
@@ -529,11 +624,10 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{Binding, PartyRole, load_model};
+    use crate::protocol::{load_model, Binding, PartyRole};
     use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -732,14 +826,14 @@ mod tests {
 
     #[test]
     fn synthesis_copy_strips_mutations_and_adds_mutable_fields() {
-        let (model, _binding) = fixture();
+        let (model, binding) = fixture();
         let mut proposal = base(&model);
         proposal.mutations = vec![json!({
             "op": "field", "steps": ["hello"], "field": "username",
             "kind": "bytes", "encoding": "base64", "default": "AAE=",
             "suggestion": "empty or boundary", "evidence": "src/a.c:1"
         })];
-        let copy = proposal.synthesis_copy().unwrap();
+        let copy = proposal.synthesis_copy(&binding).unwrap();
         assert!(copy.mutations.is_empty());
         let hello = copy.trace.iter().find(|step| step.step == "hello").unwrap();
         assert_eq!(hello.mutable_fields.len(), 1);
@@ -757,6 +851,140 @@ mod tests {
             Some(ParamValue::Str("AAE=".into()))
         );
         assert_eq!(proposal.mutations.len(), 1);
+    }
+
+    #[test]
+    fn synthesis_copy_projects_direction_and_drops_sut_setup() {
+        let (model, binding) = fixture();
+        let mut proposal = base(&model);
+
+        let mut server_reply = proposal.trace[0].clone();
+        server_reply.name = "server_reply".into();
+        server_reply.step = "server_reply".into();
+        server_reply.sender = Some("server".into());
+        server_reply.receiver = Some("client".into());
+        proposal.trace.push(server_reply);
+
+        let mut server_listen = proposal.trace[1].clone();
+        server_listen.name = "server_listen".into();
+        server_listen.step = "server_listen".into();
+        server_listen.action = "listen".into();
+        server_listen.party = Some("server".into());
+        server_listen.sender = None;
+        server_listen.receiver = None;
+        server_listen.mutable_fields.clear();
+        proposal.trace.push(server_listen);
+
+        proposal.dependencies.push(ProposalDependency {
+            prior: "bye".into(),
+            dependent: "server_reply".into(),
+            condition: String::new(),
+            kind: "order".into(),
+            fields: Vec::new(),
+        });
+        proposal.dependencies.push(ProposalDependency {
+            prior: "server_listen".into(),
+            dependent: "bye".into(),
+            condition: String::new(),
+            kind: "order".into(),
+            fields: Vec::new(),
+        });
+
+        let copy = proposal.synthesis_copy(&binding).unwrap();
+        assert_eq!(copy.trace.len(), 4, "{:?}", copy.trace);
+        assert!(copy.trace.iter().all(|step| step.name != "server_listen"));
+
+        let hello = copy.trace.iter().find(|step| step.name == "hello").unwrap();
+        assert_eq!(hello.action, "send");
+        assert_eq!(hello.sender, None);
+        assert_eq!(hello.receiver.as_deref(), Some("server"));
+
+        let listen = copy
+            .trace
+            .iter()
+            .find(|step| step.name == "listen_data")
+            .unwrap();
+        assert_eq!(listen.action, "listen");
+        assert_eq!(listen.party.as_deref(), Some("peer"));
+
+        let reply = copy
+            .trace
+            .iter()
+            .find(|step| step.name == "server_reply")
+            .unwrap();
+        assert_eq!(reply.action, "recv");
+        assert_eq!(reply.sender.as_deref(), Some("server"));
+        assert_eq!(reply.receiver, None);
+        assert_eq!(copy.dependencies.len(), 1);
+        assert_eq!(copy.dependencies[0].dependent, "server_reply");
+    }
+
+    #[test]
+    fn synthesis_copy_resolves_party_instance_aliases() {
+        let (model, binding) = fixture();
+        let mut proposal = base(&model);
+        proposal.parties.insert("client_1".into(), "client".into());
+        proposal.parties.insert("server_1".into(), "server".into());
+        proposal.parties.insert("peer_1".into(), "peer".into());
+        for step in &mut proposal.trace {
+            if let Some(sender) = step.sender.as_mut() {
+                *sender = match sender.as_str() {
+                    "client" => "client_1".into(),
+                    "server" => "server_1".into(),
+                    other => other.into(),
+                };
+            }
+            if let Some(receiver) = step.receiver.as_mut() {
+                *receiver = match receiver.as_str() {
+                    "client" => "client_1".into(),
+                    "server" => "server_1".into(),
+                    other => other.into(),
+                };
+            }
+            if let Some(party) = step.party.as_mut() {
+                *party = match party.as_str() {
+                    "peer" => "peer_1".into(),
+                    other => other.into(),
+                };
+            }
+        }
+        let mut server_reply = proposal.trace[0].clone();
+        server_reply.name = "server_reply".into();
+        server_reply.step = "server_reply".into();
+        server_reply.sender = Some("server_1".into());
+        server_reply.receiver = Some("client_1".into());
+        proposal.trace.push(server_reply);
+
+        let copy = proposal.synthesis_copy(&binding).unwrap();
+        assert_eq!(copy.trace[0].action, "send");
+        assert_eq!(copy.trace[0].receiver.as_deref(), Some("server_1"));
+        assert_eq!(copy.trace[1].party.as_deref(), Some("peer_1"));
+        let reply = copy
+            .trace
+            .iter()
+            .find(|step| step.name == "server_reply")
+            .unwrap();
+        assert_eq!(reply.action, "recv");
+        assert_eq!(reply.sender.as_deref(), Some("server_1"));
+    }
+
+    #[test]
+    fn synthesis_copy_rejects_mutation_on_sut_sent_step() {
+        let (model, binding) = fixture();
+        let mut proposal = base(&model);
+        let mut server_reply = proposal.trace[0].clone();
+        server_reply.name = "server_reply".into();
+        server_reply.step = "server_reply".into();
+        server_reply.sender = Some("server".into());
+        server_reply.receiver = Some("client".into());
+        proposal.trace.push(server_reply);
+        proposal.mutations = vec![json!({
+            "op": "field", "steps": ["server_reply"], "field": "challenge",
+            "kind": "string", "suggestion": "boundary", "evidence": "src/a.c:1"
+        })];
+
+        let error = proposal.synthesis_copy(&binding).unwrap_err();
+        assert!(error.contains("SUT-sent"), "{error}");
     }
 
     #[test]

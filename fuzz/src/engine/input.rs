@@ -100,7 +100,7 @@ pub struct StepInstance {
     pub name: String,
     /// Model step name this instance implements.
     pub step: String,
-    /// Model action: send, listen, connect, or close.
+    /// Generator action: send, recv, listen, connect, or close.
     pub action: String,
     #[serde(default)]
     pub condition: String,

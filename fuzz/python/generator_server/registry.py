@@ -2,8 +2,19 @@
 
 import importlib.util
 import os
+import sys
 from types import ModuleType
 from .handlers import build_dispatch
+
+
+def _install_shared_lib():
+    """Expose the campaign's generated helper modules to generator imports."""
+    path = os.environ.get("MCN_SHARED_LIB")
+    if not path or not os.path.isdir(path):
+        return
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    importlib.invalidate_caches()
 
 
 class Registry:
@@ -17,6 +28,7 @@ class Registry:
             raise ValueError(f"generator path must be absolute: {path}")
         if not os.path.isfile(path):
             raise ValueError(f"generator script not found: {path}")
+        _install_shared_lib()
         key = os.path.realpath(path)
         cached = self._modules.get(key)
         if cached is not None:

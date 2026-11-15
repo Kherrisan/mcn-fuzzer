@@ -40,6 +40,15 @@ or OS sockets belong inside generate, as required by the worker contract.
 Lazy imports inside generate are not executed by this probe; verify relevant SDK
 APIs when choosing a module. The probe never calls generate or starts the SUT.
 
+Generator.py may import reusable modules from `WORKSPACE/lib`; the generator
+server adds that directory to `sys.path` when it loads a generator, and the
+validator receives it through `--shared-lib` for its import probe. Generator
+code does not need a parent-directory bootstrap. Shared helpers must be
+import-safe (no sockets, threads, subprocesses or file writes at module scope);
+the probe does not validate each helper separately. Reuse existing helper
+modules as-is; add a versioned module for changed behavior instead of editing an
+existing module in place.
+
 ## What remains to check
 
 Review selected step order, party ownership, conditional prerequisites, endpoint

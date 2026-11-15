@@ -66,6 +66,7 @@ pub struct GeneratorClient {
     service_serial: u64,
     python: String,
     pythonpath: String,
+    shared_lib: Option<String>,
     log_path: PathBuf,
     /// Distinguishes a coverage replay server from the main fuzz server.
     ipc_suffix: String,
@@ -74,7 +75,17 @@ pub struct GeneratorClient {
 impl GeneratorClient {
     /// Spawn `python -m generator_server` and wait until `ping` succeeds.
     pub fn spawn(python: &Path, pythonpath: &Path, log_path: &Path) -> Result<Self, Error> {
-        Self::spawn_tagged(python, pythonpath, log_path, "")
+        Self::spawn_with_shared_lib(python, pythonpath, log_path, None)
+    }
+
+    /// Spawn with an optional campaign-shared helper directory.
+    pub fn spawn_with_shared_lib(
+        python: &Path,
+        pythonpath: &Path,
+        log_path: &Path,
+        shared_lib: Option<&Path>,
+    ) -> Result<Self, Error> {
+        Self::spawn_tagged_with_shared_lib(python, pythonpath, log_path, "", shared_lib)
     }
 
     /// Spawn a server whose iceoryx2 service name does not collide with the main fuzzer.
@@ -83,6 +94,17 @@ impl GeneratorClient {
         pythonpath: &Path,
         log_path: &Path,
         ipc_suffix: &str,
+    ) -> Result<Self, Error> {
+        Self::spawn_tagged_with_shared_lib(python, pythonpath, log_path, ipc_suffix, None)
+    }
+
+    /// Spawn a tagged server with an optional campaign-shared helper directory.
+    pub fn spawn_tagged_with_shared_lib(
+        python: &Path,
+        pythonpath: &Path,
+        log_path: &Path,
+        ipc_suffix: &str,
+        shared_lib: Option<&Path>,
     ) -> Result<Self, Error> {
         let node = node_builder()
             .create::<ipc::Service>()
@@ -104,6 +126,7 @@ impl GeneratorClient {
             service_serial: 0,
             python: python.display().to_string(),
             pythonpath: pythonpath.display().to_string(),
+            shared_lib: shared_lib.map(|path| path.display().to_string()),
             log_path: log_path.to_path_buf(),
             ipc_suffix: ipc_suffix.to_string(),
         };
@@ -337,6 +360,9 @@ impl GeneratorClient {
             .stdout(Stdio::from(log))
             .stderr(Stdio::from(log_err))
             .process_group(0);
+        if let Some(shared_lib) = &self.shared_lib {
+            command.env("MCN_SHARED_LIB", shared_lib);
+        }
         self.child = command.spawn().map_err(|error| {
             Error::unknown(format!(
                 "failed to start generator server with {} (PYTHONPATH={}): {error}",

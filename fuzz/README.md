@@ -193,17 +193,29 @@ baselined active entry is dropped because its partial mutation state cannot be
 reconstructed. Novel children receive the proposal's `TraceOrigin` metadata
 before they are written back to the on-disk corpus.
 
+The campaign root has one unified `events.jsonl`. Every line is
+`{"time_ms": ..., "kind": ..., "body": ...}`: case outcomes use `kind: "case"`,
+and mutation-stage selections use `kind: "corpus_selected"` or
+`"candidate_selected"`. `corpus_selected` carries the scheduler case id
+(`corpus:<id>`) and current corpus count; `candidate_selected` carries the
+synthesis request id and corpus count. Row order is the event order, so case
+events and scheduler choices share one timeline.
+
 The synthesis stage copies the accepted proposal into the request directory
-after stripping `mutations` and adding `mutable_fields`, then points the prompt
-at that downstream description instead of a receipt. Coverage
+after stripping `mutations`, adding `mutable_fields`, and projecting the trace
+onto generator-owned actions: generator sends keep `receiver` and drop
+`sender`, SUT sends become `recv` with `sender` and no `receiver`, SUT
+listen/connect/close steps are omitted, and generator network actions remain.
+The prompt points at that downstream description instead of a receipt. Coverage
 mode never generates without a proposal. Autonomous mode (analysis disabled, or
 seedless bootstrap) asks the agent to write `proposal.draft.json`, run
 `python -m coverage_analysis.server proposal` to validate named instances, and
 then generate. Both modes publish `generator.py`, `params.schema.json`, `params.json`, and
 `result.json`; Rust validates the proposal, code, and initial mutable-field
 defaults in-process before publishing the generator. The proposal copy handed to
-synthesis has `mutations` stripped and replaced by per-instance
-`mutable_fields`; dependencies stay in the proposal. Failed or expired
+synthesis has `mutations` stripped, `mutable_fields` added, and its trace
+projected to the generator perspective; dependencies stay in the proposal and
+are filtered if a dropped SUT setup step was an endpoint. Failed or expired
 proposals are aborted and leave existing corpus entries untouched.
 
 The synthesizer prompts are Markdown MiniJinja templates in `prompts/`. They are embedded in the fuzzer at build time, so rebuild after editing them. Both prompts point the agent at two read-only references: [`python/generator_server/template.py`](python/generator_server/template.py), a detailed scaffold with common imports, `ctx` helpers and one commented step-handler example for each ProfuzzGym target (DAAP, DICOM, DNS, DTLS, BFTPD, LightFTP, ProFTPD, PureFTPD, RTSP, SIP, SMTP, SSH, TLS), and [`python/generator_server/params.schema.json`](python/generator_server/params.schema.json), the empty production-compatible parameter-schema shape. The scaffold is a copy reference, not a runnable generator; only the request's `generator.py` and extended `params.schema.json` are published.
@@ -249,7 +261,7 @@ behavior comes from the proposal and RFCs; public generator API/SDK references
 and static artifact validation remain available. Runtime replies, failures and
 coverage are evaluated by the fuzzer after publication.
 
-`WORKSPACE` is the agent's fixed working directory (`generator_synthesis.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its proposal (mutations stripped, mutable fields added), `generator.py`, initial field-default schema, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root.
+`WORKSPACE` is the agent's fixed working directory (`generator_synthesis.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its proposal (mutations stripped, mutable fields added), `generator.py`, initial field-default schema, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root. Synthesis-generated generic helpers may live in `WORKSPACE/lib` and remain campaign-scoped runtime imports for accepted generators; the generator server adds that directory to `sys.path` when loading a generator. Task-specific handlers and protocol state stay in `generator.py`.
 
 When synthesis is enabled, `[parties]` and `generator_synthesis.model` are required. A campaign that includes `[parties]` resolves those selectors against the model before cases start, even when synthesis is disabled. A missing model is an error. `sut` and `generator` are each a non-empty list of protocol party names or `"*"`. `"*"` means every model party not named by the other side. Parties in neither set stay unavailable. The removed `generator_synthesis.bindings` table is a configuration error. The LightFTP campaign assigns the server parties to the SUT and the remaining parties to the generator.
 

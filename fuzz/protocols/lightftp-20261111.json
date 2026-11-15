@@ -1,0 +1,5749 @@
+{
+  "meta": {
+    "protocol": "FTP/RFC959+RFC3659",
+    "complete": false,
+    "documents": [
+      {
+        "doc_id": "rfc959",
+        "rfc": "RFC 959",
+        "path": "sources/rfc959.json"
+      },
+      {
+        "doc_id": "rfc3659",
+        "rfc": "RFC 3659",
+        "path": "sources/rfc3659.json"
+      }
+    ]
+  },
+  "parties": [
+    {
+      "name": "user-PI",
+      "description": "initiates control connections and sends FTP commands"
+    },
+    {
+      "name": "server-PI",
+      "description": "accepts control connections and sends FTP replies"
+    },
+    {
+      "name": "user-DTP",
+      "description": "exchanges file data on a client data connection"
+    },
+    {
+      "name": "server-DTP",
+      "description": "exchanges file data on a server data connection"
+    },
+    {
+      "name": "server-PI A",
+      "description": "controls the passive server in a server-to-server transfer"
+    },
+    {
+      "name": "server-PI B",
+      "description": "controls the active server in a server-to-server transfer"
+    },
+    {
+      "name": "server-DTP A",
+      "description": "accepts the server-to-server data connection"
+    },
+    {
+      "name": "server-DTP B",
+      "description": "initiates the server-to-server data connection"
+    }
+  ],
+  "messages": [
+    {
+      "name": "USER",
+      "associated_fields": [
+        {
+          "name": "username"
+        }
+      ]
+    },
+    {
+      "name": "PASS",
+      "associated_fields": []
+    },
+    {
+      "name": "ACCT",
+      "associated_fields": []
+    },
+    {
+      "name": "CWD",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "CDUP",
+      "associated_fields": []
+    },
+    {
+      "name": "SMNT",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "REIN",
+      "associated_fields": []
+    },
+    {
+      "name": "QUIT",
+      "associated_fields": []
+    },
+    {
+      "name": "PORT",
+      "associated_fields": [
+        {
+          "name": "host address"
+        },
+        {
+          "name": "port"
+        }
+      ]
+    },
+    {
+      "name": "PASV",
+      "associated_fields": []
+    },
+    {
+      "name": "TYPE",
+      "associated_fields": [
+        {
+          "name": "representation type"
+        },
+        {
+          "name": "format or byte size"
+        }
+      ]
+    },
+    {
+      "name": "STRU",
+      "associated_fields": [
+        {
+          "name": "file structure"
+        }
+      ]
+    },
+    {
+      "name": "MODE",
+      "associated_fields": [
+        {
+          "name": "transfer mode"
+        }
+      ]
+    },
+    {
+      "name": "RETR",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "STOR",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "STOU",
+      "associated_fields": []
+    },
+    {
+      "name": "APPE",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "ALLO",
+      "associated_fields": []
+    },
+    {
+      "name": "REST",
+      "associated_fields": [
+        {
+          "name": "restart marker"
+        }
+      ]
+    },
+    {
+      "name": "RNFR",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "RNTO",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "ABOR",
+      "associated_fields": []
+    },
+    {
+      "name": "DELE",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "RMD",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "MKD",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "PWD",
+      "associated_fields": []
+    },
+    {
+      "name": "LIST",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "NLST",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "SITE",
+      "associated_fields": []
+    },
+    {
+      "name": "SYST",
+      "associated_fields": []
+    },
+    {
+      "name": "STAT",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "HELP",
+      "associated_fields": []
+    },
+    {
+      "name": "NOOP",
+      "associated_fields": []
+    },
+    {
+      "name": "MDTM",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "SIZE",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "MLST",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "MLSD",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "FEAT",
+      "associated_fields": []
+    },
+    {
+      "name": "OPTS MLST",
+      "associated_fields": [
+        {
+          "name": "requested facts"
+        }
+      ]
+    },
+    {
+      "name": "FTP reply",
+      "associated_fields": [
+        {
+          "name": "reply code"
+        }
+      ]
+    },
+    {
+      "name": "120 Service delay reply",
+      "associated_fields": [
+        {
+          "name": "minutes until ready"
+        }
+      ]
+    },
+    {
+      "name": "227 Passive Mode reply",
+      "associated_fields": [
+        {
+          "name": "host address"
+        },
+        {
+          "name": "port"
+        }
+      ]
+    },
+    {
+      "name": "110 Restart marker reply",
+      "associated_fields": [
+        {
+          "name": "user marker"
+        },
+        {
+          "name": "server marker"
+        }
+      ]
+    },
+    {
+      "name": "257 Pathname reply",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "213 MDTM reply",
+      "associated_fields": [
+        {
+          "name": "modification time"
+        }
+      ]
+    },
+    {
+      "name": "213 SIZE reply",
+      "associated_fields": [
+        {
+          "name": "transfer size"
+        }
+      ]
+    },
+    {
+      "name": "STAT reply",
+      "associated_fields": [
+        {
+          "name": "reply code"
+        },
+        {
+          "name": "representation type"
+        },
+        {
+          "name": "file structure"
+        },
+        {
+          "name": "transfer mode"
+        },
+        {
+          "name": "connection status"
+        },
+        {
+          "name": "transfer status"
+        }
+      ]
+    },
+    {
+      "name": "250 MLST reply",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        },
+        {
+          "name": "type fact"
+        },
+        {
+          "name": "unique fact"
+        },
+        {
+          "name": "modify fact"
+        },
+        {
+          "name": "perm fact"
+        },
+        {
+          "name": "charset fact"
+        }
+      ]
+    },
+    {
+      "name": "200 OPTS MLST reply",
+      "associated_fields": [
+        {
+          "name": "accepted facts"
+        }
+      ]
+    },
+    {
+      "name": "211 FEAT reply",
+      "associated_fields": [
+        {
+          "name": "feature"
+        },
+        {
+          "name": "available facts"
+        },
+        {
+          "name": "selected facts"
+        }
+      ]
+    },
+    {
+      "name": "250 STOU name reply",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "Stream transfer bytes",
+      "associated_fields": []
+    },
+    {
+      "name": "Block mode block",
+      "associated_fields": [
+        {
+          "name": "descriptor code"
+        },
+        {
+          "name": "restart marker"
+        }
+      ]
+    },
+    {
+      "name": "Compressed byte string",
+      "associated_fields": []
+    },
+    {
+      "name": "Compressed replicated byte",
+      "associated_fields": []
+    },
+    {
+      "name": "Compressed filler string",
+      "associated_fields": []
+    },
+    {
+      "name": "Compressed control sequence",
+      "associated_fields": [
+        {
+          "name": "descriptor code"
+        }
+      ]
+    },
+    {
+      "name": "Compressed restart marker string",
+      "associated_fields": [
+        {
+          "name": "restart marker"
+        }
+      ]
+    },
+    {
+      "name": "Page structure page",
+      "associated_fields": [
+        {
+          "name": "page index"
+        },
+        {
+          "name": "page type"
+        }
+      ]
+    },
+    {
+      "name": "Directory listing data",
+      "associated_fields": []
+    },
+    {
+      "name": "Name list entry",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "MLSD entry",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        },
+        {
+          "name": "type fact"
+        },
+        {
+          "name": "unique fact"
+        },
+        {
+          "name": "modify fact"
+        },
+        {
+          "name": "perm fact"
+        },
+        {
+          "name": "charset fact"
+        }
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "name": "control connection",
+      "description": "TCP command and reply connection",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "user-PI",
+        "server-PI"
+      ],
+      "initiator_party_name": "user-PI",
+      "acceptor_party_name": "server-PI",
+      "endpoint_sources": [
+        {
+          "party_name": "server-PI",
+          "parameter": "listening port",
+          "from": "RFC959 port L = 21"
+        },
+        {
+          "party_name": "user-PI",
+          "parameter": "local port",
+          "from": "RFC959 user port U"
+        }
+      ]
+    },
+    {
+      "name": "control connection A",
+      "description": "TCP control connection to the passive server",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "user-PI",
+        "server-PI A"
+      ],
+      "initiator_party_name": "user-PI",
+      "acceptor_party_name": "server-PI A",
+      "endpoint_sources": [
+        {
+          "party_name": "server-PI A",
+          "parameter": "listening port",
+          "from": "RFC959 port L = 21"
+        },
+        {
+          "party_name": "user-PI",
+          "parameter": "local port",
+          "from": "user port on connection A"
+        }
+      ]
+    },
+    {
+      "name": "control connection B",
+      "description": "TCP control connection to the active server",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "user-PI",
+        "server-PI B"
+      ],
+      "initiator_party_name": "user-PI",
+      "acceptor_party_name": "server-PI B",
+      "endpoint_sources": [
+        {
+          "party_name": "server-PI B",
+          "parameter": "listening port",
+          "from": "RFC959 port L = 21"
+        },
+        {
+          "party_name": "user-PI",
+          "parameter": "local port",
+          "from": "user port on connection B"
+        }
+      ]
+    },
+    {
+      "name": "active data connection",
+      "description": "TCP data connection established by server-DTP",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "server-DTP",
+        "user-DTP"
+      ],
+      "initiator_party_name": "server-DTP",
+      "acceptor_party_name": "user-DTP",
+      "endpoint_sources": [
+        {
+          "party_name": "user-DTP",
+          "parameter": "listening host address",
+          "from": "PORT.host address if PORT accepted; otherwise user control host"
+        },
+        {
+          "party_name": "user-DTP",
+          "parameter": "listening port",
+          "from": "PORT.port if PORT accepted; otherwise user control port U"
+        },
+        {
+          "party_name": "server-DTP",
+          "parameter": "local port",
+          "from": "RFC959 default L-1 for active server-DTP"
+        }
+      ]
+    },
+    {
+      "name": "passive data connection",
+      "description": "TCP data connection accepted by server-DTP",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "user-DTP",
+        "server-DTP"
+      ],
+      "initiator_party_name": "user-DTP",
+      "acceptor_party_name": "server-DTP",
+      "endpoint_sources": [
+        {
+          "party_name": "server-DTP",
+          "parameter": "listening host address",
+          "from": "227 Passive Mode reply.host address after PASV"
+        },
+        {
+          "party_name": "server-DTP",
+          "parameter": "listening port",
+          "from": "227 Passive Mode reply.port after PASV"
+        },
+        {
+          "party_name": "user-DTP",
+          "parameter": "local port",
+          "from": "default U, or PORT.port if both PORT and PASV negotiated"
+        }
+      ]
+    },
+    {
+      "name": "server-to-server data connection",
+      "description": "TCP data connection from server B to server A",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "server-DTP B",
+        "server-DTP A"
+      ],
+      "initiator_party_name": "server-DTP B",
+      "acceptor_party_name": "server-DTP A",
+      "endpoint_sources": [
+        {
+          "party_name": "server-DTP A",
+          "parameter": "listening host address",
+          "from": "227 Passive Mode reply.host address from server A, relayed in PORT to B"
+        },
+        {
+          "party_name": "server-DTP A",
+          "parameter": "listening port",
+          "from": "227 Passive Mode reply.port from server A, relayed in PORT to B"
+        },
+        {
+          "party_name": "server-DTP B",
+          "parameter": "local port",
+          "from": "RFC959 default L-1 on active server B"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "name": "service delay",
+      "message_name": "120 Service delay reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "120 while service is not ready, initially or after REIN",
+      "action": "send"
+    },
+    {
+      "name": "service greeting",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "220 when service is ready, initially or after REIN",
+      "action": "send"
+    },
+    {
+      "name": "send USER",
+      "message_name": "USER",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "send PASS",
+      "message_name": "PASS",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "send ACCT",
+      "message_name": "ACCT",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "send CWD",
+      "message_name": "CWD",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send CDUP",
+      "message_name": "CDUP",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send SMNT",
+      "message_name": "SMNT",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send REIN",
+      "message_name": "REIN",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "send QUIT",
+      "message_name": "QUIT",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "send PORT",
+      "message_name": "PORT",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send PASV",
+      "message_name": "PASV",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send TYPE",
+      "message_name": "TYPE",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send STRU",
+      "message_name": "STRU",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send MODE",
+      "message_name": "MODE",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send RETR",
+      "message_name": "RETR",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send STOR",
+      "message_name": "STOR",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send STOU",
+      "message_name": "STOU",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send APPE",
+      "message_name": "APPE",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send ALLO",
+      "message_name": "ALLO",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send REST",
+      "message_name": "REST",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send RNFR",
+      "message_name": "RNFR",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send RNTO",
+      "message_name": "RNTO",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send ABOR",
+      "message_name": "ABOR",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send DELE",
+      "message_name": "DELE",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send RMD",
+      "message_name": "RMD",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send MKD",
+      "message_name": "MKD",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send PWD",
+      "message_name": "PWD",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send LIST",
+      "message_name": "LIST",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send NLST",
+      "message_name": "NLST",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send SITE",
+      "message_name": "SITE",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send SYST",
+      "message_name": "SYST",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send STAT",
+      "message_name": "STAT",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send HELP",
+      "message_name": "HELP",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "send NOOP",
+      "message_name": "NOOP",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send MDTM",
+      "message_name": "MDTM",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send SIZE",
+      "message_name": "SIZE",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send MLST",
+      "message_name": "MLST",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send MLSD",
+      "message_name": "MLSD",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "after login, unless server permits earlier use",
+      "action": "send"
+    },
+    {
+      "name": "send FEAT",
+      "message_name": "FEAT",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "send OPTS MLST",
+      "message_name": "OPTS MLST",
+      "channel_name": "control connection",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "ordinary command reply",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "reply to a command, including positive and negative outcomes",
+      "action": "send"
+    },
+    {
+      "name": "USER intermediate",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "331 requires PASS or 332 requires ACCT",
+      "action": "send"
+    },
+    {
+      "name": "PASS intermediate",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "332 requires ACCT",
+      "action": "send"
+    },
+    {
+      "name": "login accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "230 after USER, PASS or ACCT",
+      "action": "send"
+    },
+    {
+      "name": "TYPE accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "200 after TYPE",
+      "action": "send"
+    },
+    {
+      "name": "STRU accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "200 after STRU",
+      "action": "send"
+    },
+    {
+      "name": "MODE accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "200 after MODE",
+      "action": "send"
+    },
+    {
+      "name": "PORT accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "200 after PORT",
+      "action": "send"
+    },
+    {
+      "name": "PASV endpoint",
+      "message_name": "227 Passive Mode reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "227 after PASV",
+      "action": "send"
+    },
+    {
+      "name": "restart accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "350 after REST",
+      "action": "send"
+    },
+    {
+      "name": "rename accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "350 after RNFR",
+      "action": "send"
+    },
+    {
+      "name": "transfer preliminary",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "125 or 150 after a transfer command",
+      "action": "send"
+    },
+    {
+      "name": "transfer completion",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "226 after closing data connection or 250 if left open",
+      "action": "send"
+    },
+    {
+      "name": "transfer failure",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "425, 426 or other negative transfer outcome",
+      "action": "send"
+    },
+    {
+      "name": "abort completion",
+      "message_name": "FTP reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "226 after ABOR; 426 first if transfer was active",
+      "action": "send"
+    },
+    {
+      "name": "restart marker reply",
+      "message_name": "110 Restart marker reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "block or compressed transfer checkpoint when marker is conveyed over control",
+      "action": "send"
+    },
+    {
+      "name": "pathname reply",
+      "message_name": "257 Pathname reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "after successful MKD or PWD",
+      "action": "send"
+    },
+    {
+      "name": "STOU name reply",
+      "message_name": "250 STOU name reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "STOU 250 names generated file; its transfer phase is ambiguous in RFC959",
+      "action": "send"
+    },
+    {
+      "name": "MDTM result",
+      "message_name": "213 MDTM reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "successful MDTM",
+      "action": "send"
+    },
+    {
+      "name": "SIZE result",
+      "message_name": "213 SIZE reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "successful SIZE",
+      "action": "send"
+    },
+    {
+      "name": "STAT result",
+      "message_name": "STAT reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "STAT general or in-transfer status; 211, 212 or 213 as applicable",
+      "action": "send"
+    },
+    {
+      "name": "MLST result",
+      "message_name": "250 MLST reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "successful MLST; default or latest accepted OPTS fact set; multiple entries only for multiple types",
+      "action": "send"
+    },
+    {
+      "name": "OPTS MLST result",
+      "message_name": "200 OPTS MLST reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "successful OPTS MLST; reports accepted facts",
+      "action": "send"
+    },
+    {
+      "name": "FEAT result",
+      "message_name": "211 FEAT reply",
+      "channel_name": "control connection",
+      "sender_name": "server-PI",
+      "receiver_name": "user-PI",
+      "condition": "FEAT response advertising supported features and MLSx facts",
+      "action": "send"
+    },
+    {
+      "name": "retrieve stream bytes via active",
+      "message_name": "Stream transfer bytes",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE S; RETR copies source file without changing it",
+      "action": "send"
+    },
+    {
+      "name": "retrieve block via active",
+      "message_name": "Block mode block",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE B; RETR copies source file without changing it; includes marker blocks when restarting",
+      "action": "send"
+    },
+    {
+      "name": "retrieve compressed byte string via active",
+      "message_name": "Compressed byte string",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE C; RETR copies source file without changing it; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "retrieve compressed replicated byte via active",
+      "message_name": "Compressed replicated byte",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE C; RETR copies source file without changing it; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "retrieve compressed filler string via active",
+      "message_name": "Compressed filler string",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE C; RETR copies source file without changing it; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "retrieve compressed control sequence via active",
+      "message_name": "Compressed control sequence",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE C; RETR copies source file without changing it; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "retrieve compressed restart marker via active",
+      "message_name": "Compressed restart marker string",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE C; printable marker following a restart control sequence; RETR copies source file without changing it",
+      "action": "send"
+    },
+    {
+      "name": "retrieve page via active",
+      "message_name": "Page structure page",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "STRU P; RETR copies source file without changing it; sent within selected transfer mode",
+      "action": "send"
+    },
+    {
+      "name": "store stream bytes via active",
+      "message_name": "Stream transfer bytes",
+      "channel_name": "active data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE S; STOR replaces or creates, STOU creates unique, APPE appends or creates",
+      "action": "send"
+    },
+    {
+      "name": "store block via active",
+      "message_name": "Block mode block",
+      "channel_name": "active data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE B; STOR replaces or creates, STOU creates unique, APPE appends or creates; includes marker blocks when restarting",
+      "action": "send"
+    },
+    {
+      "name": "store compressed byte string via active",
+      "message_name": "Compressed byte string",
+      "channel_name": "active data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE C; STOR replaces or creates, STOU creates unique, APPE appends or creates; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "store compressed replicated byte via active",
+      "message_name": "Compressed replicated byte",
+      "channel_name": "active data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE C; STOR replaces or creates, STOU creates unique, APPE appends or creates; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "store compressed filler string via active",
+      "message_name": "Compressed filler string",
+      "channel_name": "active data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE C; STOR replaces or creates, STOU creates unique, APPE appends or creates; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "store compressed control sequence via active",
+      "message_name": "Compressed control sequence",
+      "channel_name": "active data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE C; STOR replaces or creates, STOU creates unique, APPE appends or creates; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "store compressed restart marker via active",
+      "message_name": "Compressed restart marker string",
+      "channel_name": "active data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE C; printable marker following a restart control sequence; STOR replaces or creates, STOU creates unique, APPE appends or creates",
+      "action": "send"
+    },
+    {
+      "name": "store page via active",
+      "message_name": "Page structure page",
+      "channel_name": "active data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "STRU P; STOR replaces or creates, STOU creates unique, APPE appends or creates; sent within selected transfer mode",
+      "action": "send"
+    },
+    {
+      "name": "LIST data via active",
+      "message_name": "Directory listing data",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "LIST",
+      "action": "send"
+    },
+    {
+      "name": "NLST name via active",
+      "message_name": "Name list entry",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "NLST",
+      "action": "send"
+    },
+    {
+      "name": "MLSD entry via active",
+      "message_name": "MLSD entry",
+      "channel_name": "active data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MLSD; temporary TYPE L 8, MODE S, STRU F",
+      "action": "send"
+    },
+    {
+      "name": "retrieve stream bytes via passive",
+      "message_name": "Stream transfer bytes",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE S; RETR copies source file without changing it",
+      "action": "send"
+    },
+    {
+      "name": "retrieve block via passive",
+      "message_name": "Block mode block",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE B; RETR copies source file without changing it; includes marker blocks when restarting",
+      "action": "send"
+    },
+    {
+      "name": "retrieve compressed byte string via passive",
+      "message_name": "Compressed byte string",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE C; RETR copies source file without changing it; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "retrieve compressed replicated byte via passive",
+      "message_name": "Compressed replicated byte",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE C; RETR copies source file without changing it; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "retrieve compressed filler string via passive",
+      "message_name": "Compressed filler string",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE C; RETR copies source file without changing it; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "retrieve compressed control sequence via passive",
+      "message_name": "Compressed control sequence",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE C; RETR copies source file without changing it; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "retrieve compressed restart marker via passive",
+      "message_name": "Compressed restart marker string",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MODE C; printable marker following a restart control sequence; RETR copies source file without changing it",
+      "action": "send"
+    },
+    {
+      "name": "retrieve page via passive",
+      "message_name": "Page structure page",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "STRU P; RETR copies source file without changing it; sent within selected transfer mode",
+      "action": "send"
+    },
+    {
+      "name": "store stream bytes via passive",
+      "message_name": "Stream transfer bytes",
+      "channel_name": "passive data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE S; STOR replaces or creates, STOU creates unique, APPE appends or creates",
+      "action": "send"
+    },
+    {
+      "name": "store block via passive",
+      "message_name": "Block mode block",
+      "channel_name": "passive data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE B; STOR replaces or creates, STOU creates unique, APPE appends or creates; includes marker blocks when restarting",
+      "action": "send"
+    },
+    {
+      "name": "store compressed byte string via passive",
+      "message_name": "Compressed byte string",
+      "channel_name": "passive data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE C; STOR replaces or creates, STOU creates unique, APPE appends or creates; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "store compressed replicated byte via passive",
+      "message_name": "Compressed replicated byte",
+      "channel_name": "passive data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE C; STOR replaces or creates, STOU creates unique, APPE appends or creates; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "store compressed filler string via passive",
+      "message_name": "Compressed filler string",
+      "channel_name": "passive data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE C; STOR replaces or creates, STOU creates unique, APPE appends or creates; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "store compressed control sequence via passive",
+      "message_name": "Compressed control sequence",
+      "channel_name": "passive data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE C; STOR replaces or creates, STOU creates unique, APPE appends or creates; control sequence may carry EOR, EOF or restart marker",
+      "action": "send"
+    },
+    {
+      "name": "store compressed restart marker via passive",
+      "message_name": "Compressed restart marker string",
+      "channel_name": "passive data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "MODE C; printable marker following a restart control sequence; STOR replaces or creates, STOU creates unique, APPE appends or creates",
+      "action": "send"
+    },
+    {
+      "name": "store page via passive",
+      "message_name": "Page structure page",
+      "channel_name": "passive data connection",
+      "sender_name": "user-DTP",
+      "receiver_name": "server-DTP",
+      "condition": "STRU P; STOR replaces or creates, STOU creates unique, APPE appends or creates; sent within selected transfer mode",
+      "action": "send"
+    },
+    {
+      "name": "LIST data via passive",
+      "message_name": "Directory listing data",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "LIST",
+      "action": "send"
+    },
+    {
+      "name": "NLST name via passive",
+      "message_name": "Name list entry",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "NLST",
+      "action": "send"
+    },
+    {
+      "name": "MLSD entry via passive",
+      "message_name": "MLSD entry",
+      "channel_name": "passive data connection",
+      "sender_name": "server-DTP",
+      "receiver_name": "user-DTP",
+      "condition": "MLSD; temporary TYPE L 8, MODE S, STRU F",
+      "action": "send"
+    },
+    {
+      "name": "PASV to server A",
+      "message_name": "PASV",
+      "channel_name": "control connection A",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI A",
+      "condition": "",
+      "action": "send"
+    },
+    {
+      "name": "server A endpoint",
+      "message_name": "227 Passive Mode reply",
+      "channel_name": "control connection A",
+      "sender_name": "server-PI A",
+      "receiver_name": "user-PI",
+      "condition": "after PASV",
+      "action": "send"
+    },
+    {
+      "name": "PORT to server B",
+      "message_name": "PORT",
+      "channel_name": "control connection B",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI B",
+      "condition": "carries server A endpoint",
+      "action": "send"
+    },
+    {
+      "name": "server B PORT accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection B",
+      "sender_name": "server-PI B",
+      "receiver_name": "user-PI",
+      "condition": "200 after PORT",
+      "action": "send"
+    },
+    {
+      "name": "STOR to server A",
+      "message_name": "STOR",
+      "channel_name": "control connection A",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI A",
+      "condition": "server-to-server transfer; A receives",
+      "action": "send"
+    },
+    {
+      "name": "RETR to server B",
+      "message_name": "RETR",
+      "channel_name": "control connection B",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI B",
+      "condition": "server-to-server transfer; B sends",
+      "action": "send"
+    },
+    {
+      "name": "RETR to server A",
+      "message_name": "RETR",
+      "channel_name": "control connection A",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI A",
+      "condition": "server-to-server transfer; A sends",
+      "action": "send"
+    },
+    {
+      "name": "STOR to server B",
+      "message_name": "STOR",
+      "channel_name": "control connection B",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI B",
+      "condition": "server-to-server transfer; B receives",
+      "action": "send"
+    },
+    {
+      "name": "server A delay",
+      "message_name": "120 Service delay reply",
+      "channel_name": "control connection A",
+      "sender_name": "server-PI A",
+      "receiver_name": "user-PI",
+      "condition": "120 before A is ready",
+      "action": "send"
+    },
+    {
+      "name": "server B delay",
+      "message_name": "120 Service delay reply",
+      "channel_name": "control connection B",
+      "sender_name": "server-PI B",
+      "receiver_name": "user-PI",
+      "condition": "120 before B is ready",
+      "action": "send"
+    },
+    {
+      "name": "server A greeting",
+      "message_name": "FTP reply",
+      "channel_name": "control connection A",
+      "sender_name": "server-PI A",
+      "receiver_name": "user-PI",
+      "condition": "220 ready before commands to A",
+      "action": "send"
+    },
+    {
+      "name": "server B greeting",
+      "message_name": "FTP reply",
+      "channel_name": "control connection B",
+      "sender_name": "server-PI B",
+      "receiver_name": "user-PI",
+      "condition": "220 ready before commands to B",
+      "action": "send"
+    },
+    {
+      "name": "server A USER",
+      "message_name": "USER",
+      "channel_name": "control connection A",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI A",
+      "condition": "authentication on server A",
+      "action": "send"
+    },
+    {
+      "name": "server A PASS",
+      "message_name": "PASS",
+      "channel_name": "control connection A",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI A",
+      "condition": "authentication on server A",
+      "action": "send"
+    },
+    {
+      "name": "server A ACCT",
+      "message_name": "ACCT",
+      "channel_name": "control connection A",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI A",
+      "condition": "authentication on server A",
+      "action": "send"
+    },
+    {
+      "name": "server A login intermediate",
+      "message_name": "FTP reply",
+      "channel_name": "control connection A",
+      "sender_name": "server-PI A",
+      "receiver_name": "user-PI",
+      "condition": "331 or 332 after USER, or 332 after PASS",
+      "action": "send"
+    },
+    {
+      "name": "server A login accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection A",
+      "sender_name": "server-PI A",
+      "receiver_name": "user-PI",
+      "condition": "230 after USER, PASS or ACCT",
+      "action": "send"
+    },
+    {
+      "name": "server A negative reply",
+      "message_name": "FTP reply",
+      "channel_name": "control connection A",
+      "sender_name": "server-PI A",
+      "receiver_name": "user-PI",
+      "condition": "421 if unavailable, or 4yz/5yz after a command on this server",
+      "action": "send"
+    },
+    {
+      "name": "server B USER",
+      "message_name": "USER",
+      "channel_name": "control connection B",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI B",
+      "condition": "authentication on server B",
+      "action": "send"
+    },
+    {
+      "name": "server B PASS",
+      "message_name": "PASS",
+      "channel_name": "control connection B",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI B",
+      "condition": "authentication on server B",
+      "action": "send"
+    },
+    {
+      "name": "server B ACCT",
+      "message_name": "ACCT",
+      "channel_name": "control connection B",
+      "sender_name": "user-PI",
+      "receiver_name": "server-PI B",
+      "condition": "authentication on server B",
+      "action": "send"
+    },
+    {
+      "name": "server B login intermediate",
+      "message_name": "FTP reply",
+      "channel_name": "control connection B",
+      "sender_name": "server-PI B",
+      "receiver_name": "user-PI",
+      "condition": "331 or 332 after USER, or 332 after PASS",
+      "action": "send"
+    },
+    {
+      "name": "server B login accepted",
+      "message_name": "FTP reply",
+      "channel_name": "control connection B",
+      "sender_name": "server-PI B",
+      "receiver_name": "user-PI",
+      "condition": "230 after USER, PASS or ACCT",
+      "action": "send"
+    },
+    {
+      "name": "server B negative reply",
+      "message_name": "FTP reply",
+      "channel_name": "control connection B",
+      "sender_name": "server-PI B",
+      "receiver_name": "user-PI",
+      "condition": "421 if unavailable, or 4yz/5yz after a command on this server",
+      "action": "send"
+    },
+    {
+      "name": "server A preliminary",
+      "message_name": "FTP reply",
+      "channel_name": "control connection A",
+      "sender_name": "server-PI A",
+      "receiver_name": "user-PI",
+      "condition": "125 or 150 after A transfer request",
+      "action": "send"
+    },
+    {
+      "name": "server B preliminary",
+      "message_name": "FTP reply",
+      "channel_name": "control connection B",
+      "sender_name": "server-PI B",
+      "receiver_name": "user-PI",
+      "condition": "125 or 150 after B transfer request",
+      "action": "send"
+    },
+    {
+      "name": "server A completion",
+      "message_name": "FTP reply",
+      "channel_name": "control connection A",
+      "sender_name": "server-PI A",
+      "receiver_name": "user-PI",
+      "condition": "226 or 250 after A transfer completes",
+      "action": "send"
+    },
+    {
+      "name": "server B completion",
+      "message_name": "FTP reply",
+      "channel_name": "control connection B",
+      "sender_name": "server-PI B",
+      "receiver_name": "user-PI",
+      "condition": "226 or 250 after B transfer completes",
+      "action": "send"
+    },
+    {
+      "name": "server B to A data",
+      "message_name": "Stream transfer bytes",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP B",
+      "receiver_name": "server-DTP A",
+      "condition": "MODE S; RETR at B and STOR at A",
+      "action": "send"
+    },
+    {
+      "name": "server B to A block",
+      "message_name": "Block mode block",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP B",
+      "receiver_name": "server-DTP A",
+      "condition": "MODE B; RETR at B and STOR at A",
+      "action": "send"
+    },
+    {
+      "name": "server B to A compressed byte string",
+      "message_name": "Compressed byte string",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP B",
+      "receiver_name": "server-DTP A",
+      "condition": "MODE C; RETR at B and STOR at A",
+      "action": "send"
+    },
+    {
+      "name": "server B to A compressed replicated byte",
+      "message_name": "Compressed replicated byte",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP B",
+      "receiver_name": "server-DTP A",
+      "condition": "MODE C; RETR at B and STOR at A",
+      "action": "send"
+    },
+    {
+      "name": "server B to A compressed filler string",
+      "message_name": "Compressed filler string",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP B",
+      "receiver_name": "server-DTP A",
+      "condition": "MODE C; RETR at B and STOR at A",
+      "action": "send"
+    },
+    {
+      "name": "server B to A compressed control sequence",
+      "message_name": "Compressed control sequence",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP B",
+      "receiver_name": "server-DTP A",
+      "condition": "MODE C; RETR at B and STOR at A",
+      "action": "send"
+    },
+    {
+      "name": "server B to A compressed restart marker",
+      "message_name": "Compressed restart marker string",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP B",
+      "receiver_name": "server-DTP A",
+      "condition": "MODE C; printable marker after restart control sequence",
+      "action": "send"
+    },
+    {
+      "name": "server B to A page",
+      "message_name": "Page structure page",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP B",
+      "receiver_name": "server-DTP A",
+      "condition": "STRU P; RETR at B and STOR at A",
+      "action": "send"
+    },
+    {
+      "name": "server A to B data",
+      "message_name": "Stream transfer bytes",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP A",
+      "receiver_name": "server-DTP B",
+      "condition": "MODE S; RETR at A and STOR at B",
+      "action": "send"
+    },
+    {
+      "name": "server A to B block",
+      "message_name": "Block mode block",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP A",
+      "receiver_name": "server-DTP B",
+      "condition": "MODE B; RETR at A and STOR at B",
+      "action": "send"
+    },
+    {
+      "name": "server A to B compressed byte string",
+      "message_name": "Compressed byte string",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP A",
+      "receiver_name": "server-DTP B",
+      "condition": "MODE C; RETR at A and STOR at B",
+      "action": "send"
+    },
+    {
+      "name": "server A to B compressed replicated byte",
+      "message_name": "Compressed replicated byte",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP A",
+      "receiver_name": "server-DTP B",
+      "condition": "MODE C; RETR at A and STOR at B",
+      "action": "send"
+    },
+    {
+      "name": "server A to B compressed filler string",
+      "message_name": "Compressed filler string",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP A",
+      "receiver_name": "server-DTP B",
+      "condition": "MODE C; RETR at A and STOR at B",
+      "action": "send"
+    },
+    {
+      "name": "server A to B compressed control sequence",
+      "message_name": "Compressed control sequence",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP A",
+      "receiver_name": "server-DTP B",
+      "condition": "MODE C; RETR at A and STOR at B",
+      "action": "send"
+    },
+    {
+      "name": "server A to B compressed restart marker",
+      "message_name": "Compressed restart marker string",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP A",
+      "receiver_name": "server-DTP B",
+      "condition": "MODE C; printable marker after restart control sequence",
+      "action": "send"
+    },
+    {
+      "name": "server A to B page",
+      "message_name": "Page structure page",
+      "channel_name": "server-to-server data connection",
+      "sender_name": "server-DTP A",
+      "receiver_name": "server-DTP B",
+      "condition": "STRU P; RETR at A and STOR at B",
+      "action": "send"
+    }
+  ],
+  "step_dependencies": [
+    {
+      "prior_step": "service delay",
+      "dependent_step": "service greeting",
+      "condition": "if a 120 delay preceded readiness",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send REIN",
+      "dependent_step": "service delay",
+      "condition": "if REIN returns 120 before readiness",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send REIN",
+      "dependent_step": "service greeting",
+      "condition": "successful REIN returns 220, directly or after 120",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send USER",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send USER",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to USER",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send PASS",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PASS",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to PASS",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send ACCT",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ACCT",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to ACCT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send CWD",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send CWD",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to CWD",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send CDUP",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send CDUP",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to CDUP",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send SMNT",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send SMNT",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to SMNT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send REIN",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send REIN",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send QUIT",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send QUIT",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to QUIT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send PORT",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PORT",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to PORT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send PASV",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PASV",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to PASV",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send TYPE",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send TYPE",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to TYPE",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send STRU",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STRU",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to STRU",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send MODE",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MODE",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to MODE",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send RETR",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send RETR",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to RETR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send STOR",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STOR",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to STOR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send STOU",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STOU",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to STOU",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send APPE",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send APPE",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to APPE",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send ALLO",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ALLO",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to ALLO",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send REST",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send REST",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to REST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send RNFR",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send RNFR",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to RNFR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send RNTO",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send RNTO",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to RNTO",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send ABOR",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ABOR",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to ABOR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send DELE",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send DELE",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to DELE",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send RMD",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send RMD",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to RMD",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send MKD",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MKD",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to MKD",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send PWD",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PWD",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to PWD",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send LIST",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send LIST",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to LIST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send NLST",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send NLST",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to NLST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send SITE",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send SITE",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to SITE",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send SYST",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send SYST",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to SYST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send STAT",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STAT",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to STAT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send HELP",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send HELP",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to HELP",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send NOOP",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send NOOP",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to NOOP",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send MDTM",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MDTM",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to MDTM",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send SIZE",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send SIZE",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to SIZE",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send MLST",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MLST",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to MLST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send MLSD",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MLSD",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to MLSD",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send FEAT",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send FEAT",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to FEAT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send OPTS MLST",
+      "condition": "most recent 220 readiness, initial or after REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send OPTS MLST",
+      "dependent_step": "ordinary command reply",
+      "condition": "when replying to OPTS MLST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send USER",
+      "dependent_step": "USER intermediate",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PASS",
+      "dependent_step": "PASS intermediate",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send USER",
+      "dependent_step": "login accepted",
+      "condition": "230 accepted directly after USER; alternative to the other login routes",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PASS",
+      "dependent_step": "login accepted",
+      "condition": "230 accepted directly after PASS; alternative to the other login routes",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ACCT",
+      "dependent_step": "login accepted",
+      "condition": "230 accepted directly after ACCT; alternative to the other login routes",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send TYPE",
+      "dependent_step": "TYPE accepted",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STRU",
+      "dependent_step": "STRU accepted",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MODE",
+      "dependent_step": "MODE accepted",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PORT",
+      "dependent_step": "PORT accepted",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send PASV",
+      "dependent_step": "PASV endpoint",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send REST",
+      "dependent_step": "restart accepted",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send RNFR",
+      "dependent_step": "rename accepted",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MDTM",
+      "dependent_step": "MDTM result",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send SIZE",
+      "dependent_step": "SIZE result",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STAT",
+      "dependent_step": "STAT result",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MLST",
+      "dependent_step": "MLST result",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send OPTS MLST",
+      "dependent_step": "OPTS MLST result",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send FEAT",
+      "dependent_step": "FEAT result",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STOU",
+      "dependent_step": "STOU name reply",
+      "condition": "on corresponding successful or intermediate reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "USER intermediate",
+      "dependent_step": "send PASS",
+      "condition": "331 requests password",
+      "field_relations": []
+    },
+    {
+      "prior_step": "USER intermediate",
+      "dependent_step": "send ACCT",
+      "condition": "if USER returned 332; alternative to PASS returning 332",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASS intermediate",
+      "dependent_step": "send ACCT",
+      "condition": "if PASS returned 332; alternative to USER returning 332",
+      "field_relations": []
+    },
+    {
+      "prior_step": "ordinary command reply",
+      "dependent_step": "send ACCT",
+      "condition": "if a later service command returned 332 or 532 for specific access",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send USER",
+      "dependent_step": "send PASS",
+      "condition": "PASS immediately follows USER if password required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send CWD",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send CDUP",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send SMNT",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send PORT",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send PASV",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send TYPE",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send STRU",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send MODE",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send RETR",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send STOR",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send STOU",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send APPE",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send ALLO",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send REST",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send RNFR",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send RNTO",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send ABOR",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send DELE",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send RMD",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send MKD",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send PWD",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send LIST",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send NLST",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send SITE",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send SYST",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send STAT",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send NOOP",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send MDTM",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send SIZE",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send MLST",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "login accepted",
+      "dependent_step": "send MLSD",
+      "condition": "when authentication is required, 230 from the current USER/PASS/ACCT sequence since latest REIN",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send USER",
+      "dependent_step": "send USER",
+      "condition": "new USER resets prior login information; later occurrence",
+      "field_relations": []
+    },
+    {
+      "prior_step": "service greeting",
+      "dependent_step": "send USER",
+      "condition": "new login after REIN readiness; old login flushed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "rename accepted",
+      "dependent_step": "send RNTO",
+      "condition": "RNTO immediately follows successful RNFR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send RNFR",
+      "dependent_step": "send RNTO",
+      "condition": "successful RNFR sequence",
+      "field_relations": []
+    },
+    {
+      "prior_step": "restart accepted",
+      "dependent_step": "send RETR",
+      "condition": "REST immediately precedes restartable transfer; APPE only if server permits",
+      "field_relations": []
+    },
+    {
+      "prior_step": "restart accepted",
+      "dependent_step": "send STOR",
+      "condition": "REST immediately precedes restartable transfer; APPE only if server permits",
+      "field_relations": []
+    },
+    {
+      "prior_step": "restart accepted",
+      "dependent_step": "send APPE",
+      "condition": "REST immediately precedes restartable transfer; APPE only if server permits",
+      "field_relations": []
+    },
+    {
+      "prior_step": "SIZE result",
+      "dependent_step": "send REST",
+      "condition": "resuming STREAM STOR; use exact saved size with unchanged TYPE/MODE/STRU",
+      "field_relations": [
+        {
+          "prior_field": "transfer size",
+          "dependent_field": "restart marker"
+        }
+      ]
+    },
+    {
+      "prior_step": "restart marker reply",
+      "dependent_step": "send REST",
+      "condition": "resuming block/compressed transfer with server marker",
+      "field_relations": [
+        {
+          "prior_field": "server marker",
+          "dependent_field": "restart marker"
+        }
+      ]
+    },
+    {
+      "prior_step": "TYPE accepted",
+      "dependent_step": "send SIZE",
+      "condition": "if TYPE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TYPE accepted",
+      "dependent_step": "send RETR",
+      "condition": "if TYPE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TYPE accepted",
+      "dependent_step": "send STOR",
+      "condition": "if TYPE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TYPE accepted",
+      "dependent_step": "send APPE",
+      "condition": "if TYPE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TYPE accepted",
+      "dependent_step": "send LIST",
+      "condition": "if TYPE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "TYPE accepted",
+      "dependent_step": "send NLST",
+      "condition": "if TYPE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STRU accepted",
+      "dependent_step": "send SIZE",
+      "condition": "if STRU was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STRU accepted",
+      "dependent_step": "send RETR",
+      "condition": "if STRU was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STRU accepted",
+      "dependent_step": "send STOR",
+      "condition": "if STRU was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STRU accepted",
+      "dependent_step": "send APPE",
+      "condition": "if STRU was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STRU accepted",
+      "dependent_step": "send LIST",
+      "condition": "if STRU was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STRU accepted",
+      "dependent_step": "send NLST",
+      "condition": "if STRU was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "MODE accepted",
+      "dependent_step": "send SIZE",
+      "condition": "if MODE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "MODE accepted",
+      "dependent_step": "send RETR",
+      "condition": "if MODE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "MODE accepted",
+      "dependent_step": "send STOR",
+      "condition": "if MODE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "MODE accepted",
+      "dependent_step": "send APPE",
+      "condition": "if MODE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "MODE accepted",
+      "dependent_step": "send LIST",
+      "condition": "if MODE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "MODE accepted",
+      "dependent_step": "send NLST",
+      "condition": "if MODE was changed from its current/default value after latest REIN, successful setting precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ALLO",
+      "dependent_step": "send STOR",
+      "condition": "if ALLO is followed by STOR; alternative to APPE",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ALLO",
+      "dependent_step": "send APPE",
+      "condition": "if ALLO is followed by APPE; alternative to STOR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "MDTM result",
+      "dependent_step": "send REST",
+      "condition": "if modification time check is used before restart; compare with earlier result",
+      "field_relations": []
+    },
+    {
+      "prior_step": "MLST result",
+      "dependent_step": "send REST",
+      "condition": "if modify fact is used to verify source before restart",
+      "field_relations": []
+    },
+    {
+      "prior_step": "OPTS MLST result",
+      "dependent_step": "send MLST",
+      "condition": "when custom fact set selected; server uses accepted facts",
+      "field_relations": []
+    },
+    {
+      "prior_step": "OPTS MLST result",
+      "dependent_step": "send MLSD",
+      "condition": "when custom fact set selected; server uses accepted facts",
+      "field_relations": []
+    },
+    {
+      "prior_step": "OPTS MLST result",
+      "dependent_step": "MLST result",
+      "condition": "latest successful OPTS selected these facts when applicable; rejected OPTS leaves prior selection unchanged",
+      "field_relations": [
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "type fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "unique fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "modify fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "perm fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "charset fact"
+        }
+      ]
+    },
+    {
+      "prior_step": "OPTS MLST result",
+      "dependent_step": "MLSD entry via active",
+      "condition": "latest successful OPTS selected these facts when applicable; rejected OPTS leaves prior selection unchanged",
+      "field_relations": [
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "type fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "unique fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "modify fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "perm fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "charset fact"
+        }
+      ]
+    },
+    {
+      "prior_step": "OPTS MLST result",
+      "dependent_step": "MLSD entry via passive",
+      "condition": "latest successful OPTS selected these facts when applicable; rejected OPTS leaves prior selection unchanged",
+      "field_relations": [
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "type fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "unique fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "modify fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "perm fact"
+        },
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "charset fact"
+        }
+      ]
+    },
+    {
+      "prior_step": "FEAT result",
+      "dependent_step": "MLST result",
+      "condition": "default starred facts if no later successful OPTS MLST",
+      "field_relations": [
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "type fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "unique fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "modify fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "perm fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "charset fact"
+        }
+      ]
+    },
+    {
+      "prior_step": "FEAT result",
+      "dependent_step": "MLSD entry via active",
+      "condition": "default starred facts if no later successful OPTS MLST",
+      "field_relations": [
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "type fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "unique fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "modify fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "perm fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "charset fact"
+        }
+      ]
+    },
+    {
+      "prior_step": "FEAT result",
+      "dependent_step": "MLSD entry via passive",
+      "condition": "default starred facts if no later successful OPTS MLST",
+      "field_relations": [
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "type fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "unique fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "modify fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "perm fact"
+        },
+        {
+          "prior_field": "selected facts",
+          "dependent_field": "charset fact"
+        }
+      ]
+    },
+    {
+      "prior_step": "OPTS MLST result",
+      "dependent_step": "FEAT result",
+      "condition": "subsequent FEAT marks accepted fact set",
+      "field_relations": [
+        {
+          "prior_field": "accepted facts",
+          "dependent_field": "selected facts"
+        }
+      ]
+    },
+    {
+      "prior_step": "FEAT result",
+      "dependent_step": "send OPTS MLST",
+      "condition": "when selecting supported MLST facts",
+      "field_relations": [
+        {
+          "prior_field": "available facts",
+          "dependent_field": "requested facts"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLST result",
+      "dependent_step": "send CWD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLST result",
+      "dependent_step": "send RETR",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLST result",
+      "dependent_step": "send MLST",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLST result",
+      "dependent_step": "send MLSD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLSD entry via active",
+      "dependent_step": "send CWD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLSD entry via active",
+      "dependent_step": "send RETR",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLSD entry via active",
+      "dependent_step": "send MLST",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLSD entry via active",
+      "dependent_step": "send MLSD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLSD entry via passive",
+      "dependent_step": "send CWD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLSD entry via passive",
+      "dependent_step": "send RETR",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLSD entry via passive",
+      "dependent_step": "send MLST",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "MLSD entry via passive",
+      "dependent_step": "send MLSD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "pathname reply",
+      "dependent_step": "send CWD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "pathname reply",
+      "dependent_step": "send RETR",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "pathname reply",
+      "dependent_step": "send MLST",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "pathname reply",
+      "dependent_step": "send MLSD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "NLST name via active",
+      "dependent_step": "send CWD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "NLST name via active",
+      "dependent_step": "send RETR",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "NLST name via active",
+      "dependent_step": "send MLST",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "NLST name via active",
+      "dependent_step": "send MLSD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "NLST name via passive",
+      "dependent_step": "send CWD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "NLST name via passive",
+      "dependent_step": "send RETR",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "NLST name via passive",
+      "dependent_step": "send MLST",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "NLST name via passive",
+      "dependent_step": "send MLSD",
+      "condition": "when returned pathname denotes a suitable target; respect TVFS and current directory",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname"
+        }
+      ]
+    },
+    {
+      "prior_step": "send RETR",
+      "dependent_step": "transfer preliminary",
+      "condition": "when RETR is accepted for data transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send RETR",
+      "dependent_step": "transfer failure",
+      "condition": "if RETR fails before or during transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STOR",
+      "dependent_step": "transfer preliminary",
+      "condition": "when STOR is accepted for data transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STOR",
+      "dependent_step": "transfer failure",
+      "condition": "if STOR fails before or during transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STOU",
+      "dependent_step": "transfer preliminary",
+      "condition": "when STOU is accepted for data transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send STOU",
+      "dependent_step": "transfer failure",
+      "condition": "if STOU fails before or during transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send APPE",
+      "dependent_step": "transfer preliminary",
+      "condition": "when APPE is accepted for data transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send APPE",
+      "dependent_step": "transfer failure",
+      "condition": "if APPE fails before or during transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send LIST",
+      "dependent_step": "transfer preliminary",
+      "condition": "when LIST is accepted for data transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send LIST",
+      "dependent_step": "transfer failure",
+      "condition": "if LIST fails before or during transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send NLST",
+      "dependent_step": "transfer preliminary",
+      "condition": "when NLST is accepted for data transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send NLST",
+      "dependent_step": "transfer failure",
+      "condition": "if NLST fails before or during transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MLSD",
+      "dependent_step": "transfer preliminary",
+      "condition": "when MLSD is accepted for data transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MLSD",
+      "dependent_step": "transfer failure",
+      "condition": "if MLSD fails before or during transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ABOR",
+      "dependent_step": "abort completion",
+      "condition": "ABOR processed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "send ABOR",
+      "condition": "optional interruption of active transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send ABOR",
+      "dependent_step": "transfer failure",
+      "condition": "426 first when ABOR terminates an active transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "abort completion",
+      "condition": "426 precedes 226 when ABOR interrupts an active transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve stream bytes via active",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve stream bytes via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "retrieve stream bytes via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve block via active",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve block via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "retrieve block via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve block via active",
+      "dependent_step": "restart marker reply",
+      "condition": "if block descriptor 16 contains a marker and the server conveys markers over control",
+      "field_relations": [
+        {
+          "prior_field": "restart marker",
+          "dependent_field": "server marker"
+        }
+      ]
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve compressed byte string via active",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed byte string via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "retrieve compressed byte string via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve compressed replicated byte via active",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed replicated byte via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "retrieve compressed replicated byte via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve compressed filler string via active",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed filler string via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "retrieve compressed filler string via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve compressed control sequence via active",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed control sequence via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "retrieve compressed control sequence via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve compressed restart marker via active",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "retrieve compressed restart marker via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed control sequence via active",
+      "dependent_step": "retrieve compressed restart marker via active",
+      "condition": "when descriptor code 16 marks a restart marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed restart marker via active",
+      "dependent_step": "restart marker reply",
+      "condition": "if the server conveys corresponding markers over control",
+      "field_relations": [
+        {
+          "prior_field": "restart marker",
+          "dependent_field": "server marker"
+        }
+      ]
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve page via active",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve page via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "retrieve page via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store stream bytes via active",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store stream bytes via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "store stream bytes via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store block via active",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store block via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "store block via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store block via active",
+      "dependent_step": "restart marker reply",
+      "condition": "if block descriptor 16 contains a marker and the server conveys markers over control",
+      "field_relations": [
+        {
+          "prior_field": "restart marker",
+          "dependent_field": "user marker"
+        }
+      ]
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store compressed byte string via active",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed byte string via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "store compressed byte string via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store compressed replicated byte via active",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed replicated byte via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "store compressed replicated byte via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store compressed filler string via active",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed filler string via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "store compressed filler string via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store compressed control sequence via active",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed control sequence via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "store compressed control sequence via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store compressed restart marker via active",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "store compressed restart marker via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed control sequence via active",
+      "dependent_step": "store compressed restart marker via active",
+      "condition": "when descriptor code 16 marks a restart marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed restart marker via active",
+      "dependent_step": "restart marker reply",
+      "condition": "if the server conveys corresponding markers over control",
+      "field_relations": [
+        {
+          "prior_field": "restart marker",
+          "dependent_field": "user marker"
+        }
+      ]
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store page via active",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store page via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "store page via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "LIST data via active",
+      "condition": "LIST accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "LIST data via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final LIST data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "LIST data via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "NLST name via active",
+      "condition": "NLST accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "NLST name via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final NLST data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "NLST name via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "MLSD entry via active",
+      "condition": "MLSD accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "MLSD entry via active",
+      "dependent_step": "transfer completion",
+      "condition": "after final MLSD data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT accepted",
+      "dependent_step": "MLSD entry via active",
+      "condition": "if non-default PORT was negotiated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve stream bytes via passive",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve stream bytes via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "retrieve stream bytes via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve block via passive",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve block via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "retrieve block via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve block via passive",
+      "dependent_step": "restart marker reply",
+      "condition": "if block descriptor 16 contains a marker and the server conveys markers over control",
+      "field_relations": [
+        {
+          "prior_field": "restart marker",
+          "dependent_field": "server marker"
+        }
+      ]
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve compressed byte string via passive",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed byte string via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "retrieve compressed byte string via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve compressed replicated byte via passive",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed replicated byte via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "retrieve compressed replicated byte via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve compressed filler string via passive",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed filler string via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "retrieve compressed filler string via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve compressed control sequence via passive",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed control sequence via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "retrieve compressed control sequence via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve compressed restart marker via passive",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "retrieve compressed restart marker via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed control sequence via passive",
+      "dependent_step": "retrieve compressed restart marker via passive",
+      "condition": "when descriptor code 16 marks a restart marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve compressed restart marker via passive",
+      "dependent_step": "restart marker reply",
+      "condition": "if the server conveys corresponding markers over control",
+      "field_relations": [
+        {
+          "prior_field": "restart marker",
+          "dependent_field": "server marker"
+        }
+      ]
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "retrieve page via passive",
+      "condition": "RETR accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "retrieve page via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final RETR data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "retrieve page via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store stream bytes via passive",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store stream bytes via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "store stream bytes via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store block via passive",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store block via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "store block via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store block via passive",
+      "dependent_step": "restart marker reply",
+      "condition": "if block descriptor 16 contains a marker and the server conveys markers over control",
+      "field_relations": [
+        {
+          "prior_field": "restart marker",
+          "dependent_field": "user marker"
+        }
+      ]
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store compressed byte string via passive",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed byte string via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "store compressed byte string via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store compressed replicated byte via passive",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed replicated byte via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "store compressed replicated byte via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store compressed filler string via passive",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed filler string via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "store compressed filler string via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store compressed control sequence via passive",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed control sequence via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "store compressed control sequence via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store compressed restart marker via passive",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "store compressed restart marker via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed control sequence via passive",
+      "dependent_step": "store compressed restart marker via passive",
+      "condition": "when descriptor code 16 marks a restart marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store compressed restart marker via passive",
+      "dependent_step": "restart marker reply",
+      "condition": "if the server conveys corresponding markers over control",
+      "field_relations": [
+        {
+          "prior_field": "restart marker",
+          "dependent_field": "user marker"
+        }
+      ]
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "store page via passive",
+      "condition": "STOR, STOU or APPE accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "store page via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final STOR, STOU or APPE data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "store page via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "LIST data via passive",
+      "condition": "LIST accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "LIST data via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final LIST data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "LIST data via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "NLST name via passive",
+      "condition": "NLST accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "NLST name via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final NLST data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "NLST name via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "MLSD entry via passive",
+      "condition": "MLSD accepted with 125/150; appropriate data connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "MLSD entry via passive",
+      "dependent_step": "transfer completion",
+      "condition": "after final MLSD data unit and EOF, if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV endpoint",
+      "dependent_step": "MLSD entry via passive",
+      "condition": "when PASV data connection is used",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A compressed control sequence",
+      "dependent_step": "server B to A compressed restart marker",
+      "condition": "when descriptor code 16 marks a restart marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B compressed control sequence",
+      "dependent_step": "server A to B compressed restart marker",
+      "condition": "when descriptor code 16 marks a restart marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MLSD",
+      "dependent_step": "MLSD entry via active",
+      "condition": "MLSD result uses temporary TYPE L 8/MODE S/STRU F",
+      "field_relations": []
+    },
+    {
+      "prior_step": "send MLSD",
+      "dependent_step": "MLSD entry via passive",
+      "condition": "MLSD result uses temporary TYPE L 8/MODE S/STRU F",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer preliminary",
+      "dependent_step": "transfer completion",
+      "condition": "MLSD with zero entries: after empty data response and close, no entry step required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send PASS",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send PASS",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send ACCT",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send ACCT",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send CWD",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send CWD",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send CDUP",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send CDUP",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send SMNT",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send SMNT",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send REIN",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send REIN",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send PORT",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send PORT",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send PASV",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send PASV",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send TYPE",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send TYPE",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send STRU",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send STRU",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send MODE",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send MODE",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send RETR",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send RETR",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send STOR",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send STOR",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send STOU",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send STOU",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send APPE",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send APPE",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send ALLO",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send ALLO",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send REST",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send REST",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send RNFR",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send RNFR",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send RNTO",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send RNTO",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send DELE",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send DELE",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send RMD",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send RMD",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send MKD",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send MKD",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send PWD",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send PWD",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send LIST",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send LIST",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send NLST",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send NLST",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send SITE",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send SITE",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send SYST",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send SYST",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send HELP",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send HELP",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send NOOP",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send NOOP",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send MDTM",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send MDTM",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send SIZE",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send SIZE",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send MLST",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send MLST",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send MLSD",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send MLSD",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send FEAT",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send FEAT",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer completion",
+      "dependent_step": "send OPTS MLST",
+      "condition": "if a prior transfer succeeded after 1yz; alternative to negative terminal reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "transfer failure",
+      "dependent_step": "send OPTS MLST",
+      "condition": "if a prior transfer failed after 1yz; alternative to positive completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV to server A",
+      "dependent_step": "server A endpoint",
+      "condition": "227 returns A listening endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A delay",
+      "dependent_step": "server A greeting",
+      "condition": "if 120 delay preceded 220 readiness",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A greeting",
+      "dependent_step": "server A USER",
+      "condition": "start this control connection's login",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A USER",
+      "dependent_step": "server A login intermediate",
+      "condition": "331 needs PASS or 332 needs ACCT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A USER",
+      "dependent_step": "server A login accepted",
+      "condition": "230 directly after USER; alternative to PASS or ACCT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A login intermediate",
+      "dependent_step": "server A PASS",
+      "condition": "if USER returned 331",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A login intermediate",
+      "dependent_step": "server A ACCT",
+      "condition": "if USER or PASS returned 332; alternative branches",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A PASS",
+      "dependent_step": "server A login intermediate",
+      "condition": "if PASS returned 332",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A PASS",
+      "dependent_step": "server A login accepted",
+      "condition": "230 after PASS; alternative to USER or ACCT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A ACCT",
+      "dependent_step": "server A login accepted",
+      "condition": "230 after ACCT; alternative to USER or PASS",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A USER",
+      "dependent_step": "server A negative reply",
+      "condition": "if that authentication command fails",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A PASS",
+      "dependent_step": "server A negative reply",
+      "condition": "if that authentication command fails",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A ACCT",
+      "dependent_step": "server A negative reply",
+      "condition": "if that authentication command fails",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B delay",
+      "dependent_step": "server B greeting",
+      "condition": "if 120 delay preceded 220 readiness",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B greeting",
+      "dependent_step": "server B USER",
+      "condition": "start this control connection's login",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B USER",
+      "dependent_step": "server B login intermediate",
+      "condition": "331 needs PASS or 332 needs ACCT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B USER",
+      "dependent_step": "server B login accepted",
+      "condition": "230 directly after USER; alternative to PASS or ACCT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B login intermediate",
+      "dependent_step": "server B PASS",
+      "condition": "if USER returned 331",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B login intermediate",
+      "dependent_step": "server B ACCT",
+      "condition": "if USER or PASS returned 332; alternative branches",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PASS",
+      "dependent_step": "server B login intermediate",
+      "condition": "if PASS returned 332",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PASS",
+      "dependent_step": "server B login accepted",
+      "condition": "230 after PASS; alternative to USER or ACCT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B ACCT",
+      "dependent_step": "server B login accepted",
+      "condition": "230 after ACCT; alternative to USER or PASS",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B USER",
+      "dependent_step": "server B negative reply",
+      "condition": "if that authentication command fails",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PASS",
+      "dependent_step": "server B negative reply",
+      "condition": "if that authentication command fails",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B ACCT",
+      "dependent_step": "server B negative reply",
+      "condition": "if that authentication command fails",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A greeting",
+      "dependent_step": "PASV to server A",
+      "condition": "A is ready on its control connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B greeting",
+      "dependent_step": "PORT to server B",
+      "condition": "B is ready on its control connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A login accepted",
+      "dependent_step": "PASV to server A",
+      "condition": "if this server requires authentication",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PASV to server A",
+      "dependent_step": "server A negative reply",
+      "condition": "if this server rejects the command or transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A login accepted",
+      "dependent_step": "STOR to server A",
+      "condition": "if this server requires authentication",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server A",
+      "dependent_step": "server A negative reply",
+      "condition": "if this server rejects the command or transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A login accepted",
+      "dependent_step": "RETR to server A",
+      "condition": "if this server requires authentication",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server A",
+      "dependent_step": "server A negative reply",
+      "condition": "if this server rejects the command or transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B login accepted",
+      "dependent_step": "PORT to server B",
+      "condition": "if this server requires authentication",
+      "field_relations": []
+    },
+    {
+      "prior_step": "PORT to server B",
+      "dependent_step": "server B negative reply",
+      "condition": "if this server rejects the command or transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B login accepted",
+      "dependent_step": "STOR to server B",
+      "condition": "if this server requires authentication",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server B",
+      "dependent_step": "server B negative reply",
+      "condition": "if this server rejects the command or transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B login accepted",
+      "dependent_step": "RETR to server B",
+      "condition": "if this server requires authentication",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server B",
+      "dependent_step": "server B negative reply",
+      "condition": "if this server rejects the command or transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A endpoint",
+      "dependent_step": "PORT to server B",
+      "condition": "relay A host and port",
+      "field_relations": [
+        {
+          "prior_field": "host address",
+          "dependent_field": "host address"
+        },
+        {
+          "prior_field": "port",
+          "dependent_field": "port"
+        }
+      ]
+    },
+    {
+      "prior_step": "PORT to server B",
+      "dependent_step": "server B PORT accepted",
+      "condition": "200 accepts A endpoint at B",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A endpoint",
+      "dependent_step": "STOR to server A",
+      "condition": "A listens before transfer request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A endpoint",
+      "dependent_step": "RETR to server A",
+      "condition": "A listens before transfer request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "RETR to server B",
+      "condition": "B knows A endpoint before transfer request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "STOR to server B",
+      "condition": "B knows A endpoint before transfer request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server A",
+      "dependent_step": "server A preliminary",
+      "condition": "accepted transfer request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server A",
+      "dependent_step": "server A preliminary",
+      "condition": "accepted transfer request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server B",
+      "dependent_step": "server B preliminary",
+      "condition": "accepted transfer request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server B",
+      "dependent_step": "server B preliminary",
+      "condition": "accepted transfer request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server A",
+      "dependent_step": "server B to A data",
+      "condition": "A receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server B",
+      "dependent_step": "server B to A data",
+      "condition": "B sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server B to A data",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server B to A data",
+      "condition": "A ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server B to A data",
+      "condition": "B ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A data",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A data",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server A",
+      "dependent_step": "server B to A block",
+      "condition": "A receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server B",
+      "dependent_step": "server B to A block",
+      "condition": "B sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server B to A block",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server B to A block",
+      "condition": "A ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server B to A block",
+      "condition": "B ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A block",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A block",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server A",
+      "dependent_step": "server B to A compressed byte string",
+      "condition": "A receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server B",
+      "dependent_step": "server B to A compressed byte string",
+      "condition": "B sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server B to A compressed byte string",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server B to A compressed byte string",
+      "condition": "A ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server B to A compressed byte string",
+      "condition": "B ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A compressed byte string",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A compressed byte string",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server A",
+      "dependent_step": "server B to A compressed replicated byte",
+      "condition": "A receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server B",
+      "dependent_step": "server B to A compressed replicated byte",
+      "condition": "B sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server B to A compressed replicated byte",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server B to A compressed replicated byte",
+      "condition": "A ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server B to A compressed replicated byte",
+      "condition": "B ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A compressed replicated byte",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A compressed replicated byte",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server A",
+      "dependent_step": "server B to A compressed filler string",
+      "condition": "A receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server B",
+      "dependent_step": "server B to A compressed filler string",
+      "condition": "B sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server B to A compressed filler string",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server B to A compressed filler string",
+      "condition": "A ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server B to A compressed filler string",
+      "condition": "B ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A compressed filler string",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A compressed filler string",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server A",
+      "dependent_step": "server B to A compressed control sequence",
+      "condition": "A receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server B",
+      "dependent_step": "server B to A compressed control sequence",
+      "condition": "B sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server B to A compressed control sequence",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server B to A compressed control sequence",
+      "condition": "A ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server B to A compressed control sequence",
+      "condition": "B ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A compressed control sequence",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A compressed control sequence",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server A",
+      "dependent_step": "server B to A page",
+      "condition": "A receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server B",
+      "dependent_step": "server B to A page",
+      "condition": "B sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server B to A page",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server B to A page",
+      "condition": "A ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server B to A page",
+      "condition": "B ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A page",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B to A page",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server A",
+      "dependent_step": "server A to B data",
+      "condition": "A sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server B",
+      "dependent_step": "server A to B data",
+      "condition": "B receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server A to B data",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server A to B data",
+      "condition": "A ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server A to B data",
+      "condition": "B ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B data",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B data",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server A",
+      "dependent_step": "server A to B block",
+      "condition": "A sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server B",
+      "dependent_step": "server A to B block",
+      "condition": "B receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server A to B block",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server A to B block",
+      "condition": "A ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server A to B block",
+      "condition": "B ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B block",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B block",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server A",
+      "dependent_step": "server A to B compressed byte string",
+      "condition": "A sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server B",
+      "dependent_step": "server A to B compressed byte string",
+      "condition": "B receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server A to B compressed byte string",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server A to B compressed byte string",
+      "condition": "A ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server A to B compressed byte string",
+      "condition": "B ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B compressed byte string",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B compressed byte string",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server A",
+      "dependent_step": "server A to B compressed replicated byte",
+      "condition": "A sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server B",
+      "dependent_step": "server A to B compressed replicated byte",
+      "condition": "B receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server A to B compressed replicated byte",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server A to B compressed replicated byte",
+      "condition": "A ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server A to B compressed replicated byte",
+      "condition": "B ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B compressed replicated byte",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B compressed replicated byte",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server A",
+      "dependent_step": "server A to B compressed filler string",
+      "condition": "A sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server B",
+      "dependent_step": "server A to B compressed filler string",
+      "condition": "B receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server A to B compressed filler string",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server A to B compressed filler string",
+      "condition": "A ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server A to B compressed filler string",
+      "condition": "B ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B compressed filler string",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B compressed filler string",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server A",
+      "dependent_step": "server A to B compressed control sequence",
+      "condition": "A sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server B",
+      "dependent_step": "server A to B compressed control sequence",
+      "condition": "B receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server A to B compressed control sequence",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server A to B compressed control sequence",
+      "condition": "A ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server A to B compressed control sequence",
+      "condition": "B ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B compressed control sequence",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B compressed control sequence",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "RETR to server A",
+      "dependent_step": "server A to B page",
+      "condition": "A sends",
+      "field_relations": []
+    },
+    {
+      "prior_step": "STOR to server B",
+      "dependent_step": "server A to B page",
+      "condition": "B receives",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B PORT accepted",
+      "dependent_step": "server A to B page",
+      "condition": "B initiates connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A preliminary",
+      "dependent_step": "server A to B page",
+      "condition": "A ready to send",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server B preliminary",
+      "dependent_step": "server A to B page",
+      "condition": "B ready to receive",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B page",
+      "dependent_step": "server A completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    },
+    {
+      "prior_step": "server A to B page",
+      "dependent_step": "server B completion",
+      "condition": "after final data unit and EOF if successful",
+      "field_relations": []
+    }
+  ],
+  "unresolved": [
+    {
+      "description": "RFC3659 section 5 cites RFC1123 section 4.1.3.4 for corrections to RFC959 block/compressed restart; that reference is outside the selected source set, so the exact corrected marker procedure cannot be confirmed.",
+      "object_names": [
+        "110 Restart marker reply",
+        "REST",
+        "Block mode block",
+        "Compressed mode unit"
+      ]
+    },
+    {
+      "description": "RFC3659 specifies FEAT and OPTS MLST feature lines and accepted fact text but refers to RFC2389 for the enclosing FEAT/OPTS command and reply rules; those general rules are unavailable in the selected source set.",
+      "object_names": [
+        "FEAT",
+        "OPTS MLST",
+        "211 FEAT reply",
+        "200 OPTS MLST reply"
+      ]
+    },
+    {
+      "description": "RFC959 section 4.1.3 calls STOU's pathname-bearing 250 a 'Transfer Started' response, while sections 4.2 and 5.4 classify 250 as completion after 125/150. The selected sources do not resolve whether the generated name is returned before data or only at completion.",
+      "object_names": [
+        "STOU",
+        "250 STOU name reply",
+        "transfer preliminary",
+        "transfer completion"
+      ]
+    }
+  ]
+}

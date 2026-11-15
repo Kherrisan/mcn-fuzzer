@@ -1,0 +1,4697 @@
+{
+  "meta": {
+    "protocol": "FTP",
+    "complete": true,
+    "documents": [
+      {
+        "doc_id": "rfc3659",
+        "rfc": "RFC 3659",
+        "path": "snapshots/rfc3659.json"
+      },
+      {
+        "doc_id": "rfc959",
+        "rfc": "RFC 959",
+        "path": "snapshots/rfc959.json"
+      }
+    ]
+  },
+  "parties": [
+    {
+      "name": "User-PI",
+      "description": "initiates FTP control connection; sends commands and reads replies"
+    },
+    {
+      "name": "Server-PI",
+      "description": "accepts control connection; interprets commands and sends replies"
+    },
+    {
+      "name": "User-DTP",
+      "description": "listens for active data connection or sends/receives data"
+    },
+    {
+      "name": "Server-DTP",
+      "description": "initiates active data connection or listens for passive connection"
+    },
+    {
+      "name": "Server A",
+      "description": "FTP peer whose data process listens for third-party transfer"
+    },
+    {
+      "name": "Server B",
+      "description": "FTP peer whose data process initiates third-party transfer"
+    },
+    {
+      "name": "Server A-PI",
+      "description": "Server A protocol interpreter that accepts commands and issues replies"
+    },
+    {
+      "name": "Server B-PI",
+      "description": "Server B protocol interpreter that accepts commands and issues replies"
+    },
+    {
+      "name": "Server A-DTP",
+      "description": "Server A data transfer process that listens for third-party data"
+    },
+    {
+      "name": "Server B-DTP",
+      "description": "Server B data transfer process that initiates third-party data"
+    }
+  ],
+  "messages": [
+    {
+      "name": "FTP reply",
+      "associated_fields": [
+        {
+          "name": "reply_code"
+        },
+        {
+          "name": "text"
+        },
+        {
+          "name": "pathname"
+        },
+        {
+          "name": "generated_pathname"
+        },
+        {
+          "name": "selected_fact_names"
+        }
+      ]
+    },
+    {
+      "name": "USER request",
+      "associated_fields": [
+        {
+          "name": "username"
+        }
+      ]
+    },
+    {
+      "name": "PASS request",
+      "associated_fields": [
+        {
+          "name": "password"
+        }
+      ]
+    },
+    {
+      "name": "ACCT request",
+      "associated_fields": [
+        {
+          "name": "account_information"
+        }
+      ]
+    },
+    {
+      "name": "PORT request",
+      "associated_fields": [
+        {
+          "name": "host_port"
+        }
+      ]
+    },
+    {
+      "name": "PASV request",
+      "associated_fields": []
+    },
+    {
+      "name": "TYPE request",
+      "associated_fields": [
+        {
+          "name": "type"
+        },
+        {
+          "name": "format"
+        },
+        {
+          "name": "byte_size"
+        }
+      ]
+    },
+    {
+      "name": "STRU request",
+      "associated_fields": [
+        {
+          "name": "structure"
+        }
+      ]
+    },
+    {
+      "name": "MODE request",
+      "associated_fields": [
+        {
+          "name": "mode"
+        }
+      ]
+    },
+    {
+      "name": "RETR request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "STOR request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "STOU request",
+      "associated_fields": []
+    },
+    {
+      "name": "APPE request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "ALLO request",
+      "associated_fields": [
+        {
+          "name": "byte_count"
+        },
+        {
+          "name": "record_or_page_size"
+        }
+      ]
+    },
+    {
+      "name": "REST block/compressed request",
+      "associated_fields": [
+        {
+          "name": "restart_marker"
+        }
+      ]
+    },
+    {
+      "name": "REST STREAM request",
+      "associated_fields": [
+        {
+          "name": "octet_offset"
+        }
+      ]
+    },
+    {
+      "name": "RNFR request",
+      "associated_fields": [
+        {
+          "name": "old_pathname"
+        }
+      ]
+    },
+    {
+      "name": "RNTO request",
+      "associated_fields": [
+        {
+          "name": "new_pathname"
+        }
+      ]
+    },
+    {
+      "name": "ABOR request",
+      "associated_fields": []
+    },
+    {
+      "name": "CWD request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "CDUP request",
+      "associated_fields": []
+    },
+    {
+      "name": "REIN request",
+      "associated_fields": []
+    },
+    {
+      "name": "QUIT request",
+      "associated_fields": []
+    },
+    {
+      "name": "DELE request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "RMD request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "MKD request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "PWD request",
+      "associated_fields": []
+    },
+    {
+      "name": "LIST request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "NLST request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "FEAT request",
+      "associated_fields": []
+    },
+    {
+      "name": "MDTM request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "MDTM result",
+      "associated_fields": [
+        {
+          "name": "modification_time"
+        }
+      ]
+    },
+    {
+      "name": "SIZE request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "SIZE result",
+      "associated_fields": [
+        {
+          "name": "transfer_octet_count"
+        }
+      ]
+    },
+    {
+      "name": "MLST request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "MLSD request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "MLST control listing",
+      "associated_fields": [
+        {
+          "name": "facts"
+        },
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "MLSD data entry",
+      "associated_fields": [
+        {
+          "name": "facts"
+        },
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "OPTS MLST request",
+      "associated_fields": [
+        {
+          "name": "fact_names"
+        }
+      ]
+    },
+    {
+      "name": "File data",
+      "associated_fields": [
+        {
+          "name": "data"
+        }
+      ]
+    },
+    {
+      "name": "Stream restart marker",
+      "associated_fields": [
+        {
+          "name": "octet_offset"
+        }
+      ]
+    },
+    {
+      "name": "Block/compressed restart marker",
+      "associated_fields": [
+        {
+          "name": "marker_information"
+        }
+      ]
+    },
+    {
+      "name": "SMNT request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "SYST request",
+      "associated_fields": []
+    },
+    {
+      "name": "STAT request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "HELP request",
+      "associated_fields": [
+        {
+          "name": "topic"
+        }
+      ]
+    },
+    {
+      "name": "SITE request",
+      "associated_fields": [
+        {
+          "name": "parameters"
+        }
+      ]
+    },
+    {
+      "name": "NOOP request",
+      "associated_fields": []
+    },
+    {
+      "name": "Directory listing data",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "FEAT response",
+      "associated_fields": [
+        {
+          "name": "feature_lines"
+        },
+        {
+          "name": "default_mlst_facts"
+        }
+      ]
+    },
+    {
+      "name": "PASV result",
+      "associated_fields": [
+        {
+          "name": "host_port"
+        }
+      ]
+    },
+    {
+      "name": "STOR at Server A request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "RETR at Server B request",
+      "associated_fields": [
+        {
+          "name": "pathname"
+        }
+      ]
+    },
+    {
+      "name": "Stream record EOF/EOR markers",
+      "associated_fields": [
+        {
+          "name": "EOR"
+        },
+        {
+          "name": "EOF"
+        }
+      ]
+    },
+    {
+      "name": "Block/compressed transfer EOF marker",
+      "associated_fields": [
+        {
+          "name": "EOF"
+        }
+      ]
+    },
+    {
+      "name": "110 restart marker reply",
+      "associated_fields": [
+        {
+          "name": "sender_marker"
+        },
+        {
+          "name": "receiver_marker"
+        }
+      ]
+    }
+  ],
+  "channels": [
+    {
+      "name": "FTP control connection",
+      "description": "User-PI to Server-PI command and reply channel",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "User-PI",
+        "Server-PI"
+      ],
+      "initiator_party_name": "User-PI",
+      "acceptor_party_name": "Server-PI",
+      "endpoint_sources": [
+        {
+          "party_name": "User-PI",
+          "parameter": "client_port",
+          "from": "user-PI initiates control connection"
+        },
+        {
+          "party_name": "Server-PI",
+          "parameter": "server_port",
+          "from": "server-PI listens on Port L"
+        }
+      ]
+    },
+    {
+      "name": "FTP active data connection",
+      "description": "Server-DTP initiates connection to user-side listening port",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "Server-DTP",
+        "User-DTP"
+      ],
+      "initiator_party_name": "Server-DTP",
+      "acceptor_party_name": "User-DTP",
+      "endpoint_sources": [
+        {
+          "party_name": "Server-DTP",
+          "parameter": "server_data_port",
+          "from": "default server data port L-1"
+        },
+        {
+          "party_name": "User-DTP",
+          "parameter": "user_data_port",
+          "from": "default user port U or PORT host-port"
+        }
+      ]
+    },
+    {
+      "name": "FTP passive data connection",
+      "description": "User-DTP initiates connection to server-DTP listening port",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "User-DTP",
+        "Server-DTP"
+      ],
+      "initiator_party_name": "User-DTP",
+      "acceptor_party_name": "Server-DTP",
+      "endpoint_sources": [
+        {
+          "party_name": "User-DTP",
+          "parameter": "user_data_port",
+          "from": "default or PORT-specified user data port"
+        },
+        {
+          "party_name": "Server-DTP",
+          "parameter": "server_data_port",
+          "from": "host and port returned by PASV"
+        }
+      ]
+    },
+    {
+      "name": "FTP third-party data connection",
+      "description": "Server B data process initiates connection to Server A listening data port",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "Server B-DTP",
+        "Server A-DTP"
+      ],
+      "initiator_party_name": "Server B-DTP",
+      "acceptor_party_name": "Server A-DTP",
+      "endpoint_sources": [
+        {
+          "party_name": "Server B-DTP",
+          "parameter": "data_port",
+          "from": "PORT request carries Server A passive address"
+        },
+        {
+          "party_name": "Server A-DTP",
+          "parameter": "passive_data_port",
+          "from": "PASV reply from Server A"
+        }
+      ]
+    },
+    {
+      "name": "Server A control connection",
+      "description": "User-PI commands and replies with Server A-PI",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "User-PI",
+        "Server A-PI"
+      ],
+      "initiator_party_name": "User-PI",
+      "acceptor_party_name": "Server A-PI",
+      "endpoint_sources": [
+        {
+          "party_name": "User-PI",
+          "parameter": "client_port",
+          "from": "user-PI initiates control connection"
+        },
+        {
+          "party_name": "Server A-PI",
+          "parameter": "server_port",
+          "from": "server-PI listens"
+        }
+      ]
+    },
+    {
+      "name": "Server B control connection",
+      "description": "User-PI commands and replies with Server B-PI",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "User-PI",
+        "Server B-PI"
+      ],
+      "initiator_party_name": "User-PI",
+      "acceptor_party_name": "Server B-PI",
+      "endpoint_sources": [
+        {
+          "party_name": "User-PI",
+          "parameter": "client_port",
+          "from": "user-PI initiates control connection"
+        },
+        {
+          "party_name": "Server B-PI",
+          "parameter": "server_port",
+          "from": "server-PI listens"
+        }
+      ]
+    },
+    {
+      "name": "FTP resumed active data connection",
+      "description": "new data transport for resumed FTP transfer",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "Server-DTP",
+        "User-DTP"
+      ],
+      "initiator_party_name": "Server-DTP",
+      "acceptor_party_name": "User-DTP",
+      "endpoint_sources": [
+        {
+          "party_name": "Server-DTP",
+          "parameter": "server_data_port",
+          "from": "default server data port L-1 or PORT-selected endpoint"
+        },
+        {
+          "party_name": "User-DTP",
+          "parameter": "user_data_port",
+          "from": "default U or PORT-selected listening endpoint"
+        }
+      ]
+    },
+    {
+      "name": "FTP resumed passive data connection",
+      "description": "new data transport for resumed FTP transfer",
+      "transport": "TCP",
+      "connection": "connection_oriented",
+      "endpoint_party_names": [
+        "User-DTP",
+        "Server-DTP"
+      ],
+      "initiator_party_name": "User-DTP",
+      "acceptor_party_name": "Server-DTP",
+      "endpoint_sources": [
+        {
+          "party_name": "User-DTP",
+          "parameter": "user_data_port",
+          "from": "client endpoint"
+        },
+        {
+          "party_name": "Server-DTP",
+          "parameter": "server_data_port",
+          "from": "PASV-selected endpoint"
+        }
+      ]
+    }
+  ],
+  "steps": [
+    {
+      "name": "Open FTP control channel",
+      "action": "connect",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "party_name": "User-PI"
+    },
+    {
+      "name": "Listen for FTP control connection",
+      "action": "listen",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "party_name": "Server-PI"
+    },
+    {
+      "name": "Send service greeting",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "220 when ready; if delayed, first send 120 then a separate 220 occurrence",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Send USER request",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "after 220 greeting",
+      "message_name": "USER request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request password",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "331 when USER accepted and password required",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Send PASS request",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "after 331; PASS immediately follows USER",
+      "message_name": "PASS request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request login account",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "332 when PASS succeeds but account is required",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Send ACCT request",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "after 332",
+      "message_name": "ACCT request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Complete login",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "230 when credentials accepted",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Set active data port",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "PORT request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Acknowledge PORT",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "200 after PORT",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Request passive data port",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "PASV request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Return passive data address",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "227 after server listens",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Set transfer type",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "before service request when changing type",
+      "message_name": "TYPE request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Acknowledge TYPE",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "200 after supported TYPE",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Set transfer structure",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "before service request when changing structure",
+      "message_name": "STRU request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Acknowledge STRU",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "200 after supported STRU",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Set transfer mode",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "before service request when changing mode",
+      "message_name": "MODE request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Acknowledge MODE",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "200 after supported MODE",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Request FEAT",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "FEAT request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Return FEAT features",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "211 multiline feature listing",
+      "message_name": "FEAT response",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Request MDTM",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "authenticated; named object may be retrieved",
+      "message_name": "MDTM request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Return MDTM timestamp",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "213 exactly one time-val",
+      "message_name": "MDTM result",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Request SIZE",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "authenticated; current TYPE, MODE and STRU determine count",
+      "message_name": "SIZE request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Return SIZE count",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "213 exact transfer octet count",
+      "message_name": "SIZE result",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Request MLST",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "authenticated; describes named object, or current directory if omitted",
+      "message_name": "MLST request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Return MLST response",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "250 multiline control response for selected object",
+      "message_name": "MLST control listing",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Request MLSD",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "authenticated; optional pathname selects target; omitted pathname means current directory",
+      "message_name": "MLSD request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Start MLSD data transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "150 after data connection opens",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Send MLSD entries",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "TYPE L 8, MODE S, STRU F only for this data connection; session settings are not changed",
+      "message_name": "MLSD data entry",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Finish MLSD data transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "226 follows data connection close",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Select MLST facts",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "supported facts selected for subsequent MLST and MLSD; may occur before authentication",
+      "message_name": "OPTS MLST request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Return selected MLST facts",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "200; selected supported facts returned, unsupported names omitted, empty selection requests names only",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Request RETR",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "authenticated; named file is retrieved from server",
+      "message_name": "RETR request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request STOR",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "authenticated; upload creates or replaces named file",
+      "message_name": "STOR request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request APPE",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "authenticated; upload appends or creates named file",
+      "message_name": "APPE request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request STOU",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "authenticated; upload creates uniquely named file in current directory",
+      "message_name": "STOU request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Start file transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "125 or 150 preliminary success",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Receive file from server",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "default TYPE ASCII Non-print, MODE Stream, STRU File unless a successfully accepted parameter command changed it",
+      "message_name": "File data",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send file to server",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "default TYPE ASCII Non-print, MODE Stream, STRU File unless a successfully accepted parameter command changed it",
+      "message_name": "File data",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Close user upload data connection",
+      "action": "close",
+      "channel_name": "FTP active data connection",
+      "condition": "after EOF or peer close; read any queued data and close the local endpoint",
+      "party_name": "User-DTP"
+    },
+    {
+      "name": "Close server data connection",
+      "action": "close",
+      "channel_name": "FTP active data connection",
+      "condition": "after EOF or peer close; read any queued data and close the local endpoint",
+      "party_name": "Server-DTP"
+    },
+    {
+      "name": "Complete file transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "226 when data connection is closed; 250 when a frame-delimited transfer completes and connection is retained",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Allocate storage",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "must precede STOR or APPE",
+      "message_name": "ALLO request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Acknowledge storage allocation",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "200 or 202",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Restart STREAM transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "current MODE is STREAM; offset counts preceding transfer octets",
+      "message_name": "REST STREAM request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Accept STREAM restart",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "350 after valid decimal offset; immediately followed by transfer command",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Restart block/compressed transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "current MODE is Block or Compressed; marker is sender-defined restart marker",
+      "message_name": "REST block/compressed request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Accept block/compressed restart",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "350 after valid marker",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Rename source",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "RNFR request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Accept rename source",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "350 after RNFR",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Rename destination",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "immediately follows successful RNFR",
+      "message_name": "RNTO request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Complete rename",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "250 after RNTO",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Abort data transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "during or immediately after service transfer",
+      "message_name": "ABOR request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Return abort sequence",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "426 for the interrupted service, then a separate 226 for processed ABOR; if transfer already complete, send only 226",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Change working directory",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "CWD request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Acknowledge directory change",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "250 after CWD",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Change to parent directory",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "CDUP request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Acknowledge parent change",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "reply codes identical to CWD",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Reinitialize user session",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "control channel stays open; resets login and transfer parameters after current transfer",
+      "message_name": "REIN request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Logout",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "after transfers and replies complete",
+      "message_name": "QUIT request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Close control channel",
+      "action": "close",
+      "channel_name": "FTP control connection",
+      "condition": "after 221 or 421; after unexpected client close, only after effective ABOR and data cleanup",
+      "party_name": "Server-PI"
+    },
+    {
+      "name": "Delete file",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "DELE request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Remove directory",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "RMD request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Create directory",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "MKD request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Return created directory path",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "257 with absolute created path",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Print working directory",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "PWD request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request LIST",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "LIST request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request NLST",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "NLST request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Send QUIT completion",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "221 after logout",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Request operation account",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "332 or 532 when a later command needs account information",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Acknowledge REIN",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "220 after current transfer finishes; user/account state cleared; TYPE ASCII Non-print, MODE Stream, STRU File; control connection remains open",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Mount file structure",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "SMNT request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request system type",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "SYST request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request status",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "STAT request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request help",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "HELP request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Request SITE service",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "SITE request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Send NOOP",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "NOOP request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server-PI"
+    },
+    {
+      "name": "Return SYST result",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "215 system name",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Return STAT result",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "211, 212 or 213 status",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Return HELP result",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "211 or 214 help text",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Return SITE result",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "200 or 202 site command outcome",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Return NOOP result",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "200 command okay",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Complete DELE",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "250 file deleted",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Complete RMD",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "250 directory removed",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Complete CWD",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "250 directory changed",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Complete CDUP",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "CWD-equivalent success reply",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Return PWD pathname",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "257 current directory pathname",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Return STOU generated name",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "250 transfer-started response includes generated unique filename",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Send LIST listing",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "",
+      "message_name": "Directory listing data",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send LIST listing (passive)",
+      "action": "send",
+      "channel_name": "FTP passive data connection",
+      "condition": "",
+      "message_name": "Directory listing data",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Start LIST transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "125 or 150 before listing data",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Finish LIST transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "226 after data transfer; 250 if data connection is retained",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Send NLST listing",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "",
+      "message_name": "Directory listing data",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send NLST listing (passive)",
+      "action": "send",
+      "channel_name": "FTP passive data connection",
+      "condition": "",
+      "message_name": "Directory listing data",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Start NLST transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "125 or 150 before listing data",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Finish NLST transfer",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "226 after data transfer; 250 if data connection is retained",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Listen active data connection",
+      "action": "listen",
+      "channel_name": "FTP active data connection",
+      "condition": "before active-mode service request; default U port or PORT-selected port",
+      "party_name": "User-DTP"
+    },
+    {
+      "name": "Connect active data connection",
+      "action": "connect",
+      "channel_name": "FTP active data connection",
+      "condition": "after active-mode service request; connects from default L-1 to user listener",
+      "party_name": "Server-DTP"
+    },
+    {
+      "name": "Listen passive data connection",
+      "action": "listen",
+      "channel_name": "FTP passive data connection",
+      "condition": "after PASV request and before 227 reply",
+      "party_name": "Server-DTP"
+    },
+    {
+      "name": "Connect passive data connection",
+      "action": "connect",
+      "channel_name": "FTP passive data connection",
+      "condition": "after 227 reply, using returned server host and port",
+      "party_name": "User-DTP"
+    },
+    {
+      "name": "Connect Server A control",
+      "action": "connect",
+      "channel_name": "Server A control connection",
+      "condition": "",
+      "party_name": "User-PI"
+    },
+    {
+      "name": "Listen Server A control",
+      "action": "listen",
+      "channel_name": "Server A control connection",
+      "condition": "",
+      "party_name": "Server A-PI"
+    },
+    {
+      "name": "Connect Server B control",
+      "action": "connect",
+      "channel_name": "Server B control connection",
+      "condition": "",
+      "party_name": "User-PI"
+    },
+    {
+      "name": "Listen Server B control",
+      "action": "listen",
+      "channel_name": "Server B control connection",
+      "condition": "",
+      "party_name": "Server B-PI"
+    },
+    {
+      "name": "Send PASV to Server A",
+      "action": "send",
+      "channel_name": "Server A control connection",
+      "condition": "",
+      "message_name": "PASV request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server A-PI"
+    },
+    {
+      "name": "Server A returns PASV endpoint",
+      "action": "send",
+      "channel_name": "Server A control connection",
+      "condition": "227 passive address",
+      "message_name": "PASV result",
+      "sender_name": "Server A-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Send PORT to Server B",
+      "action": "send",
+      "channel_name": "Server B control connection",
+      "condition": "contains Server A endpoint",
+      "message_name": "PORT request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server B-PI"
+    },
+    {
+      "name": "Server B acknowledges PORT",
+      "action": "send",
+      "channel_name": "Server B control connection",
+      "condition": "200 PORT accepted",
+      "message_name": "FTP reply",
+      "sender_name": "Server B-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Send STOR to Server A",
+      "action": "send",
+      "channel_name": "Server A control connection",
+      "condition": "",
+      "message_name": "STOR at Server A request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server A-PI"
+    },
+    {
+      "name": "Send RETR to Server B",
+      "action": "send",
+      "channel_name": "Server B control connection",
+      "condition": "",
+      "message_name": "RETR at Server B request",
+      "sender_name": "User-PI",
+      "receiver_name": "Server B-PI"
+    },
+    {
+      "name": "Server A listens for third-party data",
+      "action": "listen",
+      "channel_name": "FTP third-party data connection",
+      "condition": "after PASV; before Server B RETR data connection",
+      "party_name": "Server A-DTP"
+    },
+    {
+      "name": "Server B connects to Server A",
+      "action": "connect",
+      "channel_name": "FTP third-party data connection",
+      "condition": "after transfer commands; connects to PASV endpoint forwarded in PORT",
+      "party_name": "Server B-DTP"
+    },
+    {
+      "name": "Transfer third-party file data",
+      "action": "send",
+      "channel_name": "FTP third-party data connection",
+      "condition": "",
+      "message_name": "File data",
+      "sender_name": "Server B-DTP",
+      "receiver_name": "Server A-DTP"
+    },
+    {
+      "name": "Receive file from server (passive)",
+      "action": "send",
+      "channel_name": "FTP passive data connection",
+      "condition": "",
+      "message_name": "File data",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send file to server (passive)",
+      "action": "send",
+      "channel_name": "FTP passive data connection",
+      "condition": "",
+      "message_name": "File data",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Send MLSD entries (passive)",
+      "action": "send",
+      "channel_name": "FTP passive data connection",
+      "condition": "TYPE L 8, MODE S, STRU F only for this data connection; session settings are not changed",
+      "message_name": "MLSD data entry",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send Stream record EOF/EOR markers",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "MODE Stream and STRU Record",
+      "message_name": "Stream record EOF/EOR markers",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send Stream record EOF/EOR markers (upload)",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "MODE Stream and STRU Record",
+      "message_name": "Stream record EOF/EOR markers",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Send Block/compressed EOF marker",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "MODE Block or Compressed",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send Block/compressed EOF marker (upload)",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "MODE Block or Compressed",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Close user-side passive data connection",
+      "action": "close",
+      "channel_name": "FTP passive data connection",
+      "condition": "peer closed; read queued data then close local side",
+      "party_name": "User-DTP"
+    },
+    {
+      "name": "Close server-side passive data connection",
+      "action": "close",
+      "channel_name": "FTP passive data connection",
+      "condition": "peer closed; read queued data then close local side",
+      "party_name": "Server-DTP"
+    },
+    {
+      "name": "Insert restart marker (server sends)",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "MODE Block or Compressed; sender inserts marker in data stream",
+      "message_name": "Block/compressed restart marker",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Insert restart marker (user sends)",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "MODE Block or Compressed; sender inserts marker in data stream",
+      "message_name": "Block/compressed restart marker",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Report received checkpoint",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "receiver is server; return corresponding sender and receiver marker information",
+      "message_name": "110 restart marker reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Reject invalid OPTS MLST",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "501 syntax error; prior fact selection remains in force",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Return FTP error",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Send Stream record EOF/EOR markers (active)",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "MODE Stream and STRU Record",
+      "message_name": "Stream record EOF/EOR markers",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send Stream record EOF/EOR markers upload (active)",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "MODE Stream and STRU Record",
+      "message_name": "Stream record EOF/EOR markers",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Send Block/compressed EOF marker (active)",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "MODE Block or Compressed",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send Block/compressed EOF marker upload (active)",
+      "action": "send",
+      "channel_name": "FTP active data connection",
+      "condition": "MODE Block or Compressed",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Send Stream record EOF/EOR markers (passive)",
+      "action": "send",
+      "channel_name": "FTP passive data connection",
+      "condition": "MODE Stream and STRU Record",
+      "message_name": "Stream record EOF/EOR markers",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send Stream record EOF/EOR markers upload (passive)",
+      "action": "send",
+      "channel_name": "FTP passive data connection",
+      "condition": "MODE Stream and STRU Record",
+      "message_name": "Stream record EOF/EOR markers",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Send Block/compressed EOF marker (passive)",
+      "action": "send",
+      "channel_name": "FTP passive data connection",
+      "condition": "MODE Block or Compressed",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send Block/compressed EOF marker upload (passive)",
+      "action": "send",
+      "channel_name": "FTP passive data connection",
+      "condition": "MODE Block or Compressed",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Return SMNT result",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "202 or 250 for successful SMNT",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Listen resumed active data connection",
+      "action": "listen",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "before resumed service request; user-side active endpoint listens",
+      "party_name": "User-DTP"
+    },
+    {
+      "name": "Connect resumed active data connection",
+      "action": "connect",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "new server-side active transport after resumed service request",
+      "party_name": "Server-DTP"
+    },
+    {
+      "name": "Listen resumed passive data connection",
+      "action": "listen",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "after PASV selects endpoint",
+      "party_name": "Server-DTP"
+    },
+    {
+      "name": "Connect resumed passive data connection",
+      "action": "connect",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "after PASV reply using the returned address",
+      "party_name": "User-DTP"
+    },
+    {
+      "name": "Receive resumed file from server (active)",
+      "action": "send",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "resumed file data after interrupted transfer; current transfer parameters apply",
+      "message_name": "File data",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed file to server (active)",
+      "action": "send",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "resumed file data after interrupted transfer; current transfer parameters apply",
+      "message_name": "File data",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Receive resumed file from server (passive)",
+      "action": "send",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "resumed file data after interrupted transfer; current transfer parameters apply",
+      "message_name": "File data",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed file to server (passive)",
+      "action": "send",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "resumed file data after interrupted transfer; current transfer parameters apply",
+      "message_name": "File data",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Acknowledge operation account",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "202 or 230 after successful ACCT for operation",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Close Server-DTP resumed active data connection",
+      "action": "close",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "after transfer EOF or peer close; read queued data then close local endpoint",
+      "party_name": "Server-DTP"
+    },
+    {
+      "name": "Close User-DTP resumed active data connection",
+      "action": "close",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "after transfer EOF or peer close; read queued data then close local endpoint",
+      "party_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed Stream record EOF/EOR markers (active)",
+      "action": "send",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "MODE Stream and STRU Record",
+      "message_name": "Stream record EOF/EOR markers",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed Stream record EOF/EOR markers upload (active)",
+      "action": "send",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "MODE Stream and STRU Record",
+      "message_name": "Stream record EOF/EOR markers",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Send resumed Block/compressed EOF marker (active)",
+      "action": "send",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "MODE Block or Compressed",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed Block/compressed EOF marker upload (active)",
+      "action": "send",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "MODE Block or Compressed",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Close Server-DTP resumed passive data connection",
+      "action": "close",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "after transfer EOF or peer close; read queued data then close local endpoint",
+      "party_name": "Server-DTP"
+    },
+    {
+      "name": "Close User-DTP resumed passive data connection",
+      "action": "close",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "after transfer EOF or peer close; read queued data then close local endpoint",
+      "party_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed Stream record EOF/EOR markers (passive)",
+      "action": "send",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "MODE Stream and STRU Record",
+      "message_name": "Stream record EOF/EOR markers",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed Stream record EOF/EOR markers upload (passive)",
+      "action": "send",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "MODE Stream and STRU Record",
+      "message_name": "Stream record EOF/EOR markers",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "Send resumed Block/compressed EOF marker (passive)",
+      "action": "send",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "MODE Block or Compressed",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed Block/compressed EOF marker upload (passive)",
+      "action": "send",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "MODE Block or Compressed",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "User-DTP",
+      "receiver_name": "Server-DTP"
+    },
+    {
+      "name": "User closes control connection unexpectedly",
+      "action": "close",
+      "channel_name": "FTP control connection",
+      "condition": "unexpected client-side close",
+      "party_name": "User-PI"
+    },
+    {
+      "name": "Send REIN delay reply",
+      "action": "send",
+      "channel_name": "FTP control connection",
+      "condition": "120 expected delay while current transfer finishes",
+      "message_name": "FTP reply",
+      "sender_name": "Server-PI",
+      "receiver_name": "User-PI"
+    },
+    {
+      "name": "Send resumed LIST listing (active)",
+      "action": "send",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "resumed LIST directory data; MODE Block or Compressed",
+      "message_name": "Directory listing data",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed LIST Block/compressed EOF marker (active)",
+      "action": "send",
+      "channel_name": "FTP resumed active data connection",
+      "condition": "MODE Block or Compressed; explicit EOF marker for resumed LIST",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed LIST listing (passive)",
+      "action": "send",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "resumed LIST directory data; MODE Block or Compressed",
+      "message_name": "Directory listing data",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    },
+    {
+      "name": "Send resumed LIST Block/compressed EOF marker (passive)",
+      "action": "send",
+      "channel_name": "FTP resumed passive data connection",
+      "condition": "MODE Block or Compressed; explicit EOF marker for resumed LIST",
+      "message_name": "Block/compressed transfer EOF marker",
+      "sender_name": "Server-DTP",
+      "receiver_name": "User-DTP"
+    }
+  ],
+  "step_dependencies": [
+    {
+      "prior_step": "Listen for FTP control connection",
+      "dependent_step": "Send service greeting",
+      "condition": "first greeting is 220 when ready, or 120 expected delay when service is not yet ready",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send service greeting",
+      "dependent_step": "Send USER request",
+      "condition": "220 received",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send USER request",
+      "dependent_step": "Request password",
+      "condition": "username accepted; password required (331)",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request password",
+      "dependent_step": "Send PASS request",
+      "condition": "PASS immediately follows USER",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send PASS request",
+      "dependent_step": "Request login account",
+      "condition": "password accepted; account required for login (332)",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request login account",
+      "dependent_step": "Send ACCT request",
+      "condition": "332 received",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send ACCT request",
+      "dependent_step": "Complete login",
+      "condition": "ACCT accepted for login; 230 completes login (202 accepted account response where applicable)",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Complete login",
+      "dependent_step": "Request MDTM",
+      "condition": "authenticated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Complete login",
+      "dependent_step": "Request SIZE",
+      "condition": "authenticated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Complete login",
+      "dependent_step": "Request MLST",
+      "condition": "authenticated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Complete login",
+      "dependent_step": "Request MLSD",
+      "condition": "authenticated",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Set active data port",
+      "dependent_step": "Request RETR",
+      "condition": "PORT acknowledged; user DTP listens",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request RETR",
+      "dependent_step": "Start file transfer",
+      "condition": "125 if the data connection is already open; otherwise 150 before transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start file transfer",
+      "dependent_step": "Receive file from server",
+      "condition": "125: existing connection is already open; 150: after active connection opens; ordinary non-resumed data branch only; 125/retained branches reuse the existing channel and REST 0 uses a full ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive file from server",
+      "dependent_step": "Close server data connection",
+      "condition": "MODE Stream and STRU File: close signals EOF",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Complete file transfer",
+      "condition": "for stream/file EOF, close precedes completion reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Set active data port",
+      "dependent_step": "Request STOR",
+      "condition": "PORT acknowledged; user DTP listens",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request STOR",
+      "dependent_step": "Start file transfer",
+      "condition": "125 if the data connection is already open; otherwise 150 before transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start file transfer",
+      "dependent_step": "Send file to server",
+      "condition": "125: existing connection is already open; 150: after active connection opens; ordinary non-resumed data branch only; 125/retained branches reuse the existing channel and REST 0 uses a full ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send file to server",
+      "dependent_step": "Close user upload data connection",
+      "condition": "MODE Stream and STRU File: close signals EOF",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user upload data connection",
+      "dependent_step": "Close server data connection",
+      "condition": "server closes after receiving upload EOF",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Complete file transfer",
+      "condition": "data connection closed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request MDTM",
+      "dependent_step": "Return MDTM timestamp",
+      "condition": "213 time is for the pathname in the request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request SIZE",
+      "dependent_step": "Return SIZE count",
+      "condition": "213 exact transfer count is for the pathname requested under current TYPE, MODE and STRU",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request MLST",
+      "dependent_step": "Return MLST response",
+      "condition": "valid request; no data connection is opened; same selected pathname",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request MLSD",
+      "dependent_step": "Start MLSD data transfer",
+      "condition": "125 if the data connection is already open; otherwise 150 before transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start MLSD data transfer",
+      "dependent_step": "Send MLSD entries",
+      "condition": "125: existing connection is already open; 150: after active connection opens; ordinary non-resumed data branch only; 125/retained branches reuse the existing channel and REST 0 uses a full ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send MLSD entries",
+      "dependent_step": "Close server data connection",
+      "condition": "server closes MLSD data connection after data entries",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Finish MLSD data transfer",
+      "condition": "226 final response after data connection close",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request MDTM",
+      "dependent_step": "Request RETR",
+      "condition": "same source pathname; initial timestamp is acquired before first retrieval",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "Restart STREAM transfer",
+      "dependent_step": "Accept STREAM restart",
+      "condition": "current MODE STREAM and offset is one or more decimal digits",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept STREAM restart",
+      "dependent_step": "Request RETR",
+      "condition": "REST immediately precedes service request; positive offset restarts from offset; REST 0 disables restart and transfers the entire file",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept STREAM restart",
+      "dependent_step": "Request STOR",
+      "condition": "REST immediately precedes service request; positive offset restarts from offset; REST 0 disables restart and transfers the entire file",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Restart block/compressed transfer",
+      "dependent_step": "Accept block/compressed restart",
+      "condition": "current mode Block or Compressed and marker recognized by sender",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept block/compressed restart",
+      "dependent_step": "Request RETR",
+      "condition": "REST immediately precedes resumed transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept block/compressed restart",
+      "dependent_step": "Request STOR",
+      "condition": "REST immediately precedes resumed transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Rename source",
+      "dependent_step": "Accept rename source",
+      "condition": "RNFR succeeds (350)",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept rename source",
+      "dependent_step": "Rename destination",
+      "condition": "RNTO immediately follows successful RNFR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Rename destination",
+      "dependent_step": "Complete rename",
+      "condition": "RNTO succeeds (250)",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Abort data transfer",
+      "dependent_step": "Return abort sequence",
+      "condition": "transfer already complete: close associated data connection if open, then one 226 reply only",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request passive data port",
+      "dependent_step": "Return passive data address",
+      "condition": "server DTP listens; PASV returns address (227)",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request FEAT",
+      "dependent_step": "Return FEAT features",
+      "condition": "supported feature lines returned",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return SIZE count",
+      "dependent_step": "Restart STREAM transfer",
+      "condition": "resume STOR using exact SIZE count for the same pathname and unchanged TYPE/MODE/STRU",
+      "field_relations": [
+        {
+          "prior_field": "transfer_octet_count",
+          "dependent_field": "octet_offset",
+          "derive": "reuse the SIZE value as the REST offset"
+        }
+      ]
+    },
+    {
+      "prior_step": "Listen for FTP control connection",
+      "dependent_step": "Open FTP control channel",
+      "condition": "Server-PI listens before User-PI connects",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Logout",
+      "dependent_step": "Send QUIT completion",
+      "condition": "221 after logout; any transfer still in progress has returned its result before QUIT completes",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send QUIT completion",
+      "dependent_step": "Close control channel",
+      "condition": "221 branch with no associated open data connection; open data channels close first",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send PASS request",
+      "dependent_step": "Complete login",
+      "condition": "PASS succeeds with 230; no login account is required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request STOR",
+      "dependent_step": "Request operation account",
+      "condition": "332 retains command pending account; 532 requires account and discards this command",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Reinitialize user session",
+      "dependent_step": "Acknowledge REIN",
+      "condition": "no-delay branch: after current transfer completes, send 220 directly",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request passive data port",
+      "dependent_step": "Listen passive data connection",
+      "condition": "ordinary passive transfer, not a resumed transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen passive data connection",
+      "dependent_step": "Return passive data address",
+      "condition": "server listening port is ready; 227 returns its host and port",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return passive data address",
+      "dependent_step": "Connect passive data connection",
+      "condition": "ordinary passive transfer; for MLSD, only when the target is a valid directory",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen Server A control",
+      "dependent_step": "Send PASV to Server A",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send PASV to Server A",
+      "dependent_step": "Server A listens for third-party data",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Server A listens for third-party data",
+      "dependent_step": "Server A returns PASV endpoint",
+      "condition": "227 returned after listening",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Server A returns PASV endpoint",
+      "dependent_step": "Send PORT to Server B",
+      "condition": "forward Server A endpoint",
+      "field_relations": [
+        {
+          "prior_field": "host_port",
+          "dependent_field": "host_port",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "Listen Server B control",
+      "dependent_step": "Send PORT to Server B",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send PORT to Server B",
+      "dependent_step": "Server B acknowledges PORT",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Server B acknowledges PORT",
+      "dependent_step": "Send STOR to Server A",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Server B acknowledges PORT",
+      "dependent_step": "Send RETR to Server B",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Server A listens for third-party data",
+      "dependent_step": "Send STOR to Server A",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send STOR to Server A",
+      "dependent_step": "Send RETR to Server B",
+      "condition": "corresponding server service commands establish B-to-A transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send RETR to Server B",
+      "dependent_step": "Server B connects to Server A",
+      "condition": "B initiates data connection to A",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Server B connects to Server A",
+      "dependent_step": "Transfer third-party file data",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen active data connection",
+      "dependent_step": "Request RETR",
+      "condition": "ordinary non-resumed active transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect passive data connection",
+      "dependent_step": "Request RETR",
+      "condition": "ordinary non-resumed passive transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen active data connection",
+      "dependent_step": "Request STOR",
+      "condition": "ordinary non-resumed active transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect passive data connection",
+      "dependent_step": "Request STOR",
+      "condition": "ordinary non-resumed passive transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen active data connection",
+      "dependent_step": "Request APPE",
+      "condition": "ordinary non-resumed active transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect passive data connection",
+      "dependent_step": "Request APPE",
+      "condition": "ordinary non-resumed passive transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen active data connection",
+      "dependent_step": "Request STOU",
+      "condition": "ordinary non-resumed active transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect passive data connection",
+      "dependent_step": "Request STOU",
+      "condition": "ordinary non-resumed passive transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen active data connection",
+      "dependent_step": "Request MLSD",
+      "condition": "ordinary non-resumed active transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen active data connection",
+      "dependent_step": "Request LIST",
+      "condition": "ordinary non-resumed active transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect passive data connection",
+      "dependent_step": "Request LIST",
+      "condition": "ordinary non-resumed passive transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen active data connection",
+      "dependent_step": "Request NLST",
+      "condition": "ordinary non-resumed active transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect passive data connection",
+      "dependent_step": "Request NLST",
+      "condition": "ordinary non-resumed passive transfer with a new connection; exclude REST resumption and an already-open retained connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge TYPE",
+      "dependent_step": "Request RETR",
+      "condition": "only when TYPE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge MODE",
+      "dependent_step": "Request RETR",
+      "condition": "only when MODE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge STRU",
+      "dependent_step": "Request RETR",
+      "condition": "only when STRU is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge TYPE",
+      "dependent_step": "Request STOR",
+      "condition": "only when TYPE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge MODE",
+      "dependent_step": "Request STOR",
+      "condition": "only when MODE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge STRU",
+      "dependent_step": "Request STOR",
+      "condition": "only when STRU is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge TYPE",
+      "dependent_step": "Request APPE",
+      "condition": "only when TYPE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge MODE",
+      "dependent_step": "Request APPE",
+      "condition": "only when MODE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge STRU",
+      "dependent_step": "Request APPE",
+      "condition": "only when STRU is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge TYPE",
+      "dependent_step": "Request STOU",
+      "condition": "only when TYPE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge MODE",
+      "dependent_step": "Request STOU",
+      "condition": "only when MODE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge STRU",
+      "dependent_step": "Request STOU",
+      "condition": "only when STRU is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge TYPE",
+      "dependent_step": "Request MLSD",
+      "condition": "only when TYPE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge MODE",
+      "dependent_step": "Request MLSD",
+      "condition": "only when MODE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge STRU",
+      "dependent_step": "Request MLSD",
+      "condition": "only when STRU is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge TYPE",
+      "dependent_step": "Request LIST",
+      "condition": "only when TYPE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge MODE",
+      "dependent_step": "Request LIST",
+      "condition": "only when MODE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge STRU",
+      "dependent_step": "Request LIST",
+      "condition": "only when STRU is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge TYPE",
+      "dependent_step": "Request NLST",
+      "condition": "only when TYPE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge MODE",
+      "dependent_step": "Request NLST",
+      "condition": "only when MODE is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge STRU",
+      "dependent_step": "Request NLST",
+      "condition": "only when STRU is changed from the current/default accepted value; parameter-setting command precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive file from server (passive)",
+      "dependent_step": "Close server data connection",
+      "condition": "MODE Stream and STRU File: close signals EOF",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Stream record EOF/EOR markers",
+      "dependent_step": "Complete file transfer",
+      "condition": "MODE Stream and STRU Record; explicit EOR and EOF codes signal completion; connection may be reused",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Stream record EOF/EOR markers (upload)",
+      "dependent_step": "Complete file transfer",
+      "condition": "MODE Stream and STRU Record; explicit EOR and EOF codes signal completion; connection may be reused",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Block/compressed EOF marker",
+      "dependent_step": "Complete file transfer",
+      "condition": "MODE Block or Compressed; explicit EOF marker; connection may be reused",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Block/compressed EOF marker (upload)",
+      "dependent_step": "Complete file transfer",
+      "condition": "MODE Block or Compressed; explicit EOF marker; connection may be reused",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Complete file transfer",
+      "dependent_step": "Request RETR",
+      "condition": "prior transfer used MODE Block/Compressed or Stream with Record and data connection was retained; reuse the open connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Complete file transfer",
+      "dependent_step": "Request STOR",
+      "condition": "prior transfer used MODE Block/Compressed or Stream with Record and data connection was retained; reuse the open connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Complete file transfer",
+      "dependent_step": "Request APPE",
+      "condition": "prior transfer used MODE Block/Compressed or Stream with Record and data connection was retained; reuse the open connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Complete file transfer",
+      "dependent_step": "Request STOU",
+      "condition": "prior transfer used MODE Block/Compressed or Stream with Record and data connection was retained; reuse the open connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Complete file transfer",
+      "dependent_step": "Request LIST",
+      "condition": "prior transfer used MODE Block/Compressed or Stream with Record and data connection was retained; reuse the open connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Complete file transfer",
+      "dependent_step": "Request NLST",
+      "condition": "prior transfer used MODE Block/Compressed or Stream with Record and data connection was retained; reuse the open connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send MLSD entries (passive)",
+      "dependent_step": "Close server-side passive data connection",
+      "condition": "server closes MLSD data connection after data entries",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Finish MLSD data transfer",
+      "condition": "226 final response after data connection close",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start LIST transfer",
+      "dependent_step": "Send LIST listing",
+      "condition": "125: existing connection is already open; 150: after active connection opens; ordinary non-resumed data branch only; 125/retained branches reuse the existing channel and REST 0 uses a full ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send LIST listing",
+      "dependent_step": "Close server data connection",
+      "condition": "close selected by server, or required by MODE Stream and STRU File",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "data connection closed; send 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start LIST transfer",
+      "dependent_step": "Send LIST listing (passive)",
+      "condition": "preliminary reply received and passive data connection is open; ordinary non-resumed passive branch; no additional connection when a retained 125/250 branch applies; ordinary non-resumed data branch only; 125/retained branches reuse the existing channel and REST 0 uses a full ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send LIST listing (passive)",
+      "dependent_step": "Close server-side passive data connection",
+      "condition": "close selected by server, or required by MODE Stream and STRU File",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "data connection closed; send 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start NLST transfer",
+      "dependent_step": "Send NLST listing",
+      "condition": "125: existing connection is already open; 150: after active connection opens; ordinary non-resumed data branch only; 125/retained branches reuse the existing channel and REST 0 uses a full ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send NLST listing",
+      "dependent_step": "Close server data connection",
+      "condition": "close selected by server, or required by MODE Stream and STRU File",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Finish NLST transfer",
+      "condition": "data connection closed; send 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start NLST transfer",
+      "dependent_step": "Send NLST listing (passive)",
+      "condition": "preliminary reply received and passive data connection is open; ordinary non-resumed passive branch; no additional connection when a retained 125/250 branch applies; ordinary non-resumed data branch only; 125/retained branches reuse the existing channel and REST 0 uses a full ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send NLST listing (passive)",
+      "dependent_step": "Close server-side passive data connection",
+      "condition": "close selected by server, or required by MODE Stream and STRU File",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Finish NLST transfer",
+      "condition": "data connection closed; send 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Insert restart marker (user sends)",
+      "dependent_step": "Report received checkpoint",
+      "condition": "receiver is server; 110 returns the sender and receiver markers",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Insert restart marker (server sends)",
+      "dependent_step": "Restart block/compressed transfer",
+      "condition": "receiver User-DTP records corresponding checkpoint locally; marker value is known to user",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept block/compressed restart",
+      "dependent_step": "Request LIST",
+      "condition": "REST immediately precedes resumed LIST when continuing a LIST transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return MDTM timestamp",
+      "dependent_step": "Restart STREAM transfer",
+      "condition": "STOR: same server destination pathname; permit restart only when server partial-file time is not older than the local source file time",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return MDTM timestamp",
+      "dependent_step": "Restart block/compressed transfer",
+      "condition": "STOR: same server destination pathname; permit restart only when server partial-file time is not older than the local source file time",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request SIZE",
+      "dependent_step": "Request STOR",
+      "condition": "same server destination pathname; STREAM mode and TYPE/MODE/STRU unchanged from SIZE",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "Return FEAT features",
+      "dependent_step": "Select MLST facts",
+      "condition": "optional OPTS override; only select facts advertised as supported",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return selected MLST facts",
+      "dependent_step": "Request MLST",
+      "condition": "successful OPTS reply supplies the selected facts; an empty list requests names only",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return selected MLST facts",
+      "dependent_step": "Request MLSD",
+      "condition": "same OPTS MLST selection applies to MLSD",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Select MLST facts",
+      "dependent_step": "Reject invalid OPTS MLST",
+      "condition": "invalid syntax, including spaces in fact list; no change to current selection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send USER request",
+      "dependent_step": "Return FTP error",
+      "condition": "530 login failure, 500/501 syntax, or 421 service closing",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send PASS request",
+      "dependent_step": "Return FTP error",
+      "condition": "530 login failure, 500/501/503/421 command or sequence failure",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request MLST",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501 syntax; 550 nonexistent or inaccessible; other applicable 4xy/5xy replies",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request MLSD",
+      "dependent_step": "Return FTP error",
+      "condition": "501 target is not a directory before data connection setup; 550 target nonexistent or inaccessible",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request SIZE",
+      "dependent_step": "Return FTP error",
+      "condition": "550 size unavailable is not evidence the object is untransferable; syntax errors 500/501; 4xy possible",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request MDTM",
+      "dependent_step": "Return FTP error",
+      "condition": "550 time unavailable; syntax errors 500/501; 4xy possible",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Rename source",
+      "dependent_step": "Return FTP error",
+      "condition": "450/550 source unavailable; 500/501/502/421/530 command errors",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Rename destination",
+      "dependent_step": "Return FTP error",
+      "condition": "503 if no valid RNFR; 532/553 or syntax/access errors",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request passive data port",
+      "dependent_step": "Return FTP error",
+      "condition": "425/5xx if data connection cannot be opened",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Select MLST facts",
+      "dependent_step": "Return FTP error",
+      "condition": "501 invalid syntax leaves previous selection unchanged; unsupported facts are omitted, not error",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Print working directory",
+      "dependent_step": "Return FTP error",
+      "condition": "550 or other applicable command error",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request FEAT",
+      "dependent_step": "Return FTP error",
+      "condition": "500/502 if command unsupported",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request status",
+      "dependent_step": "Return FTP error",
+      "condition": "450 or syntax/sequence errors",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request help",
+      "dependent_step": "Return FTP error",
+      "condition": "500/502 unsupported or syntax errors",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request SITE service",
+      "dependent_step": "Return FTP error",
+      "condition": "command-specific 4xy/5xy outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send NOOP",
+      "dependent_step": "Return FTP error",
+      "condition": "500 or 421 service closing",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Mount file structure",
+      "dependent_step": "Return FTP error",
+      "condition": "500/502/530/550 or other applicable error",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Abort data transfer",
+      "dependent_step": "Close server data connection",
+      "condition": "ABOR requires server to close associated data connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Delete file",
+      "dependent_step": "Complete DELE",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Remove directory",
+      "dependent_step": "Complete RMD",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Create directory",
+      "dependent_step": "Return created directory path",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Change working directory",
+      "dependent_step": "Complete CWD",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Change to parent directory",
+      "dependent_step": "Complete CDUP",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Print working directory",
+      "dependent_step": "Return PWD pathname",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request system type",
+      "dependent_step": "Return SYST result",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request status",
+      "dependent_step": "Return STAT result",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request help",
+      "dependent_step": "Return HELP result",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request SITE service",
+      "dependent_step": "Return SITE result",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send NOOP",
+      "dependent_step": "Return NOOP result",
+      "condition": "successful command outcome",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request STOU",
+      "dependent_step": "Return STOU generated name",
+      "condition": "successful STOU 250 start reply carries the generated unique pathname",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return STOU generated name",
+      "dependent_step": "Start file transfer",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen Server A control",
+      "dependent_step": "Connect Server A control",
+      "condition": "Server PI listens before User-PI connects",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect Server A control",
+      "dependent_step": "Send PASV to Server A",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect Server A control",
+      "dependent_step": "Send STOR to Server A",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen Server B control",
+      "dependent_step": "Connect Server B control",
+      "condition": "Server PI listens before User-PI connects",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect Server B control",
+      "dependent_step": "Send PORT to Server B",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect Server B control",
+      "dependent_step": "Send RETR to Server B",
+      "condition": "",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge PORT",
+      "dependent_step": "Listen active data connection",
+      "condition": "ordinary non-resumed active branch requiring a new data connection; not when a connection is already retained",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start file transfer",
+      "dependent_step": "Connect active data connection",
+      "condition": "150; ordinary non-resumed active transfer requiring a new data connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect active data connection",
+      "dependent_step": "Receive file from server",
+      "condition": "150 ordinary non-resumed branch: active connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start file transfer",
+      "dependent_step": "Receive file from server (passive)",
+      "condition": "preliminary reply received and passive data connection is open; ordinary non-resumed passive branch; no additional connection when a retained 125/250 branch applies; ordinary non-resumed data branch only; 125/retained branches reuse the existing channel and REST 0 uses a full ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect active data connection",
+      "dependent_step": "Send file to server",
+      "condition": "150 ordinary non-resumed branch: active connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start file transfer",
+      "dependent_step": "Send file to server (passive)",
+      "condition": "preliminary reply received and passive data connection is open; ordinary non-resumed passive branch; no additional connection when a retained 125/250 branch applies; ordinary non-resumed data branch only; 125/retained branches reuse the existing channel and REST 0 uses a full ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request APPE",
+      "dependent_step": "Start file transfer",
+      "condition": "125 if the data connection is already open; otherwise 150 before transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request STOU",
+      "dependent_step": "Start file transfer",
+      "condition": "125 if the data connection is already open; otherwise 150 before transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start MLSD data transfer",
+      "dependent_step": "Connect active data connection",
+      "condition": "150; valid directory target and ordinary non-resumed active transfer requiring a new connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect active data connection",
+      "dependent_step": "Send MLSD entries",
+      "condition": "150 ordinary non-resumed active branch: connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start MLSD data transfer",
+      "dependent_step": "Send MLSD entries (passive)",
+      "condition": "150 preliminary reply received; valid directory target only; ordinary non-resumed passive branch; no additional connection when a retained 125/250 branch applies; ordinary non-resumed data branch only; 125/retained branches reuse the existing channel and REST 0 uses a full ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request LIST",
+      "dependent_step": "Start LIST transfer",
+      "condition": "125 if the data connection is already open; otherwise 150 before transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start LIST transfer",
+      "dependent_step": "Connect active data connection",
+      "condition": "150 preliminary reply: connection is about to open",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect active data connection",
+      "dependent_step": "Send LIST listing",
+      "condition": "150 ordinary non-resumed active branch: connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request NLST",
+      "dependent_step": "Start NLST transfer",
+      "condition": "125 if the data connection is already open; otherwise 150 before transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start NLST transfer",
+      "dependent_step": "Connect active data connection",
+      "condition": "150 preliminary reply: connection is about to open",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect active data connection",
+      "dependent_step": "Send NLST listing",
+      "condition": "150 ordinary non-resumed active branch: connection established",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive file from server",
+      "dependent_step": "Complete file transfer",
+      "condition": "mode-specific EOF/EOR completed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive file from server (passive)",
+      "dependent_step": "Complete file transfer",
+      "condition": "mode-specific EOF/EOR completed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send file to server",
+      "dependent_step": "Complete file transfer",
+      "condition": "mode-specific EOF/EOR completed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send file to server (passive)",
+      "dependent_step": "Complete file transfer",
+      "condition": "mode-specific EOF/EOR completed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send file to server (passive)",
+      "dependent_step": "Close user-side passive data connection",
+      "condition": "MODE Stream and STRU File; close signals EOF",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user-side passive data connection",
+      "dependent_step": "Close server-side passive data connection",
+      "condition": "server closes after upload completes",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive file from server (passive)",
+      "dependent_step": "Close server-side passive data connection",
+      "condition": "MODE Stream and STRU File; close signals EOF",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive file from server",
+      "dependent_step": "Send Stream record EOF/EOR markers (active)",
+      "condition": "MODE Stream and STRU Record",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive file from server",
+      "dependent_step": "Send Block/compressed EOF marker (active)",
+      "condition": "MODE Block or Compressed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send file to server",
+      "dependent_step": "Send Stream record EOF/EOR markers upload (active)",
+      "condition": "MODE Stream and STRU Record",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send file to server",
+      "dependent_step": "Send Block/compressed EOF marker upload (active)",
+      "condition": "MODE Block or Compressed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive file from server (passive)",
+      "dependent_step": "Send Stream record EOF/EOR markers (passive)",
+      "condition": "MODE Stream and STRU Record",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive file from server (passive)",
+      "dependent_step": "Send Block/compressed EOF marker (passive)",
+      "condition": "MODE Block or Compressed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send file to server (passive)",
+      "dependent_step": "Send Stream record EOF/EOR markers upload (passive)",
+      "condition": "MODE Stream and STRU Record",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send file to server (passive)",
+      "dependent_step": "Send Block/compressed EOF marker upload (passive)",
+      "condition": "MODE Block or Compressed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Stream record EOF/EOR markers (active)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker sent; completion may retain connection (250) or close it before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Block/compressed EOF marker (active)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker sent; completion may retain connection (250) or close it before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Stream record EOF/EOR markers upload (active)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker sent; completion may retain connection (250) or close it before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Block/compressed EOF marker upload (active)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker sent; completion may retain connection (250) or close it before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Stream record EOF/EOR markers (passive)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker sent; completion may retain connection (250) or close it before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Block/compressed EOF marker (passive)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker sent; completion may retain connection (250) or close it before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Stream record EOF/EOR markers upload (passive)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker sent; completion may retain connection (250) or close it before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Block/compressed EOF marker upload (passive)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker sent; completion may retain connection (250) or close it before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send LIST listing",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "data EOF marker completed and connection retained; send 250",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send LIST listing (passive)",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "data EOF marker completed and connection retained; send 250",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send NLST listing",
+      "dependent_step": "Finish NLST transfer",
+      "condition": "data EOF marker completed and connection retained; send 250",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send NLST listing (passive)",
+      "dependent_step": "Finish NLST transfer",
+      "condition": "data EOF marker completed and connection retained; send 250",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return MDTM timestamp",
+      "dependent_step": "Restart STREAM transfer",
+      "condition": "RETR: same source pathname as initial retrieval; permit restart only if current time equals the captured pre-transfer source time; if no initial server time was captured, allow for clock skew; changed time makes restart inadvisable",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return MDTM timestamp",
+      "dependent_step": "Restart STREAM transfer",
+      "condition": "STOR: same server destination pathname; permit restart only if partial destination time is not older than local source file time",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return MDTM timestamp",
+      "dependent_step": "Restart block/compressed transfer",
+      "condition": "RETR: same source pathname as initial retrieval; permit restart only if current time equals the captured pre-transfer source time; if no initial server time was captured, allow for clock skew; changed time makes restart inadvisable",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return MDTM timestamp",
+      "dependent_step": "Restart block/compressed transfer",
+      "condition": "STOR: same server destination pathname; permit restart only if partial destination time is not older than local source file time",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request MDTM",
+      "dependent_step": "Request STOR",
+      "condition": "same server destination pathname; local source file time is local state",
+      "field_relations": [
+        {
+          "prior_field": "pathname",
+          "dependent_field": "pathname",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "Report received checkpoint",
+      "dependent_step": "Restart block/compressed transfer",
+      "condition": "resume an upload; use the server-side receiver marker in REST",
+      "field_relations": [
+        {
+          "prior_field": "receiver_marker",
+          "dependent_field": "restart_marker",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "Insert restart marker (server sends)",
+      "dependent_step": "Restart block/compressed transfer",
+      "condition": "resume a download; receiving user records the corresponding local checkpoint and server sender marker",
+      "field_relations": [
+        {
+          "prior_field": "marker_information",
+          "dependent_field": "restart_marker",
+          "derive": ""
+        }
+      ]
+    },
+    {
+      "prior_step": "Accept block/compressed restart",
+      "dependent_step": "Request APPE",
+      "condition": "REST immediately precedes APPE when server permits it; APPE acts as STOR at marker offset",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request APPE",
+      "dependent_step": "Request operation account",
+      "condition": "332 retains command pending account; 532 requires account and discards this command",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request STOU",
+      "dependent_step": "Request operation account",
+      "condition": "332 retains command pending account; 532 requires account and discards this command",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Rename destination",
+      "dependent_step": "Request operation account",
+      "condition": "332 retains command pending account; 532 requires account and discards this command",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send USER request",
+      "dependent_step": "Complete login",
+      "condition": "server accepts username without password; 230",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge REIN",
+      "dependent_step": "Send USER request",
+      "condition": "220 after REIN; USER follows final ready reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Reinitialize user session",
+      "dependent_step": "Return FTP error",
+      "condition": "REIN failure: 500/502 or 421 as applicable",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Abort data transfer",
+      "dependent_step": "Return abort sequence",
+      "condition": "transfer still in progress: first reply occurrence is 426 for service aborted; follow with a second 226 occurrence for processed ABOR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Abort data transfer",
+      "dependent_step": "Close server-side passive data connection",
+      "condition": "ABOR during passive-channel transfer; server closes data connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Return abort sequence",
+      "condition": "active data close precedes 426/226 abort replies",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Return abort sequence",
+      "condition": "passive data close precedes 426/226 abort replies",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Mount file structure",
+      "dependent_step": "Return SMNT result",
+      "condition": "successful SMNT: 202 or 250",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Allocate storage",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501 syntax; 504 unsupported parameter; 530 login; 421 service unavailable",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Set active data port",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501 syntax, 530 login, 421 unavailable",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request passive data port",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 unsupported or syntax, 530 login, 421 unavailable",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Set transfer type",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501 syntax, 504 unsupported TYPE parameter, 530 login, 421 unavailable",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Set transfer mode",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501 syntax, 504 unsupported MODE parameter, 530 login, 421 unavailable",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Set transfer structure",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501 syntax, 504 unsupported STRU parameter, 530 login, 421 unavailable",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Change working directory",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 syntax or unsupported command, 530 login, 550 unavailable",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Change to parent directory",
+      "dependent_step": "Return FTP error",
+      "condition": "same CWD reply failures: 500/501/502/530/550",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Rename destination",
+      "dependent_step": "Return FTP error",
+      "condition": "RNTO 503 bad sequence; 532 account; 553 name not allowed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Mount file structure",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502/530/550 failure",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return FEAT features",
+      "dependent_step": "Request MLST",
+      "condition": "no OPTS override; use facts marked * in MLST feature line as defaults",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return FEAT features",
+      "dependent_step": "Request MLSD",
+      "condition": "no OPTS override; same default fact set applies to MLSD",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return selected MLST facts",
+      "dependent_step": "Request MLST",
+      "condition": "successful OPTS response supplies only selected available facts; empty list means names only",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return selected MLST facts",
+      "dependent_step": "Request MLSD",
+      "condition": "successful OPTS response supplies only selected available facts; empty list means names only",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Complete file transfer",
+      "condition": "MODE Stream and STRU File; server close signals EOF and precedes final reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request operation account",
+      "dependent_step": "Send ACCT request",
+      "condition": "332: command is held pending account; 532: command was discarded and is reissued after account is accepted",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request RETR: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request STOR: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request APPE: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request STOU: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request MLSD: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request LIST: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request NLST: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request RETR: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request STOR: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request APPE: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request STOU: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request MLSD: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request LIST: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Return FTP error",
+      "condition": "Request NLST: if data connection was established before error, close it before failure reply",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Close user upload data connection",
+      "condition": "receiver detects peer closure after reading queued listing/entry data; close the local endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user upload data connection",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "peer closed after queued data was read; both local endpoints have closed before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user upload data connection",
+      "dependent_step": "Finish NLST transfer",
+      "condition": "peer closed after queued data was read; both local endpoints have closed before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user upload data connection",
+      "dependent_step": "Finish MLSD data transfer",
+      "condition": "peer closed after queued data was read; both local endpoints have closed before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Close user-side passive data connection",
+      "condition": "receiver detects peer closure after reading queued listing/entry data; close the local endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user-side passive data connection",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "peer closed after queued data was read; both local endpoints have closed before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user-side passive data connection",
+      "dependent_step": "Finish NLST transfer",
+      "condition": "peer closed after queued data was read; both local endpoints have closed before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user-side passive data connection",
+      "dependent_step": "Finish MLSD data transfer",
+      "condition": "peer closed after queued data was read; both local endpoints have closed before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send LIST listing",
+      "dependent_step": "Send Stream record EOF/EOR markers (active)",
+      "condition": "MODE Stream and STRU Record; listing data precedes explicit EOR/EOF markers",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send LIST listing",
+      "dependent_step": "Send Block/compressed EOF marker (active)",
+      "condition": "MODE Block or Compressed; listing data precedes explicit EOF marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Stream record EOF/EOR markers (active)",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "EOR/EOF marker completes listing; 250 may retain connection, or close first for 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Block/compressed EOF marker (active)",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "EOF marker completes listing; 250 may retain connection, or close first for 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send NLST listing",
+      "dependent_step": "Send Stream record EOF/EOR markers (active)",
+      "condition": "MODE Stream and STRU Record; listing data precedes explicit EOR/EOF markers",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send NLST listing",
+      "dependent_step": "Send Block/compressed EOF marker (active)",
+      "condition": "MODE Block or Compressed; listing data precedes explicit EOF marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Stream record EOF/EOR markers (active)",
+      "dependent_step": "Finish NLST transfer",
+      "condition": "EOR/EOF marker completes listing; 250 may retain connection, or close first for 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Block/compressed EOF marker (active)",
+      "dependent_step": "Finish NLST transfer",
+      "condition": "EOF marker completes listing; 250 may retain connection, or close first for 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send LIST listing (passive)",
+      "dependent_step": "Send Stream record EOF/EOR markers (passive)",
+      "condition": "MODE Stream and STRU Record; listing data precedes explicit EOR/EOF markers",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send LIST listing (passive)",
+      "dependent_step": "Send Block/compressed EOF marker (passive)",
+      "condition": "MODE Block or Compressed; listing data precedes explicit EOF marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Stream record EOF/EOR markers (passive)",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "EOR/EOF marker completes listing; 250 may retain connection, or close first for 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Block/compressed EOF marker (passive)",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "EOF marker completes listing; 250 may retain connection, or close first for 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send NLST listing (passive)",
+      "dependent_step": "Send Stream record EOF/EOR markers (passive)",
+      "condition": "MODE Stream and STRU Record; listing data precedes explicit EOR/EOF markers",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send NLST listing (passive)",
+      "dependent_step": "Send Block/compressed EOF marker (passive)",
+      "condition": "MODE Block or Compressed; listing data precedes explicit EOF marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Stream record EOF/EOR markers (passive)",
+      "dependent_step": "Finish NLST transfer",
+      "condition": "EOR/EOF marker completes listing; 250 may retain connection, or close first for 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send Block/compressed EOF marker (passive)",
+      "dependent_step": "Finish NLST transfer",
+      "condition": "EOF marker completes listing; 250 may retain connection, or close first for 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish LIST transfer",
+      "dependent_step": "Request RETR",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish LIST transfer",
+      "dependent_step": "Request STOR",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish LIST transfer",
+      "dependent_step": "Request APPE",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish LIST transfer",
+      "dependent_step": "Request STOU",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish LIST transfer",
+      "dependent_step": "Request LIST",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish LIST transfer",
+      "dependent_step": "Request NLST",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish LIST transfer",
+      "dependent_step": "Request MLSD",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish NLST transfer",
+      "dependent_step": "Request RETR",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish NLST transfer",
+      "dependent_step": "Request STOR",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish NLST transfer",
+      "dependent_step": "Request APPE",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish NLST transfer",
+      "dependent_step": "Request STOU",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish NLST transfer",
+      "dependent_step": "Request LIST",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish NLST transfer",
+      "dependent_step": "Request NLST",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Finish NLST transfer",
+      "dependent_step": "Request MLSD",
+      "condition": "prior listing completed with 250 and retained the data connection; reuse it for next transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept STREAM restart",
+      "dependent_step": "Request APPE",
+      "condition": "only if server permits APPE after REST; APPE then acts identically to STOR at the marker offset; REST 0 disables restart and sends the full file",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen resumed active data connection",
+      "dependent_step": "Request RETR",
+      "condition": "positive STREAM offset or accepted Block/Compressed restart marker; resumed active listener is ready before REST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect resumed active data connection",
+      "dependent_step": "Receive resumed file from server (active)",
+      "condition": "resumed active connection established; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen resumed active data connection",
+      "dependent_step": "Request STOR",
+      "condition": "positive STREAM offset or accepted Block/Compressed restart marker; resumed active listener is ready before REST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect resumed active data connection",
+      "dependent_step": "Send resumed file to server (active)",
+      "condition": "resumed active connection established; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen resumed active data connection",
+      "dependent_step": "Request APPE",
+      "condition": "positive STREAM offset or accepted Block/Compressed restart marker; resumed active listener is ready before REST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request passive data port",
+      "dependent_step": "Listen resumed passive data connection",
+      "condition": "resumed passive branch; Server-DTP listens on the newly selected endpoint; positive/accepted restart marker resumed path only",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen resumed passive data connection",
+      "dependent_step": "Return passive data address",
+      "condition": "227 returns resumed endpoint; positive restart or accepted Block/Compressed marker required; positive/accepted restart marker resumed path only",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return passive data address",
+      "dependent_step": "Connect resumed passive data connection",
+      "condition": "resumed passive client connects to returned address before REST and service request; positive/accepted restart marker resumed path only",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect resumed passive data connection",
+      "dependent_step": "Restart STREAM transfer",
+      "condition": "new resumed passive data transport established before REST; resumed path only for a positive STREAM offset or accepted Block/Compressed restart marker, never REST 0; positive restart or accepted Block/Compressed marker required; positive/accepted restart marker resumed path only",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect resumed passive data connection",
+      "dependent_step": "Restart block/compressed transfer",
+      "condition": "new resumed passive data transport established before REST; resumed path only for a positive STREAM offset or accepted Block/Compressed restart marker, never REST 0; positive restart or accepted Block/Compressed marker required; positive/accepted restart marker resumed path only",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept STREAM restart",
+      "dependent_step": "Request RETR",
+      "condition": "passive resumed branch; accepted REST immediately precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept block/compressed restart",
+      "dependent_step": "Request RETR",
+      "condition": "passive resumed branch; accepted REST immediately precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept STREAM restart",
+      "dependent_step": "Request STOR",
+      "condition": "passive resumed branch; accepted REST immediately precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept block/compressed restart",
+      "dependent_step": "Request STOR",
+      "condition": "passive resumed branch; accepted REST immediately precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept STREAM restart",
+      "dependent_step": "Request APPE",
+      "condition": "passive resumed branch; accepted REST immediately precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Accept block/compressed restart",
+      "dependent_step": "Request APPE",
+      "condition": "passive resumed branch; accepted REST immediately precedes service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return abort sequence",
+      "dependent_step": "Return abort sequence",
+      "condition": "first occurrence is the 426 service-aborted reply; second occurrence is 226 processed ABOR",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Return FTP error",
+      "dependent_step": "Close control channel",
+      "condition": "421 service unavailable reply; close control connection after applicable data-channel cleanup",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send ACCT request",
+      "dependent_step": "Acknowledge operation account",
+      "condition": "ACCT accepts account for operation with 202 or 230",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge operation account",
+      "dependent_step": "Request STOR",
+      "condition": "532 discarded the command; reissue after ACCT accepts account with 202 or 230",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge operation account",
+      "dependent_step": "Request APPE",
+      "condition": "532 discarded the command; reissue after ACCT accepts account with 202 or 230",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge operation account",
+      "dependent_step": "Request STOU",
+      "condition": "532 discarded the command; reissue after ACCT accepts account with 202 or 230",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge operation account",
+      "dependent_step": "Rename destination",
+      "condition": "532 discarded the command; reissue after ACCT accepts account with 202 or 230",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive resumed file from server (active)",
+      "dependent_step": "Send resumed Stream record EOF/EOR markers (active)",
+      "condition": "MODE Stream and STRU Record; resumed data precedes explicit EOF/EOR marker; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed Stream record EOF/EOR markers (active)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker completes resumed transfer; 250 may retain connection, or close before 226; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive resumed file from server (active)",
+      "dependent_step": "Send resumed Block/compressed EOF marker (active)",
+      "condition": "MODE Block or Compressed; resumed data precedes explicit EOF/EOR marker; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed Block/compressed EOF marker (active)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker completes resumed transfer; 250 may retain connection, or close before 226; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive resumed file from server (active)",
+      "dependent_step": "Close Server-DTP resumed active data connection",
+      "condition": "MODE Stream and STRU File; sender close signals EOF; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close Server-DTP resumed active data connection",
+      "dependent_step": "Close User-DTP resumed active data connection",
+      "condition": "peer close detected after receiver reads queued data; close receiver endpoint; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close User-DTP resumed active data connection",
+      "dependent_step": "Complete file transfer",
+      "condition": "both resumed data endpoints closed before 226 completion; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed file to server (active)",
+      "dependent_step": "Send resumed Stream record EOF/EOR markers upload (active)",
+      "condition": "MODE Stream and STRU Record; resumed data precedes explicit EOF/EOR marker; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed Stream record EOF/EOR markers upload (active)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker completes resumed transfer; 250 may retain connection, or close before 226; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed file to server (active)",
+      "dependent_step": "Send resumed Block/compressed EOF marker upload (active)",
+      "condition": "MODE Block or Compressed; resumed data precedes explicit EOF/EOR marker; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed Block/compressed EOF marker upload (active)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker completes resumed transfer; 250 may retain connection, or close before 226; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed file to server (active)",
+      "dependent_step": "Close User-DTP resumed active data connection",
+      "condition": "MODE Stream and STRU File; sender close signals EOF; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close User-DTP resumed active data connection",
+      "dependent_step": "Close Server-DTP resumed active data connection",
+      "condition": "peer close detected after receiver reads queued data; close receiver endpoint; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close Server-DTP resumed active data connection",
+      "dependent_step": "Complete file transfer",
+      "condition": "both resumed data endpoints closed before 226 completion; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive resumed file from server (passive)",
+      "dependent_step": "Send resumed Stream record EOF/EOR markers (passive)",
+      "condition": "MODE Stream and STRU Record; resumed data precedes explicit EOF/EOR marker; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed Stream record EOF/EOR markers (passive)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker completes resumed transfer; 250 may retain connection, or close before 226; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive resumed file from server (passive)",
+      "dependent_step": "Send resumed Block/compressed EOF marker (passive)",
+      "condition": "MODE Block or Compressed; resumed data precedes explicit EOF/EOR marker; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed Block/compressed EOF marker (passive)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker completes resumed transfer; 250 may retain connection, or close before 226; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Receive resumed file from server (passive)",
+      "dependent_step": "Close Server-DTP resumed passive data connection",
+      "condition": "MODE Stream and STRU File; sender close signals EOF; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close Server-DTP resumed passive data connection",
+      "dependent_step": "Close User-DTP resumed passive data connection",
+      "condition": "peer close detected after receiver reads queued data; close receiver endpoint; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close User-DTP resumed passive data connection",
+      "dependent_step": "Complete file transfer",
+      "condition": "both resumed data endpoints closed before 226 completion; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed file to server (passive)",
+      "dependent_step": "Send resumed Stream record EOF/EOR markers upload (passive)",
+      "condition": "MODE Stream and STRU Record; resumed data precedes explicit EOF/EOR marker; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed Stream record EOF/EOR markers upload (passive)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker completes resumed transfer; 250 may retain connection, or close before 226; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed file to server (passive)",
+      "dependent_step": "Send resumed Block/compressed EOF marker upload (passive)",
+      "condition": "MODE Block or Compressed; resumed data precedes explicit EOF/EOR marker; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed Block/compressed EOF marker upload (passive)",
+      "dependent_step": "Complete file transfer",
+      "condition": "EOF/EOR marker completes resumed transfer; 250 may retain connection, or close before 226; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed file to server (passive)",
+      "dependent_step": "Close User-DTP resumed passive data connection",
+      "condition": "MODE Stream and STRU File; sender close signals EOF; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close User-DTP resumed passive data connection",
+      "dependent_step": "Close Server-DTP resumed passive data connection",
+      "condition": "peer close detected after receiver reads queued data; close receiver endpoint; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close Server-DTP resumed passive data connection",
+      "dependent_step": "Complete file transfer",
+      "condition": "both resumed data endpoints closed before 226 completion; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start file transfer",
+      "dependent_step": "Receive resumed file from server (active)",
+      "condition": "125: resumed data connection is already open; transfer begins after preliminary reply; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start file transfer",
+      "dependent_step": "Connect resumed active data connection",
+      "condition": "150: server is about to open the resumed data connection; the 125 branch uses the already-open connection; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start file transfer",
+      "dependent_step": "Receive resumed file from server (passive)",
+      "condition": "125 or 150 preliminary success and resumed passive connection is open; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start file transfer",
+      "dependent_step": "Send resumed file to server (active)",
+      "condition": "125: resumed data connection is already open; transfer begins after preliminary reply; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start file transfer",
+      "dependent_step": "Send resumed file to server (passive)",
+      "condition": "125 or 150 preliminary success and resumed passive connection is open; positive restart or accepted Block/Compressed marker required",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen resumed active data connection",
+      "dependent_step": "Restart STREAM transfer",
+      "condition": "positive STREAM offset or accepted Block/Compressed restart marker; resumed active listener is ready before REST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen resumed active data connection",
+      "dependent_step": "Restart block/compressed transfer",
+      "condition": "positive STREAM offset or accepted Block/Compressed restart marker; resumed active listener is ready before REST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send ACCT request",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501 syntax; 503 sequence; 530 login/account failure; 421 service closing",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Delete file",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 syntax or unsupported; 421 service closing; 530 not logged in; 450/550 unavailable or denied",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Remove directory",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 syntax or unsupported; 421 service closing; 530 not logged in; 550 unavailable or denied",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Create directory",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 syntax or unsupported; 421 service closing; 530 not logged in; 550 unavailable or name conflict",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request LIST",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 command or syntax; 421 service closing; 530 not logged in; 450 unavailable; 425/426/451 transfer failures",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request NLST",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 command or syntax; 421 service closing; 530 not logged in; 450 unavailable; 425/426/451 transfer failures",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Close user upload data connection",
+      "condition": "RETR download: server closed after EOF; user reads queued bytes and closes its endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user upload data connection",
+      "dependent_step": "Complete file transfer",
+      "condition": "RETR download: both endpoints closed before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Close user-side passive data connection",
+      "condition": "RETR passive download: server close detected; user reads queued bytes and closes local endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user-side passive data connection",
+      "dependent_step": "Complete file transfer",
+      "condition": "RETR passive download: both endpoints closed before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Set active data port",
+      "dependent_step": "Close server data connection",
+      "condition": "PORT changes the port specification while this associated data channel is open; server closes it",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Acknowledge PORT",
+      "condition": "close an already-open associated data connection before acknowledging changed PORT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Set active data port",
+      "dependent_step": "Close server-side passive data connection",
+      "condition": "PORT changes the port specification while this associated data channel is open; server closes it",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Acknowledge PORT",
+      "condition": "close an already-open associated data connection before acknowledging changed PORT",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Close user upload data connection",
+      "condition": "PORT changed while active data connection open; user detects peer close, drains queued data, then closes",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user upload data connection",
+      "dependent_step": "Acknowledge PORT",
+      "condition": "both active endpoints close before PORT acknowledgement when prior channel was open",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Close user-side passive data connection",
+      "condition": "PORT changed while passive data connection open; user detects peer close, drains queued data, then closes",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user-side passive data connection",
+      "dependent_step": "Acknowledge PORT",
+      "condition": "both passive endpoints close before PORT acknowledgement when prior channel was open",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send QUIT completion",
+      "dependent_step": "Close server data connection",
+      "condition": "QUIT is complete; close any associated open data connection before control-channel closure",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Close user upload data connection",
+      "condition": "server close detected; receiver reads queued data and closes its endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user upload data connection",
+      "dependent_step": "Close control channel",
+      "condition": "associated data connection cleanup precedes server control-channel close",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send QUIT completion",
+      "dependent_step": "Close server-side passive data connection",
+      "condition": "QUIT is complete; close any associated open data connection before control-channel closure",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Close user-side passive data connection",
+      "condition": "server close detected; receiver reads queued data and closes its endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user-side passive data connection",
+      "dependent_step": "Close control channel",
+      "condition": "associated data connection cleanup precedes server control-channel close",
+      "field_relations": []
+    },
+    {
+      "prior_step": "User closes control connection unexpectedly",
+      "dependent_step": "Close server data connection",
+      "condition": "server effective ABOR on unexpected control close; close any associated open data connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server data connection",
+      "dependent_step": "Close user upload data connection",
+      "condition": "peer close detected; receiver reads queued data then closes its endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user upload data connection",
+      "dependent_step": "Close control channel",
+      "condition": "server effective QUIT after data cleanup on unexpected control close",
+      "field_relations": []
+    },
+    {
+      "prior_step": "User closes control connection unexpectedly",
+      "dependent_step": "Close server-side passive data connection",
+      "condition": "server effective ABOR on unexpected control close; close any associated open data connection",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close server-side passive data connection",
+      "dependent_step": "Close user-side passive data connection",
+      "condition": "peer close detected; receiver reads queued data then closes its endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close user-side passive data connection",
+      "dependent_step": "Close control channel",
+      "condition": "server effective QUIT after data cleanup on unexpected control close",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request RETR",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501 syntax; 421 service closing; 530 not logged in; 425/426/451 transfer failure; 450/550 source unavailable; invalid REST range is rejected on this following service request",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request STOR",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501 syntax; 421 service closing; 530 not logged in; 532 account; 450/452/553 file or storage failure; 425/426/451/551/552 transfer failure; invalid REST range is rejected here",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request STOU",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501 syntax; 421 service closing; 530 not logged in; 532 account; 450/452/553 storage or naming failure; 425/426/451/551/552 transfer failure",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request APPE",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 syntax or unsupported; 421 service closing; 530 not logged in; 532 account; 450/550/452/553 file or storage failure; 425/426/451/551/552 transfer failure",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Restart STREAM transfer",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 unsupported or invalid REST; 421 service closing; 530 not logged in; syntactically invalid REST fails here, while an out-of-range marker is reported by the following transfer command",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Restart block/compressed transfer",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 unsupported or invalid REST; 421 service closing; 530 not logged in; syntactically invalid marker fails here, while an out-of-range marker is reported by the following transfer command",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Request system type",
+      "dependent_step": "Return FTP error",
+      "condition": "500/501/502 command or syntax error; 421 service closing",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Logout",
+      "dependent_step": "Return FTP error",
+      "condition": "500 QUIT command failure",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send service greeting",
+      "dependent_step": "Send service greeting",
+      "condition": "first occurrence is 120 expected delay; second occurrence is 220 service ready",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Reinitialize user session",
+      "dependent_step": "Send REIN delay reply",
+      "condition": "if current transfer delays REIN completion, send 120 before final 220",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send REIN delay reply",
+      "dependent_step": "Acknowledge REIN",
+      "condition": "120 delay reply precedes 220 when transfer completion is delayed",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Listen resumed active data connection",
+      "dependent_step": "Request LIST",
+      "condition": "accepted Block/Compressed restart marker; resumed active LIST request follows REST",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start LIST transfer",
+      "dependent_step": "Connect resumed active data connection",
+      "condition": "150: resumed active LIST connection is about to open",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect resumed active data connection",
+      "dependent_step": "Send resumed LIST listing (active)",
+      "condition": "resumed active connection established for LIST; accepted Block/Compressed restart marker, not ordinary transfer",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start LIST transfer",
+      "dependent_step": "Send resumed LIST listing (active)",
+      "condition": "125: resumed active data connection is already open",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed LIST listing (active)",
+      "dependent_step": "Send resumed LIST Block/compressed EOF marker (active)",
+      "condition": "MODE Block or Compressed; resumed LIST entries precede explicit EOF marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed LIST Block/compressed EOF marker (active)",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "EOF marker completes resumed LIST; 250 may retain connection or close before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed LIST Block/compressed EOF marker (active)",
+      "dependent_step": "Close Server-DTP resumed active data connection",
+      "condition": "optional data close after Block/Compressed EOF marker; if closed, precedes 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close Server-DTP resumed active data connection",
+      "dependent_step": "Close User-DTP resumed active data connection",
+      "condition": "receiver detects peer closure after reading queued LIST data and closes local endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close User-DTP resumed active data connection",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "both resumed data endpoints closed before 226 LIST completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Start LIST transfer",
+      "dependent_step": "Send resumed LIST listing (passive)",
+      "condition": "125 or 150 after accepted Block/Compressed restart; resumed passive connection is already open",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed LIST listing (passive)",
+      "dependent_step": "Send resumed LIST Block/compressed EOF marker (passive)",
+      "condition": "MODE Block or Compressed; resumed LIST entries precede explicit EOF marker",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed LIST Block/compressed EOF marker (passive)",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "EOF marker completes resumed LIST; 250 may retain connection or close before 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Send resumed LIST Block/compressed EOF marker (passive)",
+      "dependent_step": "Close Server-DTP resumed passive data connection",
+      "condition": "optional data close after Block/Compressed EOF marker; if closed, precedes 226",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close Server-DTP resumed passive data connection",
+      "dependent_step": "Close User-DTP resumed passive data connection",
+      "condition": "receiver detects peer closure after reading queued LIST data and closes local endpoint",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Close User-DTP resumed passive data connection",
+      "dependent_step": "Finish LIST transfer",
+      "condition": "both resumed data endpoints closed before 226 LIST completion",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Connect passive data connection",
+      "dependent_step": "Request MLSD",
+      "condition": "passive MLSD branch with valid directory target; 501 invalid-target and 550 inaccessible-target paths do not connect",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge operation account",
+      "dependent_step": "Start file transfer",
+      "condition": "332 held Request STOR pending account; after ACCT 202/230, server resumes the pending transfer without reissuing the command",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge operation account",
+      "dependent_step": "Start file transfer",
+      "condition": "332 held Request APPE pending account; after ACCT 202/230, server resumes the pending transfer without reissuing the command",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge operation account",
+      "dependent_step": "Start file transfer",
+      "condition": "332 held Request STOU pending account; after ACCT 202/230, server resumes the pending transfer without reissuing the command",
+      "field_relations": []
+    },
+    {
+      "prior_step": "Acknowledge operation account",
+      "dependent_step": "Complete rename",
+      "condition": "332 held RNTO pending account; after ACCT accepts account, resume the pending rename without reissuing RNTO",
+      "field_relations": []
+    }
+  ],
+  "unresolved": []
+}

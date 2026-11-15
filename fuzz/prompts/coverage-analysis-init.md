@@ -10,6 +10,8 @@ MODEL={{ model }}
 CATALOG={{ catalog }}
 HANDLERS={{ handlers_path }}
 SUT_PARTIES={{ sut_parties }}
+GENERATOR_PARTIES={{ generator_parties }}
+UNAVAILABLE_PARTIES={{ unavailable_parties }}
 CONFIGURE_OPTIONS={{ configure_options }}
 CLI_ARGS={{ cli_args }}
 WRITE ready.json
@@ -32,6 +34,16 @@ parties. SUT_PARTIES is the JSON array resolved from the campaign configuration.
 An inbound use has receiver in SUT_PARTIES and sender outside SUT_PARTIES. When a
 message has several uses, analyze only its inbound uses. Skip outgoing replies
 and traffic entirely within or outside the SUT; do not enumerate reply producers.
+
+GENERATOR_PARTIES lists the parties implemented by the generator;
+UNAVAILABLE_PARTIES cannot be carried by this campaign. Proposal traces stay in
+the model perspective: keep each step's model `send`/`listen`/`connect`/`close`
+action, and use `sender`/`receiver` to show direction. Do not invent a recv
+action. When an instance name contains a verb, name it from the generator's
+view: `send_*` for generator sends, `recv_*` for SUT messages the generator
+reads, and `connect_*`/`listen_*`/`close_*` for generator network actions. The
+`step` field remains the exact model step name. Rust projects the accepted
+proposal to the generator perspective before generator synthesis.
 
 A handler is the conceptual entry function that dispatches, recognizes, parses,
 or implements the inbound message. Trace actual source branches and calls to

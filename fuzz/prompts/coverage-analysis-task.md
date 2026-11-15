@@ -12,6 +12,9 @@ BINARY={{ binary }}
 MODEL={{ model }}
 CATALOG={{ catalog }}
 HANDLERS={{ handlers }}
+SUT_PARTIES={{ sut_parties }}
+GENERATOR_PARTIES={{ generator_parties }}
+UNAVAILABLE_PARTIES={{ unavailable_parties }}
 SOURCE_DIR={{ source_dir }}
 SUT_STDOUT_LOG={{ sut_stdout_log }}
 SUT_STDERR_LOG={{ sut_stderr_log }}
@@ -142,6 +145,21 @@ the proposal):
 Before `submit_proposal`, compare the goal, trace, and concrete fields with the
 earlier proposals as described above. If you reuse an earlier trace,
 `goal.reason` must name that request id and the changed detail.
+
+The proposal trace is in model perspective. Use each model step's
+`send`/`listen`/`connect`/`close` action and its `sender`/`receiver` fields to
+express direction; do not add a `recv` action. Rust projects the accepted trace
+to the generator perspective during synthesis, turning SUT-sent messages into
+recv steps and dropping SUT setup steps.
+
+Instance `name` values are trace-local labels. If a name contains a verb, use
+the generator's perspective: `send_*` when the generator sends, `recv_*` when
+the generator reads a SUT message, and `connect_*`/`listen_*`/`close_*` for
+generator network actions. Do not name a SUT-sent model step from the SUT's
+view (for example `server_sends_hello` or `server_listen`); name it
+`recv_server_hello` instead. `step` still carries the exact model step name and
+`action` still carries the model action; only the instance name expresses the
+generator-view verb.
 
 Call `submit_proposal` with parties, channels, an ordered trace of step
 instances, mutations, and optional `dependencies`. Instance names are semantic and stay stable if you reorder
