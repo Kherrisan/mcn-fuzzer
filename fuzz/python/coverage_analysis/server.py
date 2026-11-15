@@ -212,7 +212,7 @@ async def stdio(socket_path):
 
 
 def _proposal_command(args):
-    graph = protocol_mod.load_protocol(args.protocol, args.catalog, args.checkpoint)
+    graph = protocol_mod.load_protocol(args.protocol, args.checkpoint)
     handlers = None
     if args.handlers:
         from coverage_analysis.handlers import load_handlers
@@ -238,7 +238,7 @@ def _proposal_command(args):
 
 
 def _validate_command(args):
-    graph = protocol_mod.load_protocol(args.protocol, args.catalog, args.checkpoint)
+    graph = protocol_mod.load_protocol(args.protocol, args.checkpoint)
     handlers = None
     if args.handlers:
         from coverage_analysis.handlers import load_handlers
@@ -259,14 +259,12 @@ def main(argv=None):
     stdio_parser.add_argument("--socket", required=True)
     proposal_parser = sub.add_parser("proposal")
     proposal_parser.add_argument("--protocol", required=True)
-    proposal_parser.add_argument("--catalog", required=True)
     proposal_parser.add_argument("--handlers")
     proposal_parser.add_argument("--checkpoint")
     proposal_parser.add_argument("--draft", required=True)
     proposal_parser.add_argument("--output", required=True)
     validate_parser = sub.add_parser("validate")
     validate_parser.add_argument("--protocol", required=True)
-    validate_parser.add_argument("--catalog", required=True)
     validate_parser.add_argument("--handlers")
     validate_parser.add_argument("--checkpoint")
     validate_parser.add_argument("--proposal", required=True)

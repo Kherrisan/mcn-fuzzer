@@ -106,6 +106,9 @@ pub struct StepInstance {
     pub condition: String,
     #[serde(default)]
     pub message: Option<String>,
+    /// Local state transitions the model declares for this step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing: Option<crate::protocol::Processing>,
     pub channel: String,
     #[serde(default)]
     pub sender: Option<String>,
@@ -289,9 +292,7 @@ impl GeneratorInput {
             .collect::<BTreeSet<_>>();
         for (instance, fields) in &self.params {
             if !steps.contains(instance.as_str()) {
-                return Err(format!(
-                    "params key {instance} is not a step instance"
-                ));
+                return Err(format!("params key {instance} is not a step instance"));
             }
             if fields.is_empty() {
                 return Err(format!("params for {instance} is empty"));
@@ -317,9 +318,7 @@ impl GeneratorInput {
             };
             for field in fields.keys() {
                 if !values.contains_key(field) {
-                    return Err(format!(
-                        "param kind {instance}.{field} has no params value"
-                    ));
+                    return Err(format!("param kind {instance}.{field} has no params value"));
                 }
             }
         }
@@ -616,6 +615,7 @@ mod tests {
             action: "send".into(),
             condition: "start".into(),
             message: Some("hello".into()),
+            processing: None,
             channel: "control".into(),
             sender: Some("client".into()),
             receiver: Some("server".into()),
@@ -673,8 +673,7 @@ mod tests {
             serde_json::from_str::<BytesEncoding>("\"base64\"").unwrap(),
             BytesEncoding::Base64
         );
-        let spec: FieldSpec =
-            serde_json::from_str(r#"{"kind":"bytes","encoding":"hex"}"#).unwrap();
+        let spec: FieldSpec = serde_json::from_str(r#"{"kind":"bytes","encoding":"hex"}"#).unwrap();
         assert_eq!(spec.kind, FieldKind::Bytes);
         assert_eq!(spec.bytes_encoding(), BytesEncoding::Hex);
         assert_eq!(serde_json::to_string(&FieldKind::List).unwrap(), "\"list\"");
@@ -688,11 +687,7 @@ mod tests {
         let script = dir.join("gen.py");
         std::fs::write(&script, "def generate(ctx, params):\n    pass\n").unwrap();
         let seed = dir.join("one.json");
-        std::fs::write(
-            &seed,
-            format!("{{\"generator\":\"{}\"}}", script.display()),
-        )
-        .unwrap();
+        std::fs::write(&seed, format!("{{\"generator\":\"{}\"}}", script.display())).unwrap();
         let input = GeneratorInput::from_file(&seed).unwrap();
         assert!(!input.has_pending());
 

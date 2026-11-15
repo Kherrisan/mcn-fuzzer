@@ -14,25 +14,24 @@ use std::{
 };
 
 use libafl::{
-    Error, HasMetadata,
     stages::{Restartable, Stage},
+    Error, HasMetadata,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::{
     events::SharedLog,
     mcp::McpClient,
-    proposal::{AcceptedProposal, Proposal, ProposalMailbox, sha256_file},
+    proposal::{sha256_file, AcceptedProposal, Proposal, ProposalMailbox},
 };
 use crate::{
     agents::{
-        AgentClient, AgentCommand, AgentFailure, AgentInit, AgentOutcome, AgentTask, CommandLine,
-        SessionInit, WorkerConfig,
         artifacts::{check_identity, read_json},
-        command_line, current_boot,
+        command_line, current_boot, AgentClient, AgentCommand, AgentFailure, AgentInit,
+        AgentOutcome, AgentTask, CommandLine, SessionInit, WorkerConfig,
     },
     app::config::{AgentProvider, Campaign},
-    protocol::{Binding, IndexedModel, PartyRole, load_model, write_catalog},
+    protocol::{load_model, Binding, IndexedModel, PartyRole},
 };
 
 type Client = AgentClient<CoverageInit, AnalysisRequest>;
@@ -234,7 +233,6 @@ pub struct CoverageAnalysisStage {
     session: String,
     fingerprint: String,
     analysis_root: PathBuf,
-    catalog: PathBuf,
     handlers_path: PathBuf,
     log: Option<SharedLog>,
     mailbox: ProposalMailbox,
@@ -281,8 +279,6 @@ impl CoverageAnalysisStage {
         let analysis_root = campaign.coverage.output.join("analysis");
         fs::create_dir_all(analysis_root.join("requests"))?;
         fs::create_dir_all(analysis_root.join("init"))?;
-        let catalog = analysis_root.join("catalog.json");
-        write_catalog(&model, &binding, &catalog)?;
         let handlers_path = analysis_root.join("init").join("handlers.accepted.json");
         let profile = campaign
             .agents
@@ -343,7 +339,6 @@ impl CoverageAnalysisStage {
             session: boot.session.clone(),
             fingerprint,
             analysis_root,
-            catalog,
             handlers_path,
             log: Some(log),
             mailbox,
@@ -377,7 +372,6 @@ impl CoverageAnalysisStage {
             session: String::new(),
             fingerprint: String::new(),
             analysis_root: PathBuf::new(),
-            catalog: PathBuf::new(),
             handlers_path: PathBuf::new(),
             log: None,
             mailbox,
@@ -545,7 +539,6 @@ impl CoverageAnalysisStage {
                     "sut_stdout_log": sut_stdout_log,
                     "sut_stderr_log": sut_stderr_log,
                     "model": self.campaign.generator_synthesis.model,
-                    "catalog": self.catalog,
                     "handlers": self.handlers_path,
                     "configure_options": self.campaign.target.configure_options,
                     "cli_args": self.campaign.target.cli_args,
@@ -566,11 +559,13 @@ impl CoverageAnalysisStage {
             "output_dir": output_dir,
             "snapshot_dir": snapshot_dir,
             "model": self.campaign.generator_synthesis.model,
-            "catalog": self.catalog,
             "handlers": self.handlers_path,
             "source_dir": self.campaign.target.source_dir,
             "configure_options": self.campaign.target.configure_options,
             "cli_args": self.campaign.target.cli_args,
+            "sut_parties": self.sut_parties,
+            "generator_parties": self.generator_parties,
+            "unavailable_parties": self.unavailable_parties,
             "llvm_cov": self.campaign.coverage.llvm_cov.clone(),
         }))?;
         let prompt = render_task(
@@ -896,7 +891,6 @@ fn render_init(
                 .display()
                 .to_string(),
         )
-        .replace("{{ catalog }}", &stage.catalog.display().to_string())
         .replace("{{ sut_parties }}", &json!(stage.sut_parties).to_string())
         .replace(
             "{{ generator_parties }}",
@@ -969,7 +963,6 @@ fn render_task(
                 .display()
                 .to_string(),
         )
-        .replace("{{ catalog }}", &stage.catalog.display().to_string())
         .replace("{{ handlers }}", &stage.handlers_path.display().to_string())
         .replace("{{ sut_parties }}", &json!(stage.sut_parties).to_string())
         .replace(
@@ -1053,11 +1046,9 @@ pythonpath = "pp"
             assert!(!first.initialized);
             assert!(requests.try_recv().is_err(), "must not send another init");
             if let Err(error) = result {
-                assert!(
-                    error
-                        .to_string()
-                        .contains("initialization timed out 3 times")
-                );
+                assert!(error
+                    .to_string()
+                    .contains("initialization timed out 3 times"));
             }
         }
         second

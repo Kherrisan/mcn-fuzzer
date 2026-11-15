@@ -13,6 +13,7 @@ pub mod mutations;
 pub mod proposal;
 pub mod schedule;
 mod sut_output;
+pub mod symbol_map;
 
 use std::{
     collections::HashSet,

@@ -12,7 +12,7 @@ src/
   runtime/          Supervisor, forkserver backend, generator IPC, lifecycle, reports
   coverage/         LLVM source coverage and PCAP capture
   agents/           Agent profiles and HC integration
-  protocol/         Protocol models, stable IDs, read-only catalog
+  protocol/         Protocol models and party bindings
   evaluation/       Standalone synthesis evaluation and its CLI entrypoint
 ```
 
@@ -54,6 +54,44 @@ timestamped-root rule and writes snapshots/analysis directly below the new
 coverage campaign root. It never adds a build-hash directory.
 
 When LLVM source coverage is enabled in `[coverage]`, the fuzzer stores only the merged profile: each snapshot keeps `coverage.profdata.zlib`, metadata, and the SUT logs, never a full JSON export. The analysis MCP service decompresses that profile, runs `llvm-cov export` itself when `load_coverage_json` needs the detailed counters, and removes its temporary JSON and profile once the model is built. Rust still runs a summary-only export to record line/branch totals in `metadata.json` for reporting. A snapshot directory contains only `coverage.profdata.zlib`, `metadata.json`, and the SUT logs: there is no `checkpoint/`, no `progress.json`, and no raw `.profraw`. `metadata.json` carries the snapshot number, cumulative replay count, summary, per-batch delta, case ids, and timings; it no longer stores fingerprints or binary hashes. A restarted campaign discovers progress from the existing snapshot metadata and merges the new raw profiles with `current.profdata`. The `--source-coverage-json` flag is gone. `[source_coverage]` is a configuration error; move that table to `[coverage]`. `analysis_enabled` is separate and requires collection. The private HC executable is `[agents].hc_executable` (default `hc`), not `generator_synthesis.hc_executable`. Analysis output lives under `coverage.output/analysis/`; the coverage root is no longer split by a build fingerprint. `targets/lightftp/build-graphs.sh` emits bitcode, `callgraph.dot`, CFG dots, and `source-map.json`; `targets/lightftp/build-coverage.sh` emits only the coverage binary.
+
+### PCGUARD index to source location
+
+A PCGUARD map index is the guard value: AFL++ assigns IDs sequentially from 5 in
+`__sancov_guards` order. When the binary is built with
+`AFL_LLVM_INSTRUMENT=LLVMNATIVE` (native `trace-pc-guard,pc-table`), it also
+carries `__sancov_pcs`, whose entries are index-aligned with the guards. That is
+enough to precompute the mapping without running the target:
+
+```sh
+mcn-fuzz symbol-map --binary build-pcguard-asan/fftp \
+  --index-map build-pcguard-asan/index-map.z \
+  --location-map build-pcguard-asan/location-map.z
+
+mcn-fuzz symbol-map --index-map build-pcguard-asan/index-map.z \
+  --location-map build-pcguard-asan/location-map.z --lookup-index 147
+mcn-fuzz symbol-map --index-map build-pcguard-asan/index-map.z \
+  --location-map build-pcguard-asan/location-map.z --lookup-location ftpserv.c:310
+```
+
+Both files are zlib-compressed varint tables. `index-map.z` stores
+`map index -> outermost frame` (the function that contains the block, not an
+inlined callee); `location-map.z` stores `file:line -> map indexes` and is
+one-to-many because inlining, optimization and macros can attribute several
+blocks to one line. `--lookup-location` accepts an absolute path or a path
+suffix such as `ftpserv.c:310`.
+
+Campaigns point at the generated tables with optional `[coverage]` keys:
+
+```toml
+[coverage]
+index_map = "build-pcguard-asan/index-map.z"
+location_map = "build-pcguard-asan/location-map.z"
+```
+
+The maps are build-specific: regenerate them after every rebuild. `-O1 -g` is
+used for both the PCGUARD and llvm-cov builds so line attribution stays accurate
+and consistent.
 
 Set `[campaign].timeout_secs` to stop the fuzz loop after a wall-clock duration. When present, it takes precedence over `[campaign].iterations`; the CLI `--iterations` option remains an explicit override. The deadline is checked between complete LibAFL iterations, so an iteration already in progress can finish before shutdown.
 
@@ -236,7 +274,7 @@ parsing.
 
 Both prompts also inject the absolute path to [the protocol module skill](skills/protocol-modules/SKILL.md) and require the agent to read it before selecting libraries. It covers all 13 ProfuzzGym targets (four FTP variants), with message/packet codecs, upstream/server SDKs, crypto helpers, import names, installed versions and limitations. Keep the skill and its references accessible at runtime. Evaluation fingerprints the skill directory along with the prompt templates, so changing its contents requires preparing a new evaluation task.
 
-Proposals contain the ordered trace with per-step reasons and constraints, the selected definitions, handler references, and dependencies. Rust instantiates the proposal as a `TraceInstance` containing concrete steps and dependencies. Proposal mutations are field-only (`op: "field"`); each may declare a `kind`
+Proposals contain the ordered trace with per-step reasons, constraints, and the model step's `processing` hooks, plus the selected definitions, handler references, and dependencies. Rust instantiates the proposal as a `TraceInstance` containing concrete steps and dependencies. Proposal mutations are field-only (`op: "field"`); each may declare a `kind`
 (`string`, `bytes`, `integer`, `boolean`, `list`) and, for `bytes`, an
 `encoding` (`hex` or `base64`). Execution input carries the generator path,
 `step_trace`, dependencies, and per-instance `params` keyed by step instance

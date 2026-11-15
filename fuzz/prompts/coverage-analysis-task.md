@@ -10,7 +10,6 @@ CALLGRAPH_DOT={{ callgraph_dot }}
 CFG_DIR={{ cfg_dir }}
 BINARY={{ binary }}
 MODEL={{ model }}
-CATALOG={{ catalog }}
 HANDLERS={{ handlers }}
 SUT_PARTIES={{ sut_parties }}
 GENERATOR_PARTIES={{ generator_parties }}
@@ -61,7 +60,7 @@ trace selection.
 A coverage-analysis MCP service is running. Start with `get_loaded_state`, then
 load exactly this request's inputs:
 
-1. `load_protocol` with `{"protocol_path": "MODEL", "catalog_path": "CATALOG"}`.
+1. `load_protocol` with `{"protocol_path": "MODEL", "request_id": "REQUEST"}`.
 2. `load_handlers` with `{"handlers_path": "HANDLERS"}`.
 3. `load_cfg` with `{"cfg_dir": "CFG_DIR"}`.
 4. `load_callgraph` with `{"callgraph_dot": "CALLGRAPH_DOT"}`.

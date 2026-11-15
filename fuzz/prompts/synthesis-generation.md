@@ -8,8 +8,7 @@ OUTPUT_DIR={{ output_dir }}
 REQUEST={{ request_id }}
 {% if autonomous %}PROPOSAL_DRAFT={{ proposal_draft }}
 {% else %}PROPOSAL={{ proposal }}
-{% endif %}CATALOG={{ catalog }}
-{% if mode %}MODE={{ mode }}
+{% endif %}{% if mode %}MODE={{ mode }}
 {% endif %}PYTHON={{ campaign.python }}
 GENERATOR_PARTIES={{ generator_parties | join(", ") }}
 
@@ -98,8 +97,8 @@ operation cannot be carried out; never fabricate a reply or claim runtime succes
 
 {% if autonomous %}
 No coverage proposal was supplied. Select the smallest coherent trace that
-exercises a real SUT interaction, using CATALOG step names and the binding in
-CATALOG. Do not request a receipt or call a Rust selector.
+exercises a real SUT interaction, using model step names and the campaign's
+party binding. Do not request a receipt or call a Rust selector.
 
 1. Write {{ proposal_draft }} as JSON with these fields:
    {"origin":"autonomous","session":"{{ session }}",
@@ -116,7 +115,7 @@ CATALOG. Do not request a receipt or call a Rust selector.
    must not contain `:[]`. Use the exact session above.
 2. Run this exact command to fill action, condition, and message and validate:
    "{{ campaign.python }}" "{{ proposal_tool }}" proposal \
-     --protocol "{{ campaign.model }}" --catalog "{{ catalog }}" \
+     --protocol "{{ campaign.model }}" \
      --draft "{{ proposal_draft }}" --output "{{ output_dir }}/proposal.json"
    Fix reported errors and rerun. Then implement the generator from that
    proposal. Do not edit proposal.json after validation.
@@ -155,11 +154,11 @@ claiming it was verified.
    require saving a message; data keys map to `instance.inputs` at runtime.
    Model field relations can use different source and destination field names:
    save under the source field name, then use the retrieved value to populate
-   the destination field. Inspect each relevant model or catalog field relation's
+   the destination field. Inspect each relevant model field relation's
    `derive`: apply the described computation in the dependent handler; an empty
    or absent `derive` means direct reuse. Dependency `fields` lists state keys,
    not the computation. If a prerequisite is unclear, query the relevant steps and step_dependencies from
-   the model path or CATALOG. Do not dump the complete model into the conversation.
+   the model path. Do not dump the complete model into the conversation.
    Conditions are not unconditional edges: an optional delay reply need not occur
    when a service is already ready. Handle cycles/self-dependencies as conditions
    without inserting or changing trace operations.
@@ -250,6 +249,15 @@ def handler_example(ctx, params):
     instance = ctx.step_instance
     # Implement this step's actual protocol behavior here.
 ~~~
+
+Each send instance may carry `processing`, copied from the model step. It has
+`before_send`/`after_send` hooks for the sender and `on_receive` for the receiver;
+each hook is a list of operations with `reads`, `writes`, and `rule`. Apply the
+rules in order while implementing the handler: `state.<name>` is the acting
+party's own state, `message.<field>` is an associated field of this message, and
+`message_bytes` is the deframed bytes after send/receive. Only `before_send` may
+write `message.<field>`. Honor the stated branches, validation outcomes, and
+state initialization or retention. Never invent a rule the model does not state.
 
 `step_trace` is the ordered list of concrete step instances selected and
 mutated by Rust. Each instance has `name`, `step`, `action`, `channel`,
@@ -373,7 +381,7 @@ exception and silently return or fabricate missing SUT replies.
 # Complete the external environment
 
 Read {{ campaign.generator_skill }} and its relevant protocol references before
-choosing modules for this proposal. Use the catalog for message/packet builders,
+choosing modules for this proposal. Use the model for message/packet builders,
 upstream servers, encryption/decryption, and codecs. Prefer an installed module
 when it can express the requested behavior. For malformed wire cases, check
 whether it normalizes or rejects the mutation and use raw bytes when necessary.

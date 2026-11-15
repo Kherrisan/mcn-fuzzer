@@ -223,6 +223,12 @@ pub struct CoverageConfig {
     /// How long to wait for the MCP service socket, in seconds.
     #[serde(default = "default_mcp_ready")]
     pub mcp_ready_timeout_secs: u64,
+    /// Precomputed compressed PCGUARD map index -> source location table.
+    #[serde(default)]
+    pub index_map: Option<PathBuf>,
+    /// Precomputed compressed source location -> map index table.
+    #[serde(default)]
+    pub location_map: Option<PathBuf>,
 }
 
 /// Previous name of [`CoverageConfig`].
@@ -244,6 +250,8 @@ impl Default for CoverageConfig {
             cfg_dir: PathBuf::new(),
             mcp_socket: None,
             mcp_ready_timeout_secs: default_mcp_ready(),
+            index_map: None,
+            location_map: None,
         }
     }
 }
@@ -747,6 +755,16 @@ impl Campaign {
             campaign.coverage.binary = resolve(&base, &campaign.coverage.binary);
         }
         campaign.coverage.output = resolve(&output_base, &campaign.coverage.output);
+        campaign.coverage.index_map = campaign
+            .coverage
+            .index_map
+            .as_ref()
+            .map(|path| resolve(&base, path));
+        campaign.coverage.location_map = campaign
+            .coverage
+            .location_map
+            .as_ref()
+            .map(|path| resolve(&base, path));
         if !campaign.coverage.callgraph_dot.as_os_str().is_empty() {
             campaign.coverage.callgraph_dot = resolve(&base, &campaign.coverage.callgraph_dot);
         }
@@ -969,6 +987,29 @@ pythonpath = "pp"
         fs::write(&path, sample("", "bitmap_stagnation_limit = 0")).unwrap();
         let error = Campaign::load(&path).unwrap_err();
         assert!(format!("{error:?}").contains("bitmap_stagnation_limit must be greater than 0"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn coverage_symbol_maps_resolve_from_the_campaign_directory() {
+        let dir = std::env::temp_dir().join(format!("mcn-symbol-config-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("campaign.toml");
+        let body = format!(
+            "{}\n[coverage]\nindex_map = \"maps/index.z\"\nlocation_map = \"maps/locations.z\"\n",
+            sample("", "")
+        );
+        fs::write(&path, body).unwrap();
+        let campaign = Campaign::load(&path).unwrap();
+        assert_eq!(
+            campaign.coverage.index_map.as_deref(),
+            Some(dir.join("maps/index.z").as_path())
+        );
+        assert_eq!(
+            campaign.coverage.location_map.as_deref(),
+            Some(dir.join("maps/locations.z").as_path())
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

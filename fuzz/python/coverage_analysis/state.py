@@ -56,8 +56,10 @@ class Request:
     output_dir: Path
     snapshot_dir: Path
     model: Path
-    catalog: Path
     handlers_path: Path
+    sut_parties: list = field(default_factory=list)
+    generator_parties: list = field(default_factory=list)
+    unavailable_parties: list = field(default_factory=list)
     checkpoint_path: Path | None = None
     source_dir: Path | None = None
     llvm_cov: str | None = None
@@ -352,8 +354,8 @@ class State:
                 "aliases": len(self.latest["coverage"].value.aliases)
                 if self.latest.get("coverage") else 0}
 
-    def load_protocol(self, protocol_path, catalog_path, checkpoint_path=None):
-        graph = protocol_mod.load_protocol(protocol_path, catalog_path, checkpoint_path)
+    def load_protocol(self, protocol_path, checkpoint_path=None, binding=None):
+        graph = protocol_mod.load_protocol(protocol_path, checkpoint_path, binding)
         identity = {"protocol_name": graph.base["protocol_name"],
                     "steps": len(graph.steps), "revision": graph.revision}
         digest = sha256_file(protocol_path)
@@ -381,7 +383,7 @@ class State:
     # -- requests and transactions --------------------------------------
     def register_request(self, payload):
         for field in ("request_id", "session", "build", "snapshot",
-                      "output_dir", "snapshot_dir", "model", "catalog",
+                      "output_dir", "snapshot_dir", "model",
                       "handlers"):
             if payload.get(field) in (None, ""):
                 raise StateError("bad_request", f"request registration needs {field}")
@@ -393,7 +395,9 @@ class State:
             output_dir=Path(payload["output_dir"]),
             snapshot_dir=Path(payload["snapshot_dir"]),
             model=Path(payload["model"]),
-            catalog=Path(payload["catalog"]),
+            sut_parties=[str(name) for name in payload.get("sut_parties") or []],
+            generator_parties=[str(name) for name in payload.get("generator_parties") or []],
+            unavailable_parties=[str(name) for name in payload.get("unavailable_parties") or []],
             handlers_path=Path(payload["handlers"]),
             checkpoint_path=Path(payload["checkpoint"]) if payload.get("checkpoint") else None,
             source_dir=Path(payload["source_dir"]) if payload.get("source_dir") else None,

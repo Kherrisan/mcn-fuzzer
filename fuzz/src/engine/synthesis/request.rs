@@ -36,7 +36,9 @@ pub(crate) fn build_generator_input(
         .collect::<std::collections::BTreeSet<_>>();
     for instance in params.keys() {
         if !declared.contains(instance.as_str()) {
-            return Err(format!("params.json instance {instance} is not in the proposal"));
+            return Err(format!(
+                "params.json instance {instance} is not in the proposal"
+            ));
         }
     }
     let mut step_trace = proposal
@@ -48,6 +50,7 @@ pub(crate) fn build_generator_input(
             action: step.action.clone(),
             condition: step.condition.clone(),
             message: step.message.clone(),
+            processing: step.processing.clone(),
             channel: step.channel.clone(),
             sender: step.sender.clone(),
             receiver: step.receiver.clone(),

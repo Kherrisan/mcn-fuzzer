@@ -7,7 +7,6 @@ WORKSPACE={{ campaign.workspace }}
 OUTPUT_DIR={{ campaign.workspace }}
 SOURCE_DIR={{ source_dir }}
 MODEL={{ model }}
-CATALOG={{ catalog }}
 HANDLERS={{ handlers_path }}
 SUT_PARTIES={{ sut_parties }}
 GENERATOR_PARTIES={{ generator_parties }}
@@ -45,6 +44,11 @@ reads, and `connect_*`/`listen_*`/`close_*` for generator network actions. The
 `step` field remains the exact model step name. Rust projects the accepted
 proposal to the generator perspective before generator synthesis.
 
+The model may also declare top-level `states` and per-step `processing`
+(`before_send`, `after_send`, `on_receive`, each a list of `reads`/`writes`/`rule`).
+These describe local state transitions, not wire fields. Proposal trace instances
+carry the model step's `processing` unchanged; do not rewrite or invent rules.
+
 A handler is the conceptual entry function that dispatches, recognizes, parses,
 or implements the inbound message. Trace actual source branches and calls to
 establish the mapping. For a command, choose its command handler rather than all
@@ -66,8 +70,8 @@ ambiguous.
 A coverage-analysis MCP service is running for this session. Useful calls:
 
 - `get_loaded_state` — report what is loaded. Empty at session start.
-- `load_protocol` with `{"protocol_path": "MODEL", "catalog_path": "CATALOG"}`
-  — load the model and the stable ID catalog.
+- `load_protocol` with `{"protocol_path": "MODEL", "request_id": "REQUEST"}`
+  — load the protocol model.
 - `get_protocol_steps` — list steps by their unique `name`.
 
 Call `get_loaded_state`, then `load_protocol`, then `get_protocol_steps` before
@@ -109,7 +113,7 @@ Write OUTPUT_DIR/handlers.json using this schema:
 
 Include each inbound message exactly once. For unmatched inbound messages use
 handlers: [] and a concise source-backed reason; this does not make the protocol
-message invalid. step_names must list the catalog steps whose message matches the
+message invalid. step_names must list the model steps whose message matches the
 row's message; an empty list is allowed only when the message has no inbound use.
 A handler is named by its function symbol. When two handlers share a symbol, the
 service qualifies the later name as `relative/source/path.c::symbol`.

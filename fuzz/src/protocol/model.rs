@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// How a campaign carries one named party.
@@ -95,6 +95,10 @@ struct ModelFile {
     parties: Vec<Party>,
     messages: Vec<Message>,
     channels: Vec<Channel>,
+    /// Parsed for schema compatibility; fuzzer planning does not consume it yet.
+    #[serde(default)]
+    #[allow(dead_code)]
+    states: Vec<State>,
     steps: Vec<Step>,
     step_dependencies: Vec<Dependency>,
     unresolved: Vec<Issue>,
@@ -114,6 +118,37 @@ pub(crate) struct SourceDoc {
     pub(crate) doc_id: String,
     pub(crate) rfc: String,
     pub(crate) path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct State {
+    pub(crate) name: String,
+    pub(crate) party_name: String,
+    pub(crate) source: String,
+}
+
+/// Local computation attached to one send step.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct Processing {
+    #[serde(default)]
+    pub before_send: Vec<ProcessingOperation>,
+    #[serde(default)]
+    pub after_send: Vec<ProcessingOperation>,
+    #[serde(default)]
+    pub on_receive: Vec<ProcessingOperation>,
+}
+
+/// One read/write/rule entry inside a processing hook.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessingOperation {
+    #[serde(default)]
+    pub reads: Vec<String>,
+    #[serde(default)]
+    pub writes: Vec<String>,
+    pub rule: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -168,6 +203,8 @@ enum Step {
         message_name: String,
         sender_name: String,
         receiver_name: String,
+        #[serde(default)]
+        processing: Option<Processing>,
     },
     #[serde(rename = "listen")]
     Listen {
@@ -217,6 +254,13 @@ impl Step {
             | Self::Listen { condition, .. }
             | Self::Connect { condition, .. }
             | Self::Close { condition, .. } => condition,
+        }
+    }
+
+    fn processing(&self) -> Option<&Processing> {
+        match self {
+            Self::Send { processing, .. } => processing.as_ref(),
+            _ => None,
         }
     }
 
@@ -351,6 +395,8 @@ pub struct StepRecord {
     pub channel_name: String,
     pub condition: String,
     pub action: StepAction,
+    /// Local state transitions attached to this step, when the model declares them.
+    pub processing: Option<Processing>,
     /// Position in the model. Selection preserves this order.
     pub index: usize,
 }
@@ -618,6 +664,7 @@ pub fn load_model(path: &Path) -> Result<IndexedModel, ModelError> {
             channel_name,
             condition: step.condition().to_string(),
             action,
+            processing: step.processing().cloned(),
             index,
         });
     }
@@ -666,4 +713,64 @@ pub fn load_model(path: &Path) -> Result<IndexedModel, ModelError> {
             .map_err(|error| ModelError::new(format!("resolving model path: {error}")))?,
         model_dir,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_states_and_step_processing() {
+        let dir = std::env::temp_dir().join(format!("mcn-model-processing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let body = serde_json::json!({
+            "meta": {"protocol": "demo", "complete": true, "documents": []},
+            "parties": [
+                {"name": "client", "description": "c"},
+                {"name": "server", "description": "s"}
+            ],
+            "messages": [{"name": "hello", "associated_fields": [{"name": "seq"}]}],
+            "channels": [{
+                "name": "control", "description": "c", "transport": "TCP",
+                "connection": "connection_oriented",
+                "endpoint_party_names": ["client", "server"],
+                "initiator_party_name": "client", "acceptor_party_name": "server",
+                "endpoint_sources": []
+            }],
+            "states": [
+                {"name": "transcript", "party_name": "client", "source": "processing"},
+                {"name": "trust_anchor", "party_name": "client", "source": "external"}
+            ],
+            "steps": [{
+                "name": "hello", "action": "send", "message_name": "hello",
+                "channel_name": "control", "sender_name": "client",
+                "receiver_name": "server", "condition": "",
+                "processing": {
+                    "before_send": [{
+                        "reads": ["state.transcript"], "writes": ["message.seq"],
+                        "rule": "Set seq from the transcript counter."
+                    }],
+                    "after_send": [],
+                    "on_receive": [{
+                        "reads": ["message_bytes"], "writes": ["state.transcript"],
+                        "rule": "Append the framing header to the transcript."
+                    }]
+                }
+            }],
+            "step_dependencies": [],
+            "unresolved": []
+        });
+        let path = dir.join("protocol.json");
+        fs::write(&path, body.to_string()).unwrap();
+        let model = load_model(&path).unwrap();
+        let step = &model.steps[0];
+        let processing = step.processing.as_ref().expect("processing");
+        assert_eq!(processing.before_send.len(), 1);
+        assert_eq!(processing.before_send[0].writes, vec!["message.seq"]);
+        assert_eq!(processing.after_send.len(), 0);
+        assert_eq!(processing.on_receive.len(), 1);
+        assert_eq!(processing.on_receive[0].reads, vec!["message_bytes"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

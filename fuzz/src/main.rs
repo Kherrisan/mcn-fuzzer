@@ -73,6 +73,25 @@ enum Command {
         #[arg(long, default_value_t = 1, value_parser = mcn_fuzz::coverage::command::parse_step)]
         step: u64,
     },
+    /// Build or query PCGUARD map-index to source-location tables.
+    SymbolMap {
+        /// PCGUARD binary that carries `__sancov_guards` and `__sancov_pcs`.
+        #[arg(long)]
+        binary: Option<PathBuf>,
+        /// Compressed index -> location table.
+        #[arg(long)]
+        index_map: Option<PathBuf>,
+        /// Compressed location -> indexes table.
+        #[arg(long)]
+        location_map: Option<PathBuf>,
+        #[arg(long, default_value = "llvm-symbolizer-18")]
+        symbolizer: String,
+        #[arg(long)]
+        lookup_index: Option<u32>,
+        /// `file:line` to resolve back to map indexes.
+        #[arg(long)]
+        lookup_location: Option<String>,
+    },
     /// Check the PCGUARD shared map, handshake, and branch feedback.
     Doctor,
     /// Run acceptance checks. Each scenario is a separate supervised job.
@@ -242,6 +261,22 @@ fn main() -> ExitCode {
             })?;
             mcn_fuzz::coverage::command::run(&campaign, output, corpus.as_deref(), *step)
         }),
+        Command::SymbolMap {
+            binary,
+            index_map,
+            location_map,
+            symbolizer,
+            lookup_index,
+            lookup_location,
+        } => mcn_fuzz::coverage::symbol_map::command(
+            binary.as_deref(),
+            index_map.as_deref(),
+            location_map.as_deref(),
+            symbolizer,
+            *lookup_index,
+            lookup_location.as_deref(),
+        )
+        .map_err(libafl::Error::unknown),
         Command::Doctor => app::doctor(),
         Command::Accept { campaign } => orchestrate_accept(campaign, &cli),
         Command::AcceptJob { campaign, scenario } => {
@@ -290,7 +325,7 @@ fn capture_requested(command: &Command, output_root: Option<&std::path::Path>) -
                 .map(|campaign| campaign.capture.enabled)
                 .unwrap_or(false)
         }
-        Command::Coverage { .. } | Command::Accept { .. } => false,
+        Command::Coverage { .. } | Command::Accept { .. } | Command::SymbolMap { .. } => false,
         #[cfg(feature = "stats")]
         Command::BenchJob { condition, .. } => condition == "on",
         Command::Doctor => false,
@@ -506,6 +541,7 @@ fn accept_supervise_job(command: &Command) -> u64 {
 fn orchestrator(command: &Command) -> bool {
     match command {
         Command::Accept { .. } => true,
+        Command::SymbolMap { .. } => true,
         #[cfg(feature = "stats")]
         Command::BenchCapture { .. } => true,
         _ => false,
@@ -554,6 +590,36 @@ mod cli_tests {
                 assert_eq!(step, 1);
             }
             _ => panic!("coverage arguments were not parsed"),
+        }
+    }
+
+    #[test]
+    fn symbol_map_cli_parses_build_and_lookup() {
+        let cli = Cli::try_parse_from([
+            "mcn-fuzz",
+            "symbol-map",
+            "--binary",
+            "fftp",
+            "--index-map",
+            "index.z",
+            "--location-map",
+            "locations.z",
+            "--lookup-index",
+            "5",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::SymbolMap {
+                binary,
+                lookup_index,
+                symbolizer,
+                ..
+            } => {
+                assert_eq!(binary.as_deref(), Some(std::path::Path::new("fftp")));
+                assert_eq!(lookup_index, Some(5));
+                assert_eq!(symbolizer, "llvm-symbolizer-18");
+            }
+            _ => panic!("symbol-map arguments were not parsed"),
         }
     }
 

@@ -11,7 +11,7 @@ use std::{
 
 use mcn_fuzz::coverage::mcp::McpClient;
 use mcn_fuzz::coverage::proposal::sha256_file;
-use mcn_fuzz::protocol::{load_model, write_catalog, Binding, PartyRole};
+use mcn_fuzz::protocol::{load_model, Binding, PartyRole};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -75,8 +75,6 @@ fn fixture(dir: &Path) -> Value {
         .into_iter()
         .collect(),
     );
-    let catalog = dir.join("catalog.json");
-    write_catalog(&model, &binding, &catalog).unwrap();
     let handlers = dir.join("handlers.json");
     fs::write(
         &handlers,
@@ -136,7 +134,7 @@ fn fixture(dir: &Path) -> Value {
     )
     .unwrap();
     json!({
-        "protocol": protocol, "catalog": catalog, "handlers": handlers, "cfg": cfg,
+        "protocol": protocol, "handlers": handlers, "cfg": cfg,
         "callgraph": callgraph, "manifest": manifest, "snapshot": snapshot,
         "source": source, "binary": binary,
         "step_name": model.steps[0].name,
@@ -203,7 +201,8 @@ fn rust_client_drives_the_python_service_and_validates_the_proposal() {
             "snapshot": "000001",
             "output_dir": dir.join("out"),
             "snapshot_dir": files["snapshot"], "manifest": files["manifest"],
-            "model": files["protocol"], "catalog": files["catalog"],
+            "model": files["protocol"],
+            "sut_parties": ["server"], "generator_parties": ["client"],
             "handlers": files["handlers"], "source_dir": files["source"],
         });
         fs::create_dir_all(dir.join("out")).unwrap();
@@ -212,7 +211,7 @@ fn rust_client_drives_the_python_service_and_validates_the_proposal() {
             .tool(
                 "load_protocol",
                 json!({
-            "protocol_path": files["protocol"], "catalog_path": files["catalog"]}),
+            "protocol_path": files["protocol"], "request_id": "req-1"}),
             )
             .unwrap();
         client

@@ -1,14 +1,15 @@
-//! Protocol interaction models, stable identifiers, and the read-only catalog.
+//! Protocol interaction models, stable identifiers, and party bindings.
 //!
 //! Exploration decisions live in the coverage MCP service. Rust loads the
 //! model once and uses it for identity checks, party binding, and generator
 //! artifact validation.
 
-mod catalog;
 mod model;
 
-pub use catalog::write_catalog;
-pub use model::{load_model, Binding, IndexedModel, ModelError, PartyRole, StepRecord};
+pub use model::{
+    load_model, Binding, IndexedModel, ModelError, PartyRole, Processing, ProcessingOperation,
+    StepRecord,
+};
 
 /// Ordered model steps used for display and evaluation fixtures.
 #[derive(Clone, Debug)]

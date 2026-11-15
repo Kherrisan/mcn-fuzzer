@@ -11,7 +11,7 @@ ORIGINS = {"coverage", "autonomous"}
 TRACE_FIELDS = {
     "name", "step", "action", "condition", "message",
     "channel", "sender", "receiver", "party", "reason", "constraints",
-    "mutable_fields",
+    "mutable_fields", "processing",
 }
 
 
@@ -129,6 +129,8 @@ def _check_binding(graph, parties, channels, item):
             raise ProposalError(f"instance {item['name']} party does not match the model step")
         if item.get("sender") or item.get("receiver"):
             raise ProposalError(f"network instance {item['name']} cannot name a sender or receiver")
+    if "processing" in item and item.get("processing") != model.get("processing"):
+        raise ProposalError(f"instance {item['name']} processing does not match the model step")
     if item.get("action") not in (None, "", model.get("action") or "send"):
         raise ProposalError(f"instance {item['name']} action does not match the model step")
     if "condition" in item and item.get("condition") not in (None, model.get("condition") or ""):
@@ -244,6 +246,7 @@ def build_proposal(graph, origin, session, build, snapshot,
             "party": item.get("party"),
             "reason": reason,
             "constraints": [str(value) for value in _as_list(item.get("constraints") or [], "constraints")],
+            "processing": model.get("processing"),
             "mutable_fields": _mutable_fields(item.get("mutable_fields") or []),
         })
     try:

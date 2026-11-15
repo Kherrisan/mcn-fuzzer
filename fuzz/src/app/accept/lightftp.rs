@@ -475,6 +475,7 @@ fn mode_input(campaign: &Campaign, mode: &str, user: &str, password: &str) -> Ge
             action: "send".to_string(),
             condition: String::new(),
             message: None,
+            processing: None,
             channel: "control".to_string(),
             sender: None,
             receiver: None,

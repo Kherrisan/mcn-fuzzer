@@ -26,7 +26,7 @@ use crate::{
     coverage::proposal::ProposalMailbox,
     engine::input::GeneratorInput,
     engine::stagnation::BitmapProgress,
-    protocol::{write_catalog, Binding, IndexedModel},
+    protocol::{Binding, IndexedModel},
 };
 
 mod agent;
@@ -40,8 +40,8 @@ use request::GeneratorRequest;
 
 pub use prompts::{ExecutionMode, SynthesisPromptContext};
 pub use queue::{SynthesisCandidate, SynthesisCandidates};
-pub use request::ValidatedGenerator;
 pub(crate) use request::build_generator_input;
+pub use request::ValidatedGenerator;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TraceOrigin {
@@ -159,8 +159,6 @@ impl GeneratorSynthesisStage {
             return Ok(stage);
         }
         let context = SynthesisPromptContext::from_campaign(campaign)?;
-        let catalog_model = context.model().clone();
-        let catalog_binding = context.binding().clone();
         let boot = crate::agents::current_boot().ok_or_else(|| {
             Error::unknown(
                 "generator synthesis is enabled but the private HC core was not started"
@@ -174,11 +172,6 @@ impl GeneratorSynthesisStage {
         stage.prompt_context = Some(context);
         stage.session = boot.session.clone();
         stage.analysis_enabled = campaign.coverage.analysis_enabled;
-        write_catalog(
-            &catalog_model,
-            &catalog_binding,
-            &campaign.generator_synthesis.output.join("catalog.json"),
-        )?;
         let launched = command_line(
             campaign
                 .agents
@@ -520,7 +513,7 @@ impl GeneratorSynthesisStage {
             }
             Outcome::InitTimedOut(failure) => {
                 let result = self.consume_init_timeout(failure);
-                        result
+                result
             }
             Outcome::Failed(failure) => {
                 if !self.initialized {
@@ -546,8 +539,7 @@ impl GeneratorSynthesisStage {
                 Ok(())
             }
             Outcome::Artifact {
-                result: Ok(ready),
-                ..
+                result: Ok(ready), ..
             } => {
                 if self.closed_requests.contains(&ready.request) {
                     self.finish_request(false);

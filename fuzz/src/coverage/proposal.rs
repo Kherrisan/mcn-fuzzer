@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 use super::mutations;
 use crate::{
     engine::input::{BytesEncoding, FieldKind, ParamValue},
-    protocol::{Binding, IndexedModel, PartyRole, StepRecord},
+    protocol::{Binding, IndexedModel, PartyRole, Processing, StepRecord},
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,6 +83,9 @@ pub struct ProposalStep {
     pub reason: String,
     #[serde(default)]
     pub constraints: Vec<String>,
+    /// Local state transitions copied from the model step, when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing: Option<Processing>,
     /// Mutable field descriptions after Rust strips the mutation strategy.
     #[serde(default)]
     pub mutable_fields: Vec<MutableField>,
@@ -210,6 +213,7 @@ pub fn instantiate(model: &IndexedModel, steps: &[StepRecord]) -> Result<Proposa
             party: step.party_name().map(str::to_string),
             reason: format!("step {}", step.name),
             constraints: Vec::new(),
+            processing: step.processing.clone(),
             mutable_fields: Vec::new(),
         });
     }
@@ -379,6 +383,14 @@ impl Proposal {
         item: &ProposalStep,
         step: &StepRecord,
     ) -> Result<(), String> {
+        if let Some(processing) = &item.processing {
+            if step.processing.as_ref() != Some(processing) {
+                return Err(format!(
+                    "instance {} processing does not match the model step",
+                    item.name
+                ));
+            }
+        }
         if item.action != step.action.name() {
             return Err(format!(
                 "instance {} action does not match the model step",
@@ -463,9 +475,10 @@ impl Proposal {
     pub fn synthesis_copy(&self, binding: &Binding) -> Result<Self, String> {
         let names = mutations::instance_names(&self.trace)?;
         let role_of = |instance: &str| -> Result<PartyRole, String> {
-            let model_party = self.parties.get(instance).ok_or_else(|| {
-                format!("instance {instance} does not name a proposal party")
-            })?;
+            let model_party = self
+                .parties
+                .get(instance)
+                .ok_or_else(|| format!("instance {instance} does not name a proposal party"))?;
             Ok(binding.role(model_party))
         };
         let mut expanded: Vec<Vec<MutableField>> = vec![Vec::new(); self.trace.len()];
@@ -985,6 +998,29 @@ mod tests {
 
         let error = proposal.synthesis_copy(&binding).unwrap_err();
         assert!(error.contains("SUT-sent"), "{error}");
+    }
+
+    #[test]
+    fn synthesis_copy_keeps_step_processing() {
+        let (model, binding) = fixture();
+        let mut proposal = base(&model);
+        let processing = crate::protocol::Processing {
+            before_send: vec![crate::protocol::ProcessingOperation {
+                reads: vec!["state.transcript".into()],
+                writes: vec!["message.seq".into()],
+                rule: "set seq".into(),
+            }],
+            after_send: Vec::new(),
+            on_receive: Vec::new(),
+        };
+        proposal.trace[0].processing = Some(processing.clone());
+        proposal.mutations = vec![json!({
+            "op": "field", "steps": ["hello"], "field": "username",
+            "kind": "string", "suggestion": "boundary", "evidence": "src/a.c:1"
+        })];
+        let copy = proposal.synthesis_copy(&binding).unwrap();
+        let hello = copy.trace.iter().find(|step| step.name == "hello").unwrap();
+        assert_eq!(hello.processing.as_ref(), Some(&processing));
     }
 
     #[test]

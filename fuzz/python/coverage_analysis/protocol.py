@@ -1,4 +1,4 @@
-"""Protocol model, stable catalog, and the mutable dependency graph.
+"""Protocol model and the mutable dependency graph.
 
 The graph is a NetworkX directed graph whose nodes are steps and whose edges
 are dependencies. Analysis writes apply only to a transaction copy; Rust
@@ -153,8 +153,16 @@ class ProtocolGraph:
 
 def _validate_protocol_shape(model):
     collections = {"parties", "messages", "channels", "steps", "step_dependencies", "unresolved"}
-    if not isinstance(model, dict) or set(model) != {"meta", *collections}:
+    optional = {"states"}
+    if not isinstance(model, dict):
+        raise ProtocolError("protocol must be an object")
+    keys = set(model)
+    if not collections | {"meta"} <= keys or not keys <= collections | {"meta"} | optional:
         raise ProtocolError("protocol must contain meta and the current named object collections")
+    if "states" in model:
+        if not isinstance(model["states"], list) or any(
+                not isinstance(row, dict) for row in model["states"]):
+            raise ProtocolError("protocol states must be an array of objects")
     meta = model["meta"]
     if not isinstance(meta, dict) or set(meta) != {"protocol", "complete", "documents"}:
         raise ProtocolError("protocol meta must contain only protocol, complete, documents")
@@ -175,7 +183,7 @@ def _validate_protocol_shape(model):
                     raise ProtocolError(f"protocol {kind} require nonempty names")
 
 
-def load_protocol(protocol_path, catalog_path=None, checkpoint_path=None):
+def load_protocol(protocol_path, checkpoint_path=None, binding=None):
     path = Path(protocol_path)
     try:
         model = json.loads(path.read_text())
@@ -184,24 +192,9 @@ def load_protocol(protocol_path, catalog_path=None, checkpoint_path=None):
     _validate_protocol_shape(model)
     meta = model["meta"]
     base = {"protocol_name": meta.get("protocol", ""), "model": model}
-    if catalog_path:
-        try:
-            catalog = json.loads(Path(catalog_path).read_text())
-        except (OSError, json.JSONDecodeError) as error:
-            raise ProtocolError(f"cannot read catalog {catalog_path}: {error}") from error
-        if not catalog.get("steps"):
-            raise ProtocolError("catalog has no steps")
-        model_steps = {step.get("name"): step for step in model.get("steps") or []}
-        for step in catalog["steps"]:
-            source = model_steps.get(step.get("name"))
-            if source is None:
-                raise ProtocolError(f"catalog step {step.get('name')!r} is not in the protocol")
-            if (source.get("action") or "send") != (step.get("action") or "send"):
-                raise ProtocolError(f"catalog step {step.get('name')!r} action does not match")
-            if (source.get("action") or "send") != "send" and step.get("message_name"):
-                raise ProtocolError("network action catalog step cannot name a message")
-    else:
-        catalog = build_catalog(model)
+    catalog = build_catalog(model)
+    if binding:
+        catalog["binding"] = dict(binding)
     graph = ProtocolGraph(base, catalog)
     if checkpoint_path:
         try:
@@ -213,7 +206,7 @@ def load_protocol(protocol_path, catalog_path=None, checkpoint_path=None):
 
 
 def build_catalog(model, protocol_id=None):
-    """Fallback catalog when Rust did not write one (offline tests only)."""
+    """Build the name/dependency index used by the graph and proposal checks."""
     del protocol_id
     _validate_protocol_shape(model)
     steps = []
@@ -228,6 +221,7 @@ def build_catalog(model, protocol_id=None):
             "sender_name": raw.get("sender_name") if action == "send" else None,
             "receiver_name": raw.get("receiver_name") if action == "send" else None,
             "condition": raw.get("condition") or "",
+            "processing": raw.get("processing"),
         })
     dependencies = []
     for raw in model.get("step_dependencies") or []:

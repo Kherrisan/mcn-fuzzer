@@ -33,7 +33,6 @@ pub(super) struct CampaignContext {
     pythonpath: PathBuf,
     generator_skill: PathBuf,
     generator_validator: PathBuf,
-    catalog: PathBuf,
     proposal_tool: PathBuf,
     extra_files: Vec<PathBuf>,
     target: TargetContext,
@@ -87,7 +86,6 @@ impl CampaignContext {
                 .join("skills/protocol-modules/SKILL.md"),
             generator_validator: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("skills/protocol-modules/scripts/validate_generator.py"),
-            catalog: absolute(&campaign.generator_synthesis.output)?.join("catalog.json"),
             proposal_tool: absolute(&campaign.campaign.pythonpath)?
                 .join("coverage_analysis")
                 .join("server.py"),
@@ -166,10 +164,6 @@ impl SynthesisPromptContext {
 
     pub fn python(&self) -> &Path {
         &self.campaign.python
-    }
-
-    pub fn catalog(&self) -> &Path {
-        &self.campaign.catalog
     }
 
     /// Installed-module guidance shared by initialization and generation.
@@ -266,7 +260,6 @@ impl SynthesisPromptContext {
             "proposal": proposal_path,
             "proposal_draft": draft_path,
             "proposal_tool": self.campaign.proposal_tool,
-            "catalog": self.campaign.catalog,
             "roles": roles,
             "generator_parties": self
                 .model
