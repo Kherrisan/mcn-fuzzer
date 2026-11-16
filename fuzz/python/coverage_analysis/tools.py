@@ -17,25 +17,17 @@ def _schema(properties, required=()):
 
 REQUEST = {"type": "string", "description": "registered analysis request id"}
 STEP = {"type": "string", "description": "exact step name from the catalog"}
-FIELD_KIND = {"type": "string", "enum": ["string", "bytes", "integer", "boolean", "list"]}
+FIELD_KIND = {"type": "string", "enum": ["string", "bytes", "integer", "boolean", "list", "map"]}
 BYTES_ENCODING = {"type": "string", "enum": ["hex", "base64"]}
 MUTABLE_FIELD = _schema({
     "field": {"type": "string", "minLength": 1},
     "kind": FIELD_KIND,
     "encoding": BYTES_ENCODING,
     "default": {},
-    "source": {"type": "string"},
-}, ("field",))
-FIELD_MUTATION = _schema({
-    "op": {"type": "string", "enum": ["field"]},
-    "steps": {"type": ["array", "string"]},
-    "field": {"type": "string", "minLength": 1},
     "suggestion": {"type": "string", "minLength": 1},
     "evidence": {"type": "string", "minLength": 1},
-    "kind": FIELD_KIND,
-    "encoding": BYTES_ENCODING,
-    "default": {},
-}, ("op", "steps", "field", "suggestion", "evidence"))
+    "source": {"type": "string"},
+}, ("field",))
 TRACE_STEP = _schema({
     "name": {"type": "string", "description": "unique step instance name"},
     "step": STEP,
@@ -124,7 +116,6 @@ TOOLS = [
               "goal": {"type": "object"},
               "parties": {"type": "object"},
               "channels": {"type": "object"},
-              "mutations": {"type": "array", "items": FIELD_MUTATION},
               "dependencies": {"type": "array", "items": _schema({
                   "prior": {"type": "string"}, "dependent": {"type": "string"},
                   "kind": {"type": "string", "enum": ["order", "data", "resource", "state"]},

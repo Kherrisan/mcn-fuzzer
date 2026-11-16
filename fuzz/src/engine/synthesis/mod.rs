@@ -76,6 +76,50 @@ pub(crate) struct ReadyInput {
     pub(crate) origin: TraceOrigin,
 }
 
+/// Canonical path of the accepted request's initial `params.json`.
+pub(crate) fn initial_params_path(generator: &Path) -> Result<PathBuf, Error> {
+    let request_dir = generator.parent().and_then(Path::parent).ok_or_else(|| {
+        Error::illegal_state(format!(
+            "published generator {} has no request directory",
+            generator.display()
+        ))
+    })?;
+    let params = request_dir.join("params.json");
+    if params.file_name().and_then(|name| name.to_str()) != Some("params.json") {
+        return Err(Error::illegal_state(format!(
+            "refusing to publish {} as the initial parameter file",
+            params.display()
+        )));
+    }
+    if !params.is_file() {
+        return Err(Error::illegal_state(format!(
+            "synthesis initial params.json is missing at {}",
+            params.display()
+        )));
+    }
+    fs::canonicalize(&params).map_err(|error| {
+        Error::illegal_state(format!(
+            "canonicalizing synthesis params.json {}: {error}",
+            params.display()
+        ))
+    })
+}
+
+fn load_published_proposal(generator: &Path) -> Option<crate::coverage::proposal::Proposal> {
+    let request_dir = generator.parent()?.parent()?;
+    let text = fs::read_to_string(request_dir.join("proposal.json")).ok()?;
+    match serde_json::from_str(&text) {
+        Ok(proposal) => Some(proposal),
+        Err(error) => {
+            log::warn!(
+                "introspection could not read {}: {error}",
+                request_dir.join("proposal.json").display()
+            );
+            None
+        }
+    }
+}
+
 /// Run the production artifact checks and publish `generator.py` plus its schema.
 pub fn validate_generator_artifacts(
     output_dir: &Path,
@@ -150,6 +194,7 @@ pub struct GeneratorSynthesisStage {
     secrets: Vec<String>,
     mailbox: ProposalMailbox,
     analysis_enabled: bool,
+    introspection: Option<crate::coverage::introspection::IntrospectionHandle>,
 }
 
 impl GeneratorSynthesisStage {
@@ -216,7 +261,15 @@ impl GeneratorSynthesisStage {
             secrets: Vec::new(),
             mailbox,
             analysis_enabled: campaign.coverage.analysis_enabled,
+            introspection: None,
         }
+    }
+
+    pub(crate) fn set_introspection(
+        &mut self,
+        handle: crate::coverage::introspection::IntrospectionHandle,
+    ) {
+        self.introspection = Some(handle);
     }
 
     fn spawn_worker(&mut self, socket: PathBuf) -> Result<(), Error> {
@@ -373,10 +426,7 @@ impl GeneratorSynthesisStage {
                 )));
             }
             fs::create_dir_all(&output_dir)?;
-            let synthesis_proposal = accepted
-                .proposal
-                .synthesis_copy(&self.binding)
-                .map_err(Error::illegal_state)?;
+            let synthesis_proposal = accepted.proposal.synthesis_copy(&self.binding);
             let body = serde_json::to_vec_pretty(&synthesis_proposal).map_err(|error| {
                 Error::serialize(format!("writing synthesis proposal: {error}"))
             })?;
@@ -397,26 +447,48 @@ impl GeneratorSynthesisStage {
             fs::create_dir_all(&output_dir)?;
             (request, output_dir, self.session.clone())
         };
+        if let Some(handle) = &self.introspection {
+            let registered = if proposal.is_some() {
+                handle.synthesis_started(&request)
+            } else {
+                handle.register_autonomous(&request, &session)
+            };
+            if let Err(error) = registered {
+                log::warn!("introspection synthesis {request}: {error}");
+            }
+        }
         let generation = GeneratorRequest {
             id: request.clone(),
             output_dir,
             session,
             autonomous,
         };
-        let prompt = generation.prompt(
+        let prompt = match generation.prompt(
             &self.mode_hint,
             self.prompt_context.as_ref().ok_or_else(|| {
                 Error::illegal_state("synthesis prompt context is missing".to_string())
             })?,
-        )?;
-        self.worker
+        ) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                self.fail_request(&request);
+                return Err(error);
+            }
+        };
+        let worker = self
+            .worker
             .as_ref()
-            .ok_or_else(|| Error::unknown("synthesis worker is not running".to_string()))?
+            .ok_or_else(|| Error::unknown("synthesis worker is not running".to_string()))?;
+        if worker
             .send(AgentCommand::Run {
                 request: generation,
                 prompt,
             })
-            .map_err(|_| Error::unknown("synthesis worker stopped".to_string()))?;
+            .is_err()
+        {
+            self.fail_request(&request);
+            return Err(Error::unknown("synthesis worker stopped".to_string()));
+        }
         self.inflight = true;
         self.current_request = Some(request);
         Ok(())
@@ -525,15 +597,18 @@ impl GeneratorSynthesisStage {
                     )));
                 }
                 let reason = failure.reason.clone();
+                self.fail_current();
                 self.finish_request(true);
                 self.note_terminal_failure(&failure);
                 self.note_failure(state, reason);
                 Ok(())
             }
             Outcome::Artifact {
+                request,
                 result: Err(reason),
                 ..
             } => {
+                self.fail_request(&request);
                 self.finish_request(false);
                 self.note_failure(state, reason);
                 Ok(())
@@ -549,6 +624,7 @@ impl GeneratorSynthesisStage {
                     );
                     return Ok(());
                 }
+                self.publish_ready(&ready)?;
                 self.finish_request(false);
                 // Accepted artifacts enter the mutation FIFO, never the
                 // corpus as initial parameters. The ordinary mutation stage
@@ -596,6 +672,60 @@ impl GeneratorSynthesisStage {
         self.initialized = true;
         self.init_timeouts = 0;
         Ok(())
+    }
+
+    fn fail_current(&self) {
+        let Some(request) = &self.current_request else {
+            return;
+        };
+        self.fail_request(request);
+    }
+
+    fn fail_request(&self, request: &str) {
+        let Some(handle) = &self.introspection else {
+            return;
+        };
+        if let Err(error) = handle.mark_failed(request) {
+            log::debug!("introspection failure for {request} was not applied: {error}");
+        }
+    }
+
+    fn publish_ready(&self, ready: &ReadyInput) -> Result<(), Error> {
+        let Some(handle) = &self.introspection else {
+            return Ok(());
+        };
+        let request = ready.origin.request_id.as_str();
+        let (coverage, autonomous) = handle.with(|writer| {
+            (
+                writer
+                    .get(&crate::coverage::introspection::ProposalId::coverage(
+                        request,
+                    ))
+                    .is_some(),
+                writer
+                    .get(&crate::coverage::introspection::ProposalId::synthesis(
+                        request,
+                    ))
+                    .is_some(),
+            )
+        });
+        if !coverage && !autonomous {
+            log::warn!("synthesis request {request} has no introspection record");
+            return Ok(());
+        }
+        let proposal = if autonomous && !coverage {
+            load_published_proposal(&ready.input.generator).map(Arc::new)
+        } else {
+            None
+        };
+        let params_json = initial_params_path(&ready.input.generator)?;
+        let artifacts = crate::coverage::introspection::GeneratorArtifacts {
+            generator_py: ready.input.generator.clone(),
+            params_json,
+        };
+        handle
+            .publish(request, artifacts, proposal)
+            .map_err(Error::illegal_state)
     }
 
     fn finish_request(&mut self, pause: bool) {

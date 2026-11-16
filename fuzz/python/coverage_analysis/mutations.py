@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-FORBIDDEN = set(":[]")
-FIELD_KINDS = ("string", "bytes", "integer", "boolean", "list")
+import base64
+import binascii
+
+INT64_MIN = -(1 << 63)
+INT64_MAX = (1 << 63) - 1
+FIELD_KINDS = ("string", "bytes", "integer", "boolean", "list", "map")
 BYTES_ENCODINGS = ("hex", "base64")
 
 
@@ -11,42 +15,70 @@ class MutationError(ValueError):
     pass
 
 
-def _names(trace):
-    names = []
-    for item in trace:
-        name = str(item.get("name") or "")
-        if not name or any(char in name for char in FORBIDDEN):
-            raise MutationError(f"instance name {name!r} must not contain :[]")
-        if name in names:
-            raise MutationError(f"duplicate instance name {name}")
-        names.append(name)
-    return names
+def _representable(value, path):
+    """Reject values that cannot round-trip through the producer's ParamValue."""
+    if isinstance(value, bool) or isinstance(value, str):
+        return
+    if isinstance(value, int):
+        if not INT64_MIN <= value <= INT64_MAX:
+            raise MutationError(f"{path}: integer is outside the signed 64-bit range")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _representable(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for name, item in value.items():
+            if not isinstance(name, str) or not name:
+                raise MutationError(f"{path}: object member names must be nonempty strings")
+            _representable(item, f"{path}.{name}")
+        return
+    raise MutationError(
+        f"{path}: only strings, integers, booleans, lists, and objects are representable"
+    )
 
 
-def selection(spec, names):
-    """Return ('each', [indexes]) or ('range', start, end) inclusive."""
+def _encoded_bytes(value, encoding, path):
+    if not isinstance(value, str):
+        raise MutationError(f"{path}: bytes values must be encoded strings")
+    if not value:
+        return
+    if encoding == "hex":
+        if len(value) % 2:
+            raise MutationError(f"{path}: hex bytes need an even number of digits")
+        try:
+            bytes.fromhex(value)
+        except ValueError as error:
+            raise MutationError(f"{path}: invalid hex bytes: {error}") from error
+        return
+    try:
+        base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise MutationError(f"{path}: invalid base64 bytes: {error}") from error
 
-    if isinstance(spec, list):
-        indexes = []
-        for name in spec:
-            if name not in names:
-                raise MutationError(f"unknown instance {name}")
-            indexes.append(names.index(name))
-        if len(indexes) != len(set(indexes)):
-            raise MutationError("a mutation repeats an instance")
-        return ("each", indexes)
-    if isinstance(spec, str):
-        text = spec.strip()
-        if not (text.startswith("[") and text.endswith("]") and ":" in text):
-            raise MutationError(f"selector {spec!r} must be an array or [start:end]")
-        start_name, end_name = (part.strip() for part in text[1:-1].split(":", 1))
-        if start_name not in names or end_name not in names:
-            raise MutationError(f"unknown range endpoint in {spec}")
-        start, end = names.index(start_name), names.index(end_name)
-        if start > end:
-            raise MutationError(f"range {spec} is reversed")
-        return ("range", start, end)
-    raise MutationError("mutation steps must be an array or [start:end]")
+
+def validate_default(item, kind, encoding, path="default"):
+    """Check that a declared default matches its kind and is representable."""
+    if "default" not in item:
+        return
+    value = item["default"]
+    expected = {
+        "string": (str, "a string"),
+        "integer": (int, "an integer"),
+        "boolean": (bool, "a boolean"),
+        "list": (list, "an array"),
+        "map": (dict, "an object"),
+    }
+    if kind == "bytes":
+        _encoded_bytes(value, encoding or "hex", path)
+        return
+    type_, description = expected[kind]
+    if type_ is int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise MutationError(f"{path} must be {description} for kind {kind}")
+    elif not isinstance(value, type_):
+        raise MutationError(f"{path} must be {description} for kind {kind}")
+    _representable(value, path)
 
 
 def field_type(item):
@@ -67,34 +99,5 @@ def field_type(item):
         if encoding not in (None, ""):
             raise MutationError("encoding is only valid for bytes fields")
         encoding = None
+    validate_default(item, kind, encoding)
     return kind, encoding
-
-
-def validate_mutations(trace, mutations, model_steps):
-    names = _names(trace)
-    by_name = {item["name"]: item for item in trace}
-    seen_fields = set()
-    for mutation in mutations or []:
-        op = mutation.get("op")
-        if op != "field":
-            raise MutationError(f"unknown mutation op {op!r}; only field mutations are supported")
-        kind, *rest = selection(mutation.get("steps"), names)
-        field = str(mutation.get("field") or "").strip()
-        if not field:
-            raise MutationError("field mutation needs a field name")
-        if not str(mutation.get("suggestion") or "").strip():
-            raise MutationError(f"field {field} needs a suggestion")
-        if not str(mutation.get("evidence") or "").strip():
-            raise MutationError(f"field {field} needs source evidence")
-        field_type(mutation)
-        indexes = rest[0] if kind == "each" else list(range(rest[0], rest[1] + 1))
-        for index in indexes:
-            instance = trace[index]
-            step = model_steps[instance["step"]]
-            if step.get("action", "send") != "send":
-                raise MutationError(f"field mutation on non-send instance {instance['name']}")
-            key = (instance["name"], field)
-            if key in seen_fields:
-                raise MutationError(f"field {field} is repeated on {instance['name']}")
-            seen_fields.add(key)
-    return by_name

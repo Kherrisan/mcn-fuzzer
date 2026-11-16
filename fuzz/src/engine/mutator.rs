@@ -14,7 +14,7 @@ use libafl::{
 use libafl_bolts::{rands::Rand, Named};
 
 use crate::{
-    engine::input::{BytesEncoding, FieldKind, FieldSpec, GeneratorInput, ParamValue},
+    engine::input::{GeneratorInput, ParamValue},
     engine::stagnation::BitmapProgress,
 };
 
@@ -125,13 +125,6 @@ fn mutate_field<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRe
             fields.remove(&field);
             if fields.is_empty() {
                 input.params.remove(&instance);
-                input.param_kinds.remove(&instance);
-            }
-        }
-        if let Some(kinds) = input.param_kinds.get_mut(&instance) {
-            kinds.remove(&field);
-            if kinds.is_empty() {
-                input.param_kinds.remove(&instance);
             }
         }
         if let Some(step) = input
@@ -146,11 +139,6 @@ fn mutate_field<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRe
         }
         return MutationResult::Mutated;
     }
-    let spec = input
-        .param_kinds
-        .get(&instance)
-        .and_then(|fields| fields.get(&field))
-        .copied();
     let Some(value) = input
         .params
         .get_mut(&instance)
@@ -158,91 +146,7 @@ fn mutate_field<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRe
     else {
         return MutationResult::Skipped;
     };
-    match spec {
-        Some(spec) => mutate_typed_value(rand, value, spec),
-        None => mutate_value(rand, value),
-    }
-}
-
-const HEX_DIGITS: &[u8] = b"0123456789abcdef";
-const BASE64_DIGITS: &[u8] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-fn mutate_typed_value<R: Rand>(
-    rand: &mut R,
-    value: &mut ParamValue,
-    spec: FieldSpec,
-) -> MutationResult {
-    match (spec.kind, &mut *value) {
-        (FieldKind::Bytes, ParamValue::Str(text)) => {
-            let encoding = spec.bytes_encoding();
-            if mutate_encoded_bytes(rand, text, encoding) {
-                return MutationResult::Mutated;
-            }
-            mutate_text(rand, text);
-            MutationResult::Mutated
-        }
-        (FieldKind::Bytes, ParamValue::List(items)) => {
-            if items.is_empty() {
-                items.push(ParamValue::Int(rand.below_or_zero(256) as i64));
-            } else {
-                let index = rand.below_or_zero(items.len());
-                items[index] = ParamValue::Int(rand.below_or_zero(256) as i64);
-            }
-            MutationResult::Mutated
-        }
-        (FieldKind::Integer, ParamValue::Int(number)) => {
-            mutate_integer(rand, number);
-            MutationResult::Mutated
-        }
-        (FieldKind::Boolean, ParamValue::Bool(flag)) => {
-            *flag = !*flag;
-            MutationResult::Mutated
-        }
-        (FieldKind::List, ParamValue::List(items)) => {
-            if items.is_empty() {
-                items.push(ParamValue::Int(rand.below_or_zero(256) as i64));
-                return MutationResult::Mutated;
-            }
-            let index = rand.below_or_zero(items.len());
-            mutate_value(rand, &mut items[index])
-        }
-        (FieldKind::String, ParamValue::Str(text)) => {
-            mutate_text(rand, text);
-            MutationResult::Mutated
-        }
-        _ => mutate_value(rand, value),
-    }
-}
-
-fn mutate_encoded_bytes<R: Rand>(rand: &mut R, text: &mut String, encoding: BytesEncoding) -> bool {
-    let digits = match encoding {
-        BytesEncoding::Hex => HEX_DIGITS,
-        BytesEncoding::Base64 => BASE64_DIGITS,
-    };
-    let bytes = text.as_bytes();
-    if bytes.is_empty() {
-        return false;
-    }
-    let valid = bytes.iter().all(|byte| {
-        digits.contains(byte) || (encoding == BytesEncoding::Base64 && *byte == b'=')
-    });
-    if !valid {
-        return false;
-    }
-    let mutable: Vec<usize> = bytes
-        .iter()
-        .enumerate()
-        .filter(|(_, byte)| digits.contains(byte))
-        .map(|(index, _)| index)
-        .collect();
-    if mutable.is_empty() {
-        return false;
-    }
-    let index = mutable[rand.below_or_zero(mutable.len())];
-    let replacement = digits[rand.below_or_zero(digits.len())] as char;
-    text.replace_range(index..index + 1, &replacement.to_string());
-    true
+    mutate_value(rand, value)
 }
 
 fn mutate_integer<R: Rand>(rand: &mut R, number: &mut i64) {
@@ -264,7 +168,6 @@ fn mutate_step<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRes
     }
     let original_trace = input.trace.clone();
     let original_params = input.params.clone();
-    let original_kinds = input.param_kinds.clone();
     let choice = rand.below_or_zero(100);
     let index = rand.below_or_zero(len);
     let operation = if choice < 55 || len == 1 {
@@ -272,7 +175,6 @@ fn mutate_step<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRes
     } else if choice < 78 && len > 1 {
         let removed = input.trace.steps.remove(index);
         input.params.remove(&removed.name);
-        input.param_kinds.remove(&removed.name);
         input.trace.dependencies.retain(|dependency| {
             dependency.prior != removed.name && dependency.dependent != removed.name
         });
@@ -294,7 +196,6 @@ fn mutate_step<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRes
         if let Err(_error) = input.validate() {
             input.trace = original_trace;
             input.params = original_params;
-            input.param_kinds = original_kinds;
             return MutationResult::Skipped;
         }
     } else {
@@ -331,9 +232,6 @@ fn duplicate_block<R: Rand>(
     for (old, new) in &names {
         if let Some(fields) = input.params.get(old).cloned() {
             input.params.insert(new.clone(), fields);
-        }
-        if let Some(kinds) = input.param_kinds.get(old).cloned() {
-            input.param_kinds.insert(new.clone(), kinds);
         }
     }
     for copy in &mut copies {
@@ -510,7 +408,24 @@ pub(crate) fn mutate_value<R: Rand>(rand: &mut R, value: &mut ParamValue) -> Mut
             let index = rand.below_or_zero(items.len());
             mutate_value(rand, &mut items[index])
         }
+        ParamValue::Map(items) => mutate_map(rand, items),
     }
+}
+
+/// Mutate one existing member value. Member names are protocol structure, so
+/// the key set is never changed; an empty map has nothing to mutate.
+fn mutate_map<R: Rand>(
+    rand: &mut R,
+    items: &mut std::collections::BTreeMap<String, ParamValue>,
+) -> MutationResult {
+    if items.is_empty() {
+        return MutationResult::Skipped;
+    }
+    let index = rand.below_or_zero(items.len());
+    let Some((_, value)) = items.iter_mut().nth(index) else {
+        return MutationResult::Skipped;
+    };
+    mutate_value(rand, value)
 }
 
 fn mutate_text<R: Rand>(rand: &mut R, text: &mut String) {
@@ -562,6 +477,7 @@ fn mutate_bytes<R: Rand>(rand: &mut R, bytes: &mut Vec<u8>) {
 mod tests {
     use super::*;
     use libafl_bolts::rands::StdRand;
+    use std::{collections::BTreeMap, path::PathBuf};
 
     #[test]
     fn duplicate_block_remaps_internal_input_to_copied_instance() {
@@ -749,10 +665,7 @@ mod tests {
             ]),
         );
         let mut rand = StdRand::with_seed(5);
-        assert_eq!(
-            mutate_field(&mut rand, &mut input),
-            MutationResult::Mutated
-        );
+        assert_eq!(mutate_field(&mut rand, &mut input), MutationResult::Mutated);
         let first = match input.params["first"]["body"] {
             ParamValue::Str(ref value) => value.clone(),
             _ => unreachable!(),
@@ -762,82 +675,58 @@ mod tests {
             _ => unreachable!(),
         };
         assert_eq!((first == "aa") as u8 + (second == "bb") as u8, 1);
-        input.validate().expect("independent instance params stay valid");
+        input
+            .validate()
+            .expect("independent instance params stay valid");
     }
 
     #[test]
-    fn bytes_kind_mutates_without_breaking_encoding() {
-        let make = |encoding: BytesEncoding, value: &str| {
-            let mut input = GeneratorInput::with_trace(
-                PathBuf::from("/tmp/generator.py"),
-                vec![crate::engine::input::StepInstance {
-                    name: "one".into(),
-                    step: "send".into(),
-                    action: "send".into(),
-                    condition: String::new(),
-                    message: None,
-                    processing: None,
-                    channel: "control".into(),
-                    sender: None,
-                    receiver: None,
-                    party: None,
-                    omitted_fields: vec![],
-                    inputs: BTreeMap::new(),
-                    broken_dependencies: vec![],
-                }],
-                BTreeMap::from([(
-                    "one".into(),
-                    BTreeMap::from([("blob".into(), ParamValue::Str(value.into()))]),
-                )]),
-            );
-            input.param_kinds.insert(
-                "one".into(),
-                BTreeMap::from([(
-                    "blob".into(),
-                    FieldSpec {
-                        kind: FieldKind::Bytes,
-                        encoding: Some(encoding),
-                    },
-                )]),
-            );
-            input
-        };
+    fn map_values_mutate_members_and_keep_keys() {
+        let keys = ["group", "key_exchange", "notes"];
+        let mut changed = 0;
         for seed in 0..64 {
-            let mut hex = make(BytesEncoding::Hex, "1301");
-            assert_eq!(
-                mutate_field(&mut StdRand::with_seed(seed), &mut hex),
-                MutationResult::Mutated
-            );
-            if let Some(value) = hex.params.get("one").and_then(|fields| fields.get("blob")) {
-                let ParamValue::Str(text) = value else {
-                    panic!("hex bytes must stay a string");
-                };
-                assert_eq!(text.len() % 2, 0, "{text}");
-                assert!(text.chars().all(|ch| ch.is_ascii_hexdigit()), "{text}");
-            } else {
-                assert!(hex.trace.steps[0].omitted_fields.iter().any(|f| f == "blob"));
+            let mut value = ParamValue::Map(BTreeMap::from([
+                ("group".into(), ParamValue::Int(29)),
+                ("key_exchange".into(), ParamValue::Str("5e88".into())),
+                ("notes".into(), ParamValue::List(vec![ParamValue::Int(1)])),
+            ]));
+            let before = value.clone();
+            let mut rand = StdRand::with_seed(seed);
+            assert_eq!(mutate_value(&mut rand, &mut value), MutationResult::Mutated);
+            let ParamValue::Map(members) = &value else {
+                panic!("map members must stay a map: {value:?}");
+            };
+            let names: Vec<&str> = members.keys().map(String::as_str).collect();
+            assert_eq!(names, keys, "member names are structure");
+            if value != before {
+                changed += 1;
             }
+        }
+        assert!(changed > 0, "some member value must change");
+    }
 
-            let mut base64 = make(BytesEncoding::Base64, "EwE=");
-            assert_eq!(
-                mutate_field(&mut StdRand::with_seed(seed), &mut base64),
-                MutationResult::Mutated
-            );
-            if let Some(value) = base64.params.get("one").and_then(|fields| fields.get("blob")) {
-                let ParamValue::Str(text) = value else {
-                    panic!("base64 bytes must stay a string");
-                };
-                assert_eq!(text.len() % 4, 0, "{text}");
-                assert_eq!(text.matches('=').count(), 1, "{text}");
-                assert!(text
-                    .trim_end_matches('=')
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '+' || ch == '/'), "{text}");
-            } else {
-                assert!(base64.trace.steps[0].omitted_fields.iter().any(|f| f == "blob"));
+    #[test]
+    fn values_decide_their_own_mutation() {
+        for seed in 0..32 {
+            let mut rand = StdRand::with_seed(seed);
+            let mut text = ParamValue::Str("ubuntu".into());
+            let mut number = ParamValue::Int(771);
+            let mut flag = ParamValue::Bool(true);
+            let mut list = ParamValue::List(vec![ParamValue::Int(1), ParamValue::Str("a".into())]);
+            for value in [&mut text, &mut number, &mut flag, &mut list] {
+                assert_eq!(mutate_value(&mut rand, value), MutationResult::Mutated);
             }
+            assert!(matches!(text, ParamValue::Str(_)));
+            assert!(matches!(number, ParamValue::Int(_)));
+            assert!(matches!(flag, ParamValue::Bool(_)));
+            assert!(matches!(list, ParamValue::List(_)));
         }
     }
 
-    use std::{collections::BTreeMap, path::PathBuf};
+    #[test]
+    fn empty_map_reports_skipped() {
+        let mut value = ParamValue::Map(BTreeMap::new());
+        let mut rand = StdRand::with_seed(1);
+        assert_eq!(mutate_value(&mut rand, &mut value), MutationResult::Skipped);
+    }
 }

@@ -36,12 +36,22 @@ pcap-file = "2.0.0"
 petgraph = "0.7"
 rustpython-ast = { version = "0.4.0", features = ["visitor"] }
 rustpython-compiler = "0.4.0"
+rmcp = { version = "0.8", features = ["server", "macros", "transport-streamable-http-server"] }
+schemars = "1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "net", "sync", "time", "io-util"] }
+axum = "0.8"
 sha2 = "0.10"
 toml = "0.9.8"
 
+[[test]]
+name = "introspection_netns"
+path = "tests/introspection_netns.rs"
+harness = false
+
 [dev-dependencies]
+nix = { version = "0.31.1", features = ["sched"] }
 serial_test = "3.2.0"
 
 [features]

@@ -30,6 +30,7 @@ use crate::coverage::capture::PhaseSnapshot;
 use crate::{
     app::config::Campaign,
     coverage::capture::{CaptureEngine, PcapObserver},
+    coverage::introspection::{IntrospectionHandle, ProposalRecord},
     engine::input::GeneratorInput,
     engine::stagnation::BitmapProgress,
     runtime::backend::{ForkserverBackend, TargetBackend},
@@ -67,7 +68,10 @@ pub struct TraceIdentity {
 
 /// Coordinates one forkserver backend and the Python generator.
 pub struct CaseExecutor {
-    observers: (CoverageObserver, (PcapObserver, (AsanBacktraceObserver, ()))),
+    observers: (
+        CoverageObserver,
+        (PcapObserver, (AsanBacktraceObserver, ())),
+    ),
     backend: ForkserverBackend,
     capture: Arc<CaptureEngine>,
 
@@ -89,6 +93,8 @@ pub struct CaseExecutor {
     asan_log_dir: PathBuf,
     last_report: Option<CaseReport>,
     last_identity: Option<TraceIdentity>,
+    introspection: Option<IntrospectionHandle>,
+    tracked: Option<Arc<ProposalRecord>>,
 }
 
 impl CaseExecutor {
@@ -162,8 +168,14 @@ impl CaseExecutor {
             asan_log_dir,
             last_report: None,
             last_identity: None,
+            introspection: None,
+            tracked: None,
         };
         Ok((executor, feedback))
+    }
+
+    pub(crate) fn set_introspection(&mut self, handle: IntrospectionHandle) {
+        self.introspection = Some(handle);
     }
 
     /// Borrow the observer so `MaxMapFeedback::new` can take its name and handle.
@@ -173,7 +185,7 @@ impl CaseExecutor {
 
     /// ASAN stack observer. Parsed logs update the objective hash.
     pub fn asan_observer(&self) -> &AsanBacktraceObserver {
-        &self.observers.1.1.0
+        &self.observers.1 .1 .0
     }
 
     /// Shared capture engine used by the feedbacks.
@@ -305,8 +317,32 @@ impl CaseExecutor {
             self.streaks.result,
         );
         append_case_event(&self.event_path, &report)?;
+        self.finish_tracked(&report);
         self.last_report = Some(report);
         Ok(())
+    }
+
+    fn open_tracked(&mut self, generator: &Path) {
+        self.fail_tracked("previous execution did not finish");
+        let Some(handle) = &self.introspection else {
+            return;
+        };
+        if let Some(record) = handle.owner(generator) {
+            record.execution_started();
+            self.tracked = Some(record);
+        }
+    }
+
+    fn finish_tracked(&mut self, report: &CaseReport) {
+        if let Some(record) = self.tracked.take() {
+            record.execution_finished(report);
+        }
+    }
+
+    fn fail_tracked(&mut self, message: &str) {
+        if let Some(record) = self.tracked.take() {
+            record.execution_failed("infrastructure", message);
+        }
     }
 
     /// Reap adopted orphans and end capture. Does not restart a server or forkserver.
@@ -350,7 +386,11 @@ impl CaseExecutor {
     /// file exists keeps ordinary non-ASAN cases from producing a spurious zero
     /// stack hash.
     fn observe_asan_log(&mut self) {
-        let Some(pid) = self.last_identity.as_ref().map(|identity| identity.child_pid) else {
+        let Some(pid) = self
+            .last_identity
+            .as_ref()
+            .map(|identity| identity.child_pid)
+        else {
             return;
         };
         let path = self.asan_log_dir.join(format!("asanlog.{pid}"));
@@ -360,7 +400,13 @@ impl CaseExecutor {
         if !text.contains("AddressSanitizer") {
             return;
         }
-        self.observers.1.1.0.parse_asan_output(&text);
+        self.observers.1 .1 .0.parse_asan_output(&text);
+    }
+}
+
+impl Drop for CaseExecutor {
+    fn drop(&mut self) {
+        self.fail_tracked("executor dropped with an open execution");
     }
 }
 
@@ -390,6 +436,21 @@ impl CaseExecutor {
     where
         S: HasExecutions,
     {
+        let result = self.drive_case_body(state, input);
+        if let Err(error) = &result {
+            self.fail_tracked(&error.to_string());
+        }
+        result
+    }
+
+    fn drive_case_body<S>(
+        &mut self,
+        state: &mut S,
+        input: &GeneratorInput,
+    ) -> Result<ExitKind, Error>
+    where
+        S: HasExecutions,
+    {
         if let Some(fatal) = self.capture.fatal() {
             return Err(Error::unknown(format!(
                 "capture is fatal before the case: {fatal}"
@@ -410,6 +471,7 @@ impl CaseExecutor {
         *state.executions_mut() += 1;
         let started = Instant::now();
         self.last_report = None;
+        self.open_tracked(&input.generator);
         #[cfg(feature = "stats")]
         let setup_at = Instant::now();
         self.run_cleanup()?;
@@ -951,7 +1013,10 @@ fn signal_pair(sut: Option<&mut Watched>, generator: Option<&mut Watched>) -> Re
 }
 
 impl HasObservers for CaseExecutor {
-    type Observers = (CoverageObserver, (PcapObserver, (AsanBacktraceObserver, ())));
+    type Observers = (
+        CoverageObserver,
+        (PcapObserver, (AsanBacktraceObserver, ())),
+    );
 
     fn observers(&self) -> RefIndexable<&Self::Observers, Self::Observers> {
         RefIndexable::from(&self.observers)

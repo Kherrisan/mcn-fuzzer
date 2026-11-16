@@ -33,8 +33,8 @@ use libafl::{
     feedbacks::{CombinedFeedback, CrashFeedback, LogicEagerOr, NewHashFeedback},
     fuzzer::{Evaluator, ExecutesInput, Fuzzer, NopInputFilter, StdFuzzer},
     inputs::{BytesInputConverter, Input},
-    observers::AsanBacktraceObserver,
     monitors::SimpleMonitor,
+    observers::AsanBacktraceObserver,
     schedulers::QueueScheduler,
     stages::Stage,
     state::{HasCorpus, HasSolutions, StdState},
@@ -183,6 +183,10 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
     let mut synthesis = GeneratorSynthesisStage::from_campaign(campaign, mailbox.clone())?;
     let mut analysis =
         crate::coverage::schedule::CoverageAnalysisStage::from_campaign(campaign, mailbox)?;
+    if let Some(handle) = analysis.introspection_handle() {
+        synthesis.set_introspection(handle.clone());
+        session.executor.set_introspection(handle);
+    }
     if campaign.generator_synthesis.enabled {
         synthesis.initialize()?;
     }
@@ -201,6 +205,9 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
         campaign.generator_synthesis.output.join("candidates.json"),
     )
     .with_events(event_root.join("events.jsonl"));
+    if let Some(handle) = analysis.introspection_handle() {
+        mutation.set_introspection(handle);
+    }
     if campaign.generator_synthesis.enabled {
         mutation.load_queue(&mut session.state)?;
     }

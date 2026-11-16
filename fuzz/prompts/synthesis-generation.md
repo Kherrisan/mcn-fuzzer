@@ -107,7 +107,7 @@ party binding. Do not request a receipt or call a Rust selector.
     "channels":{"control_1":{"channel":"control","endpoints":["client_1","server_1"]}},
     "trace":[{"name":"login_first","step":"exact step name","channel":"control_1",
               "sender":"client_1","receiver":"server_1","reason":"why","constraints":[]}],
-    "dependencies":[], "mutations":[]}
+    "dependencies":[]}
    Party and channel keys are instance names. Each maps to a model party or
    channel name. Channel endpoints are party instance names. Each trace item
    names one step instance and points `step` at the model step name. Repeat a
@@ -433,11 +433,11 @@ for the other root before termination.
 # Parameters and output files
 
 Preserve the requested conversation and expose initial values for the
-proposal's `mutable_fields` in params.json. Each mutable field carries a `kind`
-and, for `bytes`, an `encoding` (`hex` or `base64`). Rust owns the final field
-values and mutates them according to that kind without revalidating the schema.
-Encode bytes values as strings in the declared encoding; do not embed raw bytes
-or nested objects. Handle changed types/signs/lengths/list contents; bound local
+proposal's `mutable_fields` in params.json. Rust decides how to mutate each value
+from the value itself: strings as text, integers and booleans in place, arrays
+element-wise, and objects member-wise without adding or removing keys. Encode
+bytes values as strings (hex or base64) and decode them in the generator; do not
+embed raw bytes. Handle changed types/signs/lengths/list contents; bound local
 allocations, loops, service counts, and timeouts without sanitizing all mutated
 wire content back to fixed valid values.
 
@@ -446,13 +446,15 @@ wire content back to fixed valid values.
   shared params; never receive mutation operations.
 - params.json: root object keyed by step instance name; each value is an object
   of that instance's mutable fields. Omit an instance that has no mutable
-  fields. Field values are only string, signed 64-bit integer, boolean, or
-  recursively nested lists; `bytes` values are encoded strings. No floats, null,
-  or nested field objects.
+  fields. Field values are string, signed 64-bit integer, boolean, recursively
+  nested lists, or objects; `bytes` values are encoded strings, and `map`
+  values are objects. Object member names are structure: keep every declared
+  member and expect its value, not its presence, to change. No floats or null.
 - params.schema.json: root type="object" whose properties are per-instance
   objects (`type="object"`, `properties`, `required`, `additionalProperties`).
   Map `string` and `bytes` to `type="string"`, `integer` to `type="integer"`,
-  `boolean` to `type="boolean"`, and `list` to `type="array"`. The validator
+  `boolean` to `type="boolean"`, `list` to `type="array"`, and `map` to
+  `type="object"`. The validator
   implements only a basic subset; Rust does not enforce it for mutated values.
 - result.json: final completion signal. It is read immediately when it appears.
   Echo the exact IDs below; added_steps must be an array of strings, even if empty.

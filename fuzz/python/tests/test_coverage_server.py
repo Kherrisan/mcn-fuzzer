@@ -363,7 +363,7 @@ class ProtocolLoadTests(unittest.TestCase):
         base = {
             "origin": "autonomous", "session": "s", "build": "", "snapshot": "",
             "goal": {"handler_ids": [], "reason": "x"},
-            "parties": {}, "channels": {}, "trace": [], "mutations": [],
+            "parties": {}, "channels": {}, "trace": [],
             "dependencies": [],
         }
         for field in ("version", "request_id", "graph_revision", "global_context"):
@@ -470,10 +470,10 @@ class ServiceTests(unittest.TestCase):
                     "trace": [{"name": "hello_once", "step": files["step_name"],
                                "channel": "control_1", "sender": "client_1",
                                "receiver": "server_1",
-                               "reason": "target", "constraints": []}],
-                    "mutations": [{"op": "field", "steps": ["hello_once"],
-                                   "field": "username", "suggestion": "empty",
-                                   "evidence": "a.c:10"}],
+                               "reason": "target", "constraints": [],
+                               "mutable_fields": [{"field": "username", "kind": "string",
+                                                   "suggestion": "empty",
+                                                   "evidence": "a.c:10"}]}],
                 })
                 self.assertEqual(proposal["request_id"], "req-1")
                 self.assertNotIn("proposal_id", proposal)

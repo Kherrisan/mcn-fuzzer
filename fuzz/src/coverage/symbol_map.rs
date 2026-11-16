@@ -28,7 +28,7 @@ const MAGIC: &[u8; 8] = b"MCNPGMAP";
 const VERSION: u32 = 1;
 
 /// One symbolized source position.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Frame {
     pub function: String,
     pub file: String,
@@ -272,6 +272,11 @@ fn parse_location(text: &str) -> Option<(String, u32)> {
         return None;
     }
     Some((file, line))
+}
+
+/// Read one compressed index-to-location table. The map stays read-only after this.
+pub fn load_index_map(path: &Path) -> Result<BTreeMap<u32, Frame>, String> {
+    decode_index(path)
 }
 
 fn decode_index(path: &Path) -> Result<BTreeMap<u32, Frame>, String> {

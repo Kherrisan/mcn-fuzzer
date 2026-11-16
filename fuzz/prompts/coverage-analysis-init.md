@@ -65,18 +65,29 @@ why. Do not use `uncertain` to justify such a fallback. Set uncertain to true on
 when source evidence supports a candidate entry but its precise role remains
 ambiguous.
 
-## MCP service
+## MCP services
 
-A coverage-analysis MCP service is running for this session. Useful calls:
+Two MCP services are running for this session.
+
+The coverage-analysis service answers protocol and handler queries. Useful calls:
 
 - `get_loaded_state` — report what is loaded. Empty at session start.
 - `load_protocol` with `{"protocol_path": "MODEL"}`
   — load the protocol model.
 - `get_protocol_steps` — list steps by their unique `name`.
 
-Call `get_loaded_state`, then `load_protocol`, then `get_protocol_steps` before
-building the mapping. Do not load coverage data or open an analysis transaction
-during initialization.
+The campaign-introspection service is read-only and separate. Its tools are
+`list_proposals`, `get_proposal`, and `resolve_bitmap_indices`. Counts are live
+campaign statistics, not a frozen coverage snapshot. `list_proposals` pages
+registered proposals. `get_proposal` returns one proposal, its generator paths,
+and paged feedback indexes. `resolve_bitmap_indices` maps those indexes to a
+source file, line, and function. `column` is always null. A resolved location
+is the feedback site, not new source-line coverage.
+
+Call `get_loaded_state`, `load_protocol`, `get_protocol_steps`, and
+`list_proposals` before building the mapping. `list_proposals` may be empty;
+that call only warms the introspection service. Do not load coverage data or
+open an analysis transaction during initialization.
 
 ## Step table
 

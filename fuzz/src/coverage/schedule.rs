@@ -10,6 +10,7 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -21,6 +22,7 @@ use serde_json::{json, Value};
 
 use super::{
     events::SharedLog,
+    introspection::{http::IntrospectionHttp, CampaignIdentity, IntrospectionHandle, ProposalId},
     mcp::McpClient,
     proposal::{sha256_file, AcceptedProposal, Proposal, ProposalMailbox},
 };
@@ -250,6 +252,8 @@ pub struct CoverageAnalysisStage {
     launch: Option<CommandLine>,
     secrets: Vec<String>,
     exited: bool,
+    introspection: Option<IntrospectionHandle>,
+    introspection_http: Option<IntrospectionHttp>,
 }
 
 impl CoverageAnalysisStage {
@@ -298,11 +302,25 @@ impl CoverageAnalysisStage {
         }
         // Codex workspace-write uses this process cwd. init/ and requests/ are
         // both children, so a later task can publish requests/<id>/result.json.
+        let introspection = IntrospectionHandle::open(
+            campaign_identity(campaign, &boot.session),
+            campaign.coverage.index_map.as_deref(),
+        );
+        let listener = crate::coverage::introspection::take_host_listener().ok_or_else(|| {
+            Error::unknown(
+                "coverage analysis is enabled but the introspection listener was not bound on 127.0.0.1 before CLONE_NEWNET"
+                    .to_string(),
+            )
+        })?;
+        let introspection_http = IntrospectionHttp::start(introspection.store(), listener)
+            .map_err(|error| {
+                Error::unknown(format!("starting campaign introspection MCP: {error}"))
+            })?;
         let launch = command_line(
             profile,
             &std::path::absolute(analysis_agent_cwd(&analysis_root))?,
         )?;
-        let launch = mcp_launch(launch, campaign)?;
+        let launch = mcp_launch(launch, campaign, introspection_http.url())?;
         let secrets = launch.secrets();
         let log = SharedLog::open(
             analysis_root.join("events.jsonl"),
@@ -316,6 +334,7 @@ impl CoverageAnalysisStage {
                 "callgraph": campaign.coverage.callgraph_dot,
                 "cfg_dir": campaign.coverage.cfg_dir,
                 "mcp_socket": crate::coverage::mcp::socket_path(),
+                "introspection_url": introspection_http.url(),
             }),
         );
         let mut sut_parties = Vec::new();
@@ -355,6 +374,8 @@ impl CoverageAnalysisStage {
             launch: Some(launch),
             secrets,
             exited: false,
+            introspection: Some(introspection),
+            introspection_http: Some(introspection_http),
         };
         stage.spawn_worker(boot.socket)?;
         Ok(stage)
@@ -388,7 +409,13 @@ impl CoverageAnalysisStage {
             launch: None,
             secrets: Vec::new(),
             exited: false,
+            introspection: None,
+            introspection_http: None,
         }
+    }
+
+    pub(crate) fn introspection_handle(&self) -> Option<IntrospectionHandle> {
+        self.introspection.clone()
     }
 
     fn spawn_worker(&mut self, socket: PathBuf) -> Result<(), Error> {
@@ -577,7 +604,15 @@ impl CoverageAnalysisStage {
             &sut_stdout_log,
             &sut_stderr_log,
         );
-        self.worker
+        if let Some(handle) = &self.introspection {
+            if let Err(error) =
+                handle.register_coverage(&request, &self.session, &format!("{snapshot:06}"))
+            {
+                log::warn!("introspection register {request}: {error}");
+            }
+        }
+        if self
+            .worker
             .as_ref()
             .ok_or_else(|| Error::unknown("analysis worker is not running"))?
             .send(AgentCommand::Run {
@@ -590,7 +625,13 @@ impl CoverageAnalysisStage {
                 },
                 prompt,
             })
-            .map_err(|_| Error::unknown("analysis worker stopped"))?;
+            .is_err()
+        {
+            if let Some(handle) = &self.introspection {
+                let _ = handle.mark_failed(&request);
+            }
+            return Err(Error::unknown("analysis worker stopped"));
+        }
         self.phase = Phase::Running;
         self.inflight = Some(Inflight {
             request: request.clone(),
@@ -618,6 +659,7 @@ impl CoverageAnalysisStage {
         let proposal = match result {
             Ok(proposal) => proposal,
             Err(reason) => {
+                self.fail_request(&inflight.request);
                 self.abort(&inflight.request);
                 self.log_event(
                     "analysis_failed",
@@ -636,7 +678,27 @@ impl CoverageAnalysisStage {
                     path: proposal.path.clone(),
                     request_id: inflight.request.clone(),
                 };
+                if let Some(handle) = &self.introspection {
+                    if let Err(error) = handle.accept(
+                        &ProposalId::coverage(&inflight.request),
+                        Arc::new(proposal.proposal.clone()),
+                    ) {
+                        log::warn!("introspection accept {}: {error}", inflight.request);
+                    }
+                }
                 let replaced = self.mailbox.replace(accepted);
+                if let Some(replaced) = &replaced {
+                    if let Some(handle) = &self.introspection {
+                        if let Err(error) =
+                            handle.mark_skipped(&ProposalId::coverage(&replaced.request_id))
+                        {
+                            log::warn!(
+                                "introspection skip replaced {}: {error}",
+                                replaced.request_id
+                            );
+                        }
+                    }
+                }
                 self.log_event(
                     "proposal_accepted",
                     json!({
@@ -650,6 +712,7 @@ impl CoverageAnalysisStage {
                 );
             }
             Err(error) => {
+                self.fail_request(&inflight.request);
                 self.abort(&inflight.request);
                 self.log_event(
                     "proposal_commit_failed",
@@ -700,6 +763,7 @@ impl CoverageAnalysisStage {
                 let inflight = self.inflight.take();
                 self.phase = Phase::Idle;
                 if let Some(inflight) = inflight {
+                    self.fail_request(&inflight.request);
                     self.abort(&inflight.request);
                     self.log_event(
                         "analysis_failed",
@@ -763,7 +827,22 @@ impl CoverageAnalysisStage {
         }
         self.exited = true;
         self.worker.take();
+        if let Some(handle) = &self.introspection {
+            handle.cancel_incomplete();
+        }
+        if let Some(http) = self.introspection_http.take() {
+            http.shutdown();
+        }
         self.log_event("analysis_stopped", json!({}));
+    }
+
+    fn fail_request(&self, request: &str) {
+        let Some(handle) = &self.introspection else {
+            return;
+        };
+        if let Err(error) = handle.mark_failed(request) {
+            log::debug!("introspection failure for {request} was not applied: {error}");
+        }
     }
 }
 
@@ -813,7 +892,33 @@ fn analysis_agent_cwd(analysis_root: &Path) -> &Path {
     analysis_root
 }
 
-fn mcp_launch(mut launch: CommandLine, campaign: &Campaign) -> Result<CommandLine, Error> {
+fn campaign_identity(campaign: &Campaign, session: &str) -> CampaignIdentity {
+    let run_id = campaign
+        .output_root
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| session.to_string());
+    CampaignIdentity {
+        run_id,
+        started_at_unix_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_millis() as u64)
+            .unwrap_or(0),
+    }
+}
+
+fn introspection_url_arg(url: &str) -> Result<String, Error> {
+    let encoded = serde_json::to_string(url).map_err(|error| Error::unknown(error.to_string()))?;
+    Ok(format!("mcp_servers.campaign_introspection.url={encoded}"))
+}
+
+fn mcp_launch(
+    mut launch: CommandLine,
+    campaign: &Campaign,
+    introspection_url: &str,
+) -> Result<CommandLine, Error> {
     let socket = crate::coverage::mcp::socket_path().ok_or_else(|| {
         Error::unknown(
             "coverage analysis is enabled but the MCP service is unavailable".to_string(),
@@ -840,6 +945,8 @@ fn mcp_launch(mut launch: CommandLine, campaign: &Campaign) -> Result<CommandLin
         format!("mcp_servers.coverage.command={command}"),
         "-c".to_string(),
         format!("mcp_servers.coverage.args={args}"),
+        "-c".to_string(),
+        introspection_url_arg(introspection_url)?,
     ]);
     Ok(launch)
 }
@@ -1121,5 +1228,14 @@ pythonpath = "pp"
         assert!(init.starts_with(cwd));
         assert!(result.starts_with(cwd));
         assert_ne!(cwd, root.join("init"));
+    }
+
+    #[test]
+    fn introspection_url_is_a_json_string_config() {
+        let arg = introspection_url_arg("http://127.0.0.1:9/mcp").unwrap();
+        assert_eq!(
+            arg,
+            "mcp_servers.campaign_introspection.url=\"http://127.0.0.1:9/mcp\""
+        );
     }
 }

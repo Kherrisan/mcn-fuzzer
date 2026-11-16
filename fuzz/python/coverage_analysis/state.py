@@ -444,6 +444,11 @@ class State:
                 "steps": len(request.txn.steps)}
 
     def submit_proposal(self, request_id, payload):
+        if payload.get("mutations"):
+            raise StateError(
+                "bad_request",
+                "declare mutable_fields on each trace instance instead of mutations",
+            )
         request = self.request(request_id)
         graph = self.txn_graph(request_id)
         handlers = self.dataset("handlers", request_id).value
@@ -458,7 +463,6 @@ class State:
             handlers=handlers,
             parties=payload.get("parties") or {},
             channels=payload.get("channels") or {},
-            mutations=payload.get("mutations") or [],
             dependencies=payload.get("dependencies"),
         )
         proposal_mod.validate_proposal(proposal, graph, handlers, request.identity())

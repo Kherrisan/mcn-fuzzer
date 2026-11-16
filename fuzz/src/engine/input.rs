@@ -32,6 +32,9 @@ pub enum ParamValue {
     List(Vec<ParamValue>),
     /// Raw bytes.
     Bytes(Vec<u8>),
+    /// Object with named members. Keys are structure, not data, so mutation
+    /// rewrites member values without adding or removing keys.
+    Map(BTreeMap<String, ParamValue>),
 }
 
 /// Semantic kind of a mutable field.
@@ -44,6 +47,8 @@ pub enum FieldKind {
     Integer,
     Boolean,
     List,
+    /// Object whose member names are structure and whose values are mutable.
+    Map,
 }
 
 /// Wire encoding for `FieldKind::Bytes` values.
@@ -53,23 +58,6 @@ pub enum BytesEncoding {
     #[default]
     Hex,
     Base64,
-}
-
-/// Kind and encoding for one mutable field, carried beside its value.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FieldSpec {
-    #[serde(default)]
-    pub kind: FieldKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encoding: Option<BytesEncoding>,
-}
-
-impl FieldSpec {
-    /// Encoding used for byte values, defaulting to hex.
-    pub fn bytes_encoding(&self) -> BytesEncoding {
-        self.encoding.unwrap_or_default()
-    }
 }
 
 /// Mutable field values for one step instance: field name to value.
@@ -229,11 +217,9 @@ pub struct GeneratorInput {
     #[serde(flatten)]
     pub trace: TraceInstance,
     /// Mutable values keyed by step instance name, passed read-only to handlers.
+    /// Each value alone decides how mutation treats it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: InstanceParams,
-    /// Kind metadata for mutable values, keyed like `params`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub param_kinds: BTreeMap<String, BTreeMap<String, FieldSpec>>,
     /// Runtime capture export. Skipped by JSON, hashing, equality, and mutation.
     #[serde(skip)]
     pending: Option<PendingCapture>,
@@ -247,8 +233,6 @@ struct GeneratorFile {
     trace: TraceInstance,
     #[serde(default)]
     params: InstanceParams,
-    #[serde(default)]
-    param_kinds: BTreeMap<String, BTreeMap<String, FieldSpec>>,
 }
 
 impl GeneratorInput {
@@ -258,7 +242,6 @@ impl GeneratorInput {
             generator,
             trace: TraceInstance::default(),
             params,
-            param_kinds: BTreeMap::new(),
             pending: None,
         }
     }
@@ -276,7 +259,6 @@ impl GeneratorInput {
                 ..TraceInstance::default()
             },
             params,
-            param_kinds: BTreeMap::new(),
             pending: None,
         }
     }
@@ -309,16 +291,6 @@ impl GeneratorInput {
                     return Err(format!(
                         "step {instance} has field {field} both explicit and omitted"
                     ));
-                }
-            }
-        }
-        for (instance, fields) in &self.param_kinds {
-            let Some(values) = self.params.get(instance) else {
-                return Err(format!("param kind instance {instance} has no params"));
-            };
-            for field in fields.keys() {
-                if !values.contains_key(field) {
-                    return Err(format!("param kind {instance}.{field} has no params value"));
                 }
             }
         }
@@ -441,7 +413,6 @@ impl PartialEq for GeneratorInput {
         self.generator == other.generator
             && self.trace == other.trace
             && self.params == other.params
-            && self.param_kinds == other.param_kinds
     }
 }
 
@@ -452,7 +423,6 @@ impl Hash for GeneratorInput {
         self.generator.hash(state);
         self.trace.hash(state);
         self.params.hash(state);
-        self.param_kinds.hash(state);
     }
 }
 
@@ -510,7 +480,6 @@ impl Input for GeneratorInput {
             generator,
             trace: parsed.trace,
             params: parsed.params,
-            param_kinds: parsed.param_kinds,
             pending: None,
         })
     }
@@ -632,16 +601,6 @@ mod tests {
                 BTreeMap::from([("username".into(), ParamValue::Str("ubuntu".into()))]),
             )]),
         );
-        input.param_kinds.insert(
-            "hello_1".into(),
-            BTreeMap::from([(
-                "username".into(),
-                FieldSpec {
-                    kind: FieldKind::String,
-                    encoding: None,
-                },
-            )]),
-        );
 
         input.validate().unwrap();
         let path = dir.join("input.json");
@@ -664,6 +623,71 @@ mod tests {
     }
 
     #[test]
+    fn seeds_load_without_param_kinds() {
+        fn collect(dir: &std::path::Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
+            if depth == 0 {
+                return;
+            }
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    if path.extension().is_some_and(|ext| ext == "json")
+                        && dir.file_name().is_some_and(|name| name == "seeds")
+                    {
+                        out.push(path);
+                    }
+                    continue;
+                }
+                collect(&path, depth - 1, out);
+            }
+        }
+        let mut seeds = Vec::new();
+        for root in [
+            "/home/user/profuzzgym/profuzzbench/subjects",
+            "/home/user/mcn-fuzzer/fuzz/targets",
+        ] {
+            collect(std::path::Path::new(root), 6, &mut seeds);
+        }
+        assert!(seeds.len() >= 20, "found {} seeds", seeds.len());
+        for path in seeds {
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(!text.contains("param_kinds"), "{}", path.display());
+            GeneratorInput::from_file(&path)
+                .unwrap_or_else(|error| panic!("{}: {error:?}", path.display()))
+                .validate()
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        }
+    }
+
+    #[test]
+    fn saved_inputs_carry_no_kind_metadata() {
+        let dir = std::env::temp_dir().join(format!("mcn-nokinds-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let seed = dir.join("seed.json");
+        std::fs::write(
+            &seed,
+            r#"{"generator":"gen.py","step_trace":[{"name":"session","step":"session",
+                "action":"send","channel":"control"}],
+                "params":{"session":{"payload":[1,2],"mode":"list","pause_ms":0}}}"#
+                .replace('\n', ""),
+        )
+        .unwrap();
+        std::fs::write(dir.join("gen.py"), "def generate(ctx, params):\n    pass\n").unwrap();
+        let input = GeneratorInput::from_file(&seed).unwrap();
+        input.validate().unwrap();
+        let out = dir.join("saved.json");
+        input.to_file(&out).unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert!(!text.contains("param_kinds"), "{text}");
+        assert!(text.contains("\"payload\""), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn field_kinds_and_encodings_roundtrip() {
         assert_eq!(
             serde_json::from_str::<FieldKind>("\"bytes\"").unwrap(),
@@ -673,10 +697,15 @@ mod tests {
             serde_json::from_str::<BytesEncoding>("\"base64\"").unwrap(),
             BytesEncoding::Base64
         );
-        let spec: FieldSpec = serde_json::from_str(r#"{"kind":"bytes","encoding":"hex"}"#).unwrap();
-        assert_eq!(spec.kind, FieldKind::Bytes);
-        assert_eq!(spec.bytes_encoding(), BytesEncoding::Hex);
         assert_eq!(serde_json::to_string(&FieldKind::List).unwrap(), "\"list\"");
+        assert_eq!(
+            serde_json::from_str::<FieldKind>("\"map\"").unwrap(),
+            FieldKind::Map
+        );
+        let map = ParamValue::Map(BTreeMap::from([("group".to_string(), ParamValue::Int(29))]));
+        let encoded = serde_json::to_string(&map).unwrap();
+        assert_eq!(encoded, r#"{"group":29}"#);
+        assert_eq!(serde_json::from_str::<ParamValue>(&encoded).unwrap(), map);
     }
 
     #[test]

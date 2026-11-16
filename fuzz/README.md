@@ -49,9 +49,12 @@ same-minute collision gets a `-2`, `-3`, ... suffix. Relative `[campaign]
 corpus`, `[campaign] crashes`, `[coverage] output`, and
 `[generator_synthesis] output` paths are resolved below that root; absolute
 paths are left unchanged. Inputs such as seeds, binaries, models, and documents
-stay relative to the campaign file. `coverage -o PARENT` follows the same
-timestamped-root rule and writes snapshots/analysis directly below the new
-coverage campaign root. It never adds a build-hash directory.
+stay relative to the campaign file.
+
+`coverage -o DIR` writes `cov_over_time.csv` and its snapshots directly into
+`DIR`, which must be empty; it never appends a timestamped child. `run` keeps
+the timestamped root because several campaigns can share one parent. Neither
+command adds a build-hash directory.
 
 When LLVM source coverage is enabled in `[coverage]`, the fuzzer stores only the merged profile: each snapshot keeps `coverage.profdata.zlib`, metadata, and the SUT logs, never a full JSON export. The analysis MCP service decompresses that profile, runs `llvm-cov export` itself when `load_coverage_json` needs the detailed counters, and removes its temporary JSON and profile once the model is built. Rust still runs a summary-only export to record line/branch totals in `metadata.json` for reporting. A snapshot directory contains only `coverage.profdata.zlib`, `metadata.json`, and the SUT logs: there is no `checkpoint/`, no `progress.json`, and no raw `.profraw`. `metadata.json` carries the snapshot number, cumulative replay count, summary, per-batch delta, case ids, and timings; it no longer stores fingerprints or binary hashes. A restarted campaign discovers progress from the existing snapshot metadata and merges the new raw profiles with `current.profdata`. The `--source-coverage-json` flag is gone. `[source_coverage]` is a configuration error; move that table to `[coverage]`. `analysis_enabled` is separate and requires collection. The private HC executable is `[agents].hc_executable` (default `hc`), not `generator_synthesis.hc_executable`. Analysis output lives under `coverage.output/analysis/`; the coverage root is no longer split by a build fingerprint. `targets/lightftp/build-graphs.sh` emits bitcode, `callgraph.dot`, CFG dots, and `source-map.json`; `targets/lightftp/build-coverage.sh` emits only the coverage binary.
 
@@ -204,10 +207,13 @@ return `incompatible_data`. Coverage counts come from the frozen
 
 After a coverage snapshot is frozen, the coverage agent loads that request's
 inputs, explores the handler and reachable-function summaries, and writes a
-proposal in a graph transaction. `submit_proposal` validates step names, handler
-associations, named instances, and dependencies, then freezes `proposal.json`.
-Rust rechecks the proposal and party binding, commits the transaction through
-the service, and places the proposal in a one-slot mailbox. `regions.json`, `priority-delta.json`,
+proposal in a graph transaction. `submit_proposal` is the single validator: it
+checks step names, handler associations, party/channel binding, dependency
+order, mutation kinds with their defaults, and that every mutation lands on a
+generator-filled step. It also derives each instance's `mutable_fields` and
+rejects a proposal that cannot project onto a generator action. Only then does
+it freeze `proposal.json`. Rust trusts that verdict: it commits the transaction
+through the service and places the proposal in a one-slot mailbox. `regions.json`, `priority-delta.json`,
 `protocol-refined.json`, the Rust exploration graph, and trace selection are no
 longer produced or maintained by Rust.
 
@@ -219,7 +225,7 @@ the same mutation stage first runs its original initial parameters once through
 normal feedback, then applies the existing `GeneratorMutator` and ordinary
 mutation iterations/evaluation/feedback. A candidate receives
 `clamp(64 * mutable_fields_total, 512, 2048)` evaluations, where the field total
-sums `param_kinds`; ordinary corpus rounds keep the `1 + rand(0..127)` schedule.
+sums the per-instance `params` field counts; ordinary corpus rounds keep the `1 + rand(0..127)` schedule.
 Skipped or unchanged mutations do not consume the candidate budget. The baseline
 enters the corpus only
 when feedback keeps it. Only mutated inputs that pass normal feedback enter the corpus,
@@ -244,7 +250,7 @@ synthesis request id and corpus count. Row order is the event order, so case
 events and scheduler choices share one timeline.
 
 The synthesis stage copies the accepted proposal into the request directory
-after stripping `mutations`, adding `mutable_fields`, and projecting the trace
+with the validated `mutable_fields` and a trace projected
 onto generator-owned actions: generator sends keep `receiver` and drop
 `sender`, SUT sends become `recv` with `sender` and no `receiver`, SUT
 listen/connect/close steps are omitted, and generator network actions remain.
@@ -255,8 +261,8 @@ seedless bootstrap) asks the agent to write `proposal.draft.json`, run
 then generate. Both modes publish `generator.py`, `params.schema.json`, `params.json`, and
 `result.json`; Rust validates the proposal, code, and initial mutable-field
 defaults in-process before publishing the generator. The proposal copy handed to
-synthesis has `mutations` stripped, `mutable_fields` added, and its trace
-projected to the generator perspective; dependencies stay in the proposal and
+synthesis carries the validated `mutable_fields` and
+its trace projected to the generator perspective; dependencies stay in the proposal and
 are filtered if a dropped SUT setup step was an endpoint. Failed or expired
 proposals are aborted and leave existing corpus entries untouched.
 
@@ -274,9 +280,9 @@ parsing.
 
 Both prompts also inject the absolute path to [the protocol module skill](skills/protocol-modules/SKILL.md) and require the agent to read it before selecting libraries. It covers all 13 ProfuzzGym targets (four FTP variants), with message/packet codecs, upstream/server SDKs, crypto helpers, import names, installed versions and limitations. Keep the skill and its references accessible at runtime. Evaluation fingerprints the skill directory along with the prompt templates, so changing its contents requires preparing a new evaluation task.
 
-Proposals contain the ordered trace with per-step reasons, constraints, and the model step's `processing` hooks, plus the selected definitions, handler references, and dependencies. Rust instantiates the proposal as a `TraceInstance` containing concrete steps and dependencies. Proposal mutations are field-only (`op: "field"`); each may declare a `kind`
-(`string`, `bytes`, `integer`, `boolean`, `list`) and, for `bytes`, an
-`encoding` (`hex` or `base64`). Execution input carries the generator path,
+Proposals contain the ordered trace with per-step reasons, constraints, and the model step's `processing` hooks, plus the selected definitions, handler references, and dependencies. Rust instantiates the proposal as a `TraceInstance` containing concrete steps and dependencies. Each trace instance declares its own `mutable_fields`; a field may declare a
+`kind` (`string`, `bytes`, `integer`, `boolean`, `list`, `map`) and, for `bytes`,
+an `encoding` (`hex` or `base64`). Execution input carries the generator path,
 `step_trace`, dependencies, and per-instance `params` keyed by step instance
 name; no execution-format version or proposal request ID is embedded. Each step instance carries explicit `omitted_fields`, dependency `inputs`, and broken-dependency metadata. Mutable values for an instance live only in `params[instance_name]`. At import the runtime builds a mapping from `@step_handler("model step name")` declarations; during execution it calls an optional `@global_init` once, then dispatches each instance in order to its handler with `(ctx, params)`. Params and `ctx.step_instance` are read-only; `ctx.step_name` is the current instance name. The handler resolves its instance's params entry, omissions and dependency inputs, performs the step action, and uses `ctx.save_state(field, value)` and `ctx.load_state(field)` for the current instance, and `ctx.load_depending_state(field)` for bound prior values; `ctx.states` lives until the generator exits. They do not embed the full model. The skill requires the agent to run [the fixed artifact validator](skills/protocol-modules/scripts/validate_generator.py) on `result.draft.json` before atomically publishing `result.json`. The agent additionally runs its bounded import probe. Fuzzer acceptance rechecks the completion IDs, parameter schema and values, and Python syntax and entrypoint in Rust using the RustPython compiler; it does not launch Python or run the generator or SUT.
 
@@ -303,7 +309,7 @@ behavior comes from the proposal and RFCs; public generator API/SDK references
 and static artifact validation remain available. Runtime replies, failures and
 coverage are evaluated by the fuzzer after publication.
 
-`WORKSPACE` is the agent's fixed working directory (`generator_synthesis.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its proposal (mutations stripped, mutable fields added), `generator.py`, initial field-default schema, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root. Synthesis-generated generic helpers may live in `WORKSPACE/lib` and remain campaign-scoped runtime imports for accepted generators; the generator server adds that directory to `sys.path` when loading a generator. Task-specific handlers and protocol state stay in `generator.py`.
+`WORKSPACE` is the agent's fixed working directory (`generator_synthesis.output`). Each generation request receives a separate `OUTPUT_DIR` at `WORKSPACE/requests/<request-id>/` for its proposal (validated mutable fields, projected trace), `generator.py`, initial field-default schema, and completion JSON. Accepted generators are copied to that directory's `published/`. Initialization writes `ready.json` to `WORKSPACE/init/`. Request artifacts are never written directly to the workspace root. Synthesis-generated generic helpers may live in `WORKSPACE/lib` and remain campaign-scoped runtime imports for accepted generators; the generator server adds that directory to `sys.path` when loading a generator. Task-specific handlers and protocol state stay in `generator.py`.
 
 When synthesis is enabled, `[parties]` and `generator_synthesis.model` are required. A campaign that includes `[parties]` resolves those selectors against the model before cases start, even when synthesis is disabled. A missing model is an error. `sut` and `generator` are each a non-empty list of protocol party names or `"*"`. `"*"` means every model party not named by the other side. Parties in neither set stay unavailable. The removed `generator_synthesis.bindings` table is a configuration error. The LightFTP campaign assigns the server parties to the SUT and the remaining parties to the generator.
 

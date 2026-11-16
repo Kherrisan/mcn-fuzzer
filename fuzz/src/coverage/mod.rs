@@ -1,15 +1,15 @@
 //! Optional LLVM source-coverage replay.
 //!
 //! The stage replays saved generator inputs through a forkserver-only coverage
-//! binary. It does not update the PCGUARD bitmap, corpus, objectives, or the
-//! main execution counter. Raw profiles stay mapped for the whole batch and
+//! binary. It does not update the PCGUARD bitmap, corpus, objectives, the
+//! main execution counter, or campaign introspection statistics. Raw profiles stay mapped for the whole batch and
 //! are replaced only after that batch's forkserver has exited.
 
 pub mod capture;
 pub mod command;
 pub mod events;
+pub mod introspection;
 pub mod mcp;
-pub mod mutations;
 pub mod proposal;
 pub mod schedule;
 mod sut_output;
@@ -27,16 +27,16 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use flate2::{Compression, write::ZlibEncoder};
+use flate2::{write::ZlibEncoder, Compression};
 #[cfg(test)]
 use std::path::PathBuf;
 
 use libafl::{
-    Error, HasMetadata,
     corpus::Corpus,
     executors::ExitKind,
     stages::{Restartable, Stage},
     state::{HasCorpus, HasExecutions, HasSolutions},
+    Error, HasMetadata,
 };
 use libafl_bolts::impl_serdeany;
 use serde::{Deserialize, Serialize};
@@ -52,8 +52,8 @@ use crate::{
     runtime::backend::{ForkserverBackend, TargetBackend},
     runtime::generator::{GeneratorClient, GeneratorUpdate},
     runtime::lifecycle::{
-        FailureKind, PidCheck, PidObservation, StartupEnd, SutKillReason, TimeoutStreaks,
-        assess_pid, classify_startup, classify_sut, job_policy,
+        assess_pid, classify_startup, classify_sut, job_policy, FailureKind, PidCheck,
+        PidObservation, StartupEnd, SutKillReason, TimeoutStreaks,
     },
     runtime::report::TargetStop,
 };
@@ -1579,7 +1579,10 @@ fn publish_snapshot(
         fs::remove_dir_all(&incoming)?;
     }
     fs::create_dir_all(&incoming).map_err(|error| {
-        Error::unknown(format!("creating snapshot dir {}: {error}", incoming.display()))
+        Error::unknown(format!(
+            "creating snapshot dir {}: {error}",
+            incoming.display()
+        ))
     })?;
     let profdata_bytes = fs::read(profdata).map_err(|error| {
         Error::unknown(format!("reading profdata {}: {error}", profdata.display()))
@@ -1594,9 +1597,8 @@ fn publish_snapshot(
         .map_err(|error| Error::unknown(format!("zlib coverage profile: {error}")))?;
     timings.compress = compress_at.elapsed();
     let persist_at = Instant::now();
-    fs::write(incoming.join("coverage.profdata.zlib"), &compressed).map_err(|error| {
-        Error::unknown(format!("writing compressed profdata: {error}"))
-    })?;
+    fs::write(incoming.join("coverage.profdata.zlib"), &compressed)
+        .map_err(|error| Error::unknown(format!("writing compressed profdata: {error}")))?;
     let sut_copy = sut_log.copy_to(&incoming)?;
     timings.persist = persist_at.elapsed();
     let metadata = serde_json::json!({
@@ -1762,10 +1764,9 @@ mod tests {
     #[test]
     fn coverage_shm_env_does_not_reuse_the_main_map() {
         let env = coverage_child_env("main-id", "cov-id", "/tmp/raw/%m%c.profraw").unwrap();
-        assert!(
-            env.iter()
-                .any(|(key, value)| key == "__AFL_SHM_ID" && value == "cov-id")
-        );
+        assert!(env
+            .iter()
+            .any(|(key, value)| key == "__AFL_SHM_ID" && value == "cov-id"));
         assert!(coverage_child_env("same", "same", "x").is_err());
     }
 
@@ -1999,36 +2000,32 @@ mod tests {
             &dir.join("should-not-matter")
         )
         .is_err());
-        assert!(
-            export_cov(
-                "llvm-cov-18",
-                Path::new("/tmp/mcn-no-such-coverage-binary"),
-                &dir.join("coverage.profdata.tmp"),
-                false,
-            )
-            .is_err()
-        );
+        assert!(export_cov(
+            "llvm-cov-18",
+            Path::new("/tmp/mcn-no-such-coverage-binary"),
+            &dir.join("coverage.profdata.tmp"),
+            false,
+        )
+        .is_err());
         let blocked = dir.join("blocked-root");
         fs::write(&blocked, b"not-a-directory").unwrap();
-        assert!(
-            publish_snapshot(
-                &blocked,
-                2,
-                &dir.join("coverage.profdata.tmp"),
-                &CoverageSummary::default(),
-                &CoverageSummary::default(),
-                &decision,
-                &[],
-                &["disk write failed".to_string()],
-                Path::new("/tmp/missing-binary"),
-                "llvm-profdata-18",
-                "llvm-cov-18",
-                2,
-                &mut BatchTimings::default(),
-                &test_sut_log(&dir),
-            )
-            .is_err()
-        );
+        assert!(publish_snapshot(
+            &blocked,
+            2,
+            &dir.join("coverage.profdata.tmp"),
+            &CoverageSummary::default(),
+            &CoverageSummary::default(),
+            &decision,
+            &[],
+            &["disk write failed".to_string()],
+            Path::new("/tmp/missing-binary"),
+            "llvm-profdata-18",
+            "llvm-cov-18",
+            2,
+            &mut BatchTimings::default(),
+            &test_sut_log(&dir),
+        )
+        .is_err());
         let after = discover_progress(&dir);
         assert_eq!(after.snapshot, 1);
         assert_eq!(
@@ -2481,11 +2478,9 @@ fn replay_captures_split_output_across_batches_and_freezes_snapshots() {
     assert_eq!(marker_positions(&live_stdout, "case_end").len(), 4);
     assert_eq!(marker_positions(&live_stdout, "batch_start").len(), 2);
     assert_eq!(marker_positions(&live_stdout, "batch_end").len(), 2);
-    assert!(
-        frozen_stdout
-            .windows(9)
-            .any(|window| window == b"batch_end")
-    );
+    assert!(frozen_stdout
+        .windows(9)
+        .any(|window| window == b"batch_end"));
     let text = String::from_utf8_lossy(&live_stdout);
     for case_id in ["corpus:a", "corpus:z", "corpus:c"] {
         let start = text.find(&format!("\"case_id\":\"{case_id}\"")).unwrap();

@@ -9,9 +9,8 @@ use std::{
     io::{self, Write},
     os::fd::{AsRawFd, FromRawFd, OwnedFd},
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc,
+        mpsc, Arc, Mutex,
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -19,19 +18,19 @@ use std::{
 
 use pcap::{Capture, Direction, Packet};
 use pcap_file::{
-    DataLink, Endianness, TsResolution,
     pcap::{PcapHeader, PcapPacket, PcapWriter},
+    DataLink, Endianness, TsResolution,
 };
 
-use flate2::{Compression, write::ZlibEncoder};
+use flate2::{write::ZlibEncoder, Compression};
 use libafl::{
-    Error, HasMetadata,
     corpus::Testcase,
     executors::ExitKind,
     feedbacks::{Feedback, StateInitializer},
     observers::Observer,
+    Error, HasMetadata,
 };
-use libafl_bolts::{Named, impl_serdeany};
+use libafl_bolts::{impl_serdeany, Named};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -1502,11 +1501,9 @@ mod tests {
         frame.extend_from_slice(b"pad");
         frame.extend_from_slice(PREFLIGHT_BACK);
         assert!(both_preflight_directions(&frame));
-        assert!(
-            PREFLIGHT_FORWARD
-                .windows(18)
-                .all(|window| window != PREFLIGHT_FORWARD)
-        );
+        assert!(PREFLIGHT_FORWARD
+            .windows(18)
+            .all(|window| window != PREFLIGHT_FORWARD));
         assert!(!contains_marker(
             &frame[..PREFLIGHT_FORWARD.len() - 1],
             PREFLIGHT_FORWARD

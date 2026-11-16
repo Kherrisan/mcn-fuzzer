@@ -11,6 +11,7 @@ use std::{borrow::Cow, path::PathBuf};
 use libafl::{
     corpus::{Corpus, CorpusId, HasCurrentCorpusId},
     executors::Executor,
+    feedbacks::MapNoveltiesMetadata,
     fuzzer::Evaluator,
     mutators::{MutationResult, Mutator},
     stages::{Restartable, Stage},
@@ -20,13 +21,16 @@ use libafl::{
 use libafl_bolts::{rands::Rand, Named};
 use serde_json::{json, Value};
 
-use crate::engine::{
-    input::GeneratorInput,
-    mutator::GeneratorMutator,
-    stagnation::BitmapProgress,
-    synthesis::{SynthesisCandidate, SynthesisCandidates, TraceOrigin},
-};
 use crate::runtime::report::append_event;
+use crate::{
+    coverage::introspection::{self, IntrospectionHandle},
+    engine::{
+        input::GeneratorInput,
+        mutator::GeneratorMutator,
+        stagnation::BitmapProgress,
+        synthesis::{SynthesisCandidate, SynthesisCandidates, TraceOrigin},
+    },
+};
 
 /// Mutation iterations for ordinary corpus input.
 const MAX_MUTATIONS: usize = 128;
@@ -45,7 +49,7 @@ const CANDIDATE_MAX_MUTATIONS: usize = 2048;
 /// ordinary corpus schedule.
 fn candidate_budget(input: &GeneratorInput) -> usize {
     let fields = input
-        .param_kinds
+        .params
         .values()
         .map(std::collections::BTreeMap::len)
         .sum::<usize>();
@@ -58,6 +62,7 @@ pub struct GeneratorMutationStage {
     mutator: GeneratorMutator,
     queue_path: Option<PathBuf>,
     event_path: Option<PathBuf>,
+    introspection: Option<IntrospectionHandle>,
     name: Cow<'static, str>,
 }
 
@@ -67,8 +72,13 @@ impl GeneratorMutationStage {
             mutator: GeneratorMutator::new(),
             queue_path: None,
             event_path: None,
+            introspection: None,
             name: Cow::Borrowed("generator-mutation"),
         }
+    }
+
+    pub(crate) fn set_introspection(&mut self, handle: IntrospectionHandle) {
+        self.introspection = Some(handle);
     }
 
     pub fn with_queue(path: PathBuf) -> Self {
@@ -190,6 +200,12 @@ impl GeneratorMutationStage {
             if let Err(error) = attach_origin(state.corpus_mut(), id, &candidate.origin) {
                 log::warn!("could not attach TraceOrigin to baseline corpus {id:?}: {error:?}");
             }
+            self.note_kept(
+                state,
+                Some(&candidate.origin),
+                &candidate.input.generator,
+                id,
+            );
         }
         let budget = candidate_budget(&candidate.input);
         log::info!(
@@ -237,19 +253,91 @@ impl GeneratorMutationStage {
                 // An empty/boundary parameter can report `Mutated` without a
                 // real change. Never evaluate the untouched baseline as if it
                 // were a mutation.
+                self.note_mutation(origin, &input.generator, false);
                 continue;
             }
+            self.note_mutation(origin, &mutated.generator, true);
             evaluations += 1;
             let (_, corpus_id) = fuzzer.evaluate_filtered(state, executor, manager, &mutated)?;
             self.mutator.post_exec(state, corpus_id)?;
-            if let (Some(id), Some(origin)) = (corpus_id, origin) {
-                if let Err(error) = attach_origin(state.corpus_mut(), id, origin) {
-                    log::warn!("could not attach TraceOrigin to corpus {id:?}: {error:?}");
+            // Solutions and filtered inputs return no corpus id. Only a new
+            // corpus entry contributes. Replay never reaches this stage.
+            if let Some(id) = corpus_id {
+                if let Some(origin) = origin {
+                    if let Err(error) = attach_origin(state.corpus_mut(), id, origin) {
+                        log::warn!("could not attach TraceOrigin to corpus {id:?}: {error:?}");
+                    }
                 }
+                self.note_kept(state, origin, &mutated.generator, id);
             }
         }
         Ok(())
     }
+
+    fn note_mutation(
+        &self,
+        origin: Option<&TraceOrigin>,
+        generator: &std::path::Path,
+        changed: bool,
+    ) {
+        let Some(handle) = &self.introspection else {
+            return;
+        };
+        if let Err(error) = introspection::note_mutation(
+            handle,
+            origin.map(|item| item.request_id.as_str()),
+            generator,
+            changed,
+        ) {
+            log::error!("introspection mutation attribution: {error}");
+        }
+    }
+
+    fn note_kept<S: HasCorpus<GeneratorInput>>(
+        &self,
+        state: &S,
+        origin: Option<&TraceOrigin>,
+        generator: &std::path::Path,
+        id: CorpusId,
+    ) {
+        let Some(handle) = &self.introspection else {
+            return;
+        };
+        let novelties = match novelty_indexes(state.corpus(), id) {
+            Ok(Some(list)) => Some(list),
+            Ok(None) => {
+                log::warn!(
+                    "corpus {id:?} has no MapNoveltiesMetadata; keeping the corpus count without novelty indexes"
+                );
+                None
+            }
+            Err(error) => {
+                log::warn!("could not read corpus {id:?} for introspection: {error:?}");
+                None
+            }
+        };
+        if let Err(error) = introspection::note_evaluated_corpus(
+            handle,
+            origin.map(|item| item.request_id.as_str()),
+            generator,
+            Some(id.0 as u64),
+            novelties.as_deref(),
+        ) {
+            log::error!("introspection corpus attribution: {error}");
+        }
+    }
+}
+
+fn novelty_indexes<C: Corpus<GeneratorInput>>(
+    corpus: &C,
+    id: CorpusId,
+) -> Result<Option<Vec<usize>>, Error> {
+    let testcase = corpus.get(id)?;
+    let borrowed = testcase.borrow();
+    Ok(borrowed
+        .metadata::<MapNoveltiesMetadata>()
+        .ok()
+        .map(|meta| meta.list.clone()))
 }
 
 impl Default for GeneratorMutationStage {
@@ -357,16 +445,18 @@ mod tests {
     use std::{collections::BTreeMap, fs, path::PathBuf};
 
     fn input_with_fields(fields: usize) -> GeneratorInput {
-        let mut input = GeneratorInput::new(PathBuf::from("/tmp/generator.py"), BTreeMap::new());
-        let mut specs = BTreeMap::new();
+        let mut values = BTreeMap::new();
         for index in 0..fields {
-            specs.insert(
+            values.insert(
                 format!("field_{index}"),
-                crate::engine::input::FieldSpec::default(),
+                crate::engine::input::ParamValue::Int(index as i64),
             );
         }
-        input.param_kinds.insert("instance".into(), specs);
-        input
+        let mut params = BTreeMap::new();
+        if !values.is_empty() {
+            params.insert("instance".to_string(), values);
+        }
+        GeneratorInput::new(PathBuf::from("/tmp/generator.py"), params)
     }
 
     #[test]
@@ -436,5 +526,19 @@ mod tests {
         assert_eq!(lines[1]["kind"], "candidate_selected");
         assert_eq!(lines[1]["body"]["request"], "000001");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn map_novelties_metadata_preserves_first_hit_and_bucket_indexes() {
+        use libafl::{corpus::InMemoryCorpus, feedbacks::MapNoveltiesMetadata};
+        let mut corpus = InMemoryCorpus::new();
+        let input = GeneratorInput::new(PathBuf::from("/tmp/generator.py"), BTreeMap::new());
+        let mut testcase = Testcase::new(input);
+        testcase.add_metadata(MapNoveltiesMetadata::new(vec![1, 8, 8, 0]));
+        let id = corpus.add(testcase).unwrap();
+        assert_eq!(
+            novelty_indexes(&corpus, id).unwrap(),
+            Some(vec![1, 8, 8, 0])
+        );
     }
 }

@@ -55,10 +55,50 @@ built. Prioritize enabled features: inspect their handlers, branches, and
 dependencies thoroughly, and make them the primary targets of proposals and
 trace selection.
 
+## Registered proposals
+
+The campaign-introspection MCP service is read-only. Start this request by
+calling `list_proposals`. Then call `get_proposal` for the rows you need.
+Read `generator.py` and the params file only when `get_proposal` returns those
+paths, and use the file tools on bounded ranges. Use `SUT_STDOUT_LOG` and
+`SUT_STDERR_LOG` the same way. Do not scan the analysis directory for historical
+`proposal.json` or `result.json` files, and do not modify an older proposal,
+generator, or params file.
+
+Introspection counts are live and can lag this frozen snapshot. Decide coverage
+from the loaded snapshot and the replay logs. Use introspection for proposal
+status and how the generator behaved.
+
+`feedback_novelty_indices` lists bitmap indexes whose hit-count bucket changed,
+including the first hit. That is not a set of newly covered source lines.
+`resolve_bitmap_indices` locates a feedback change. `column` is always null.
+Use `show_source_coverage` when you need source-line counts.
+
+A proposal with no corpus contribution is not automatically an error. Distinguish:
+
+- not yet run: status is `proposing`, `queued`, or `synthesizing`, or `executions.started` is 0
+- insufficient budget: the generator ran, but few changed candidates were evaluated
+- exploration saturation: executions completed, novelty stopped growing, and neither the generator status nor the replay log shows a concrete fault
+- concrete implementation error: `last_error`, `generator_statuses`, `generator_exits`, or the replay log shows a crash, exception, rejected message, or other specific fault
+
+Do not submit another proposal for the same exploration while an existing
+proposal is `queued` or `synthesizing`.
+
+Correct a generator only by submitting a new proposal. In `goal.reason`, cite
+the old proposal id, the evidence, and the concrete correction. Reuse an
+earlier trace only when the evidence is a concrete implementation error. If
+the earlier exploration is saturated or still running, pick a different goal
+or return `status: no_proposal` and cite the proposal id.
+
+Treat two proposals as the same exploration when the goal handler set, the
+ordered model-step sequence, and the concrete mutable fields match.
+Renaming instances, changing comments, or reordering equivalent steps does not
+make a proposal different.
+
 ## Load the request
 
-A coverage-analysis MCP service is running. Start with `get_loaded_state`, then
-load exactly this request's inputs:
+A coverage-analysis MCP service is also running. After `list_proposals`, call
+`get_loaded_state`, then load exactly this request's inputs:
 
 1. `load_protocol` with `{"protocol_path": "MODEL"}`.
 2. `load_handlers` with `{"handlers_path": "HANDLERS"}`.
@@ -71,41 +111,6 @@ If a tool returns `not_loaded`, load the missing dataset and retry. If it return
 `incompatible_data`, stop and write an error result; do not mix builds.
 Pass `request_id` to every query tool after `load_coverage_json` so the request keeps
 reading the snapshot it registered, even if another load happens later.
-
-## Previously submitted proposals
-
-Earlier requests in this analysis directory each contain a frozen
-`proposal.json` and a completion `result.json`. Before choosing a goal, inspect
-them with the file tools; do not open the full coverage JSON or CFG files.
-
-```text
-rg --files {{ output_dir }}/..
-cat {{ output_dir }}/../*/proposal.json
-cat {{ output_dir }}/../*/result.json
-```
-
-For every earlier request, extract the goal handler ids, the ordered model-step
-sequence, the concrete `fields`, and the `mutations`. Treat a proposal as a
-duplicate when the goal handler set, the ordered model-step sequence, and those
-concrete values or mutations match. Renaming instances, changing comments, or
-reordering equivalent steps does not make it different.
-
-Do not submit a duplicate or substantially similar proposal. If an earlier
-proposal was submitted (`result.json` status `ok`) but the current snapshot
-shows its target handler still at the same missed branches or reached
-functions, you may reuse that trace only when you change a concrete detail that
-can alter the executed path, for example:
-
-- a field value, length, encoding, or boundary that was previously null,
-  omitted, or left at the model default;
-- the order of a prerequisite step, or an added or removed condition;
-- a dependency or state key that changes a derived field;
-- an additional instance of a prerequisite step, or a different reply or data-path step.
-
-In `goal.reason`, name the earlier request id and state the exact changed
-detail and why it should reach different coverage. Do not merely rename
-instances or rewrite the rationale. If no concrete change is defensible, return
-`status: no_proposal` citing the earlier request id instead of resubmitting.
 
 ## Explore
 
@@ -142,8 +147,9 @@ the proposal):
 ## Propose
 
 Before `submit_proposal`, compare the goal, trace, and concrete fields with the
-earlier proposals as described above. If you reuse an earlier trace,
-`goal.reason` must name that request id and the changed detail.
+registered proposals. If you reuse an earlier trace because of a concrete
+implementation error, `goal.reason` must name that proposal id, the evidence,
+and the correction.
 
 The proposal trace is in model perspective. Use each model step's
 `send`/`listen`/`connect`/`close` action and its `sender`/`receiver` fields to
@@ -161,17 +167,22 @@ view (for example `server_sends_hello` or `server_listen`); name it
 generator-view verb.
 
 Call `submit_proposal` with parties, channels, an ordered trace of step
-instances, mutations, and optional `dependencies`. Instance names are semantic and stay stable if you reorder
-the trace. `step` is the model step name. Channel endpoints are party instance
-names. Repeat a model step by adding another instance with its own name. Do not
-put handler ids on a trace item. Dependencies use instance names and may carry
-state keys in `fields`, as an array of non-empty strings. A producer saves each
-key with `ctx.save_state(key, value)`; its dependent reads that same key with
-`ctx.load_depending_state(key)`. For a model field relation with different source
-and destination field names, use the source field name as the state key and let
-the handler populate the destination field using the model relation's `derive`
-when specified. A data dependency needs at least one
-key; do not bind the same key to multiple producers for one dependent instance.
+instances, and optional `dependencies`. Instance names are semantic and stay
+stable if you reorder the trace. `step` is the model step name. Channel
+endpoints are party instance names. Repeat a model step by adding another
+instance with its own name. Do not put handler ids on a trace item. Dependencies
+use instance names and may carry state keys in `fields`, as an array of non-empty
+strings. A producer saves each key with `ctx.save_state(key, value)`; its
+dependent reads that same key with `ctx.load_depending_state(key)`. For a model
+field relation with different source and destination field names, use the source
+field name as the state key and let the handler populate the destination field
+using the model relation's `derive` when specified. A data dependency needs at
+least one key; do not bind the same key to multiple producers for one dependent
+instance.
+
+Declare the mutable fields on each generator-filled send instance itself:
+
+~~~json
 {"origin": "coverage",
  "goal": {"handler_ids": ["handler name from show_handler_code_coverage"],
           "reason": "which handler/internal path to reach and the coverage evidence"},
@@ -180,37 +191,44 @@ key; do not bind the same key to multiple producers for one dependent instance.
  "trace": [{"name": "login_first", "step": "exact step name", "channel": "control_1",
             "sender": "client_1", "receiver": "server_1",
             "reason": "target exploration or prefix/reply role",
-            "constraints": ["field/state conditions"]}],
+            "constraints": ["field/state conditions"],
+            "mutable_fields": [
+              {"field": "username", "kind": "string",
+               "suggestion": "explore empty and length boundaries",
+               "evidence": "src/auth.c:120"},
+              {"field": "body", "kind": "bytes", "encoding": "hex",
+               "suggestion": "mutate the encoded payload nibbles",
+               "evidence": "src/auth.c:140"}]}],
  "dependencies": [
    {"prior": "greet", "dependent": "login_first", "kind": "order", "condition": "",
-    "fields": []}],
- "mutations": [
-   {"op": "field", "steps": ["login_first"], "field": "username",
-    "kind": "string",
-    "suggestion": "explore empty and length boundaries", "evidence": "src/auth.c:120"},
-   {"op": "field", "steps": ["login_first"], "field": "body",
-    "kind": "bytes", "encoding": "hex",
-    "suggestion": "mutate the encoded payload nibbles", "evidence": "src/auth.c:140"}]}
+    "fields": []}]}
+~~~
 
-`steps` is either an array of instance names or `"[start:end]"`, including both
-ends. Whitespace around the colon is allowed. Only `op: "field"` mutations are
-supported. A field mutation applies to the selected send instances and may name
-a field the model does not list; give the field name, a suggestion, and a source
-location. Declare the same field at most once per instance. Instance names must
-not contain `:[]`.
+Rules for `mutable_fields`:
 
-Each field mutation may declare `kind` and, for bytes only, `encoding`:
+- They are allowed only on `send` instances whose model sender is a generator
+  party. Leave `mutable_fields` out, or empty, on SUT-sent steps and on
+  `listen`/`connect`/`close` instances.
+- A field need not appear in the model. Give the field name, a `suggestion`, and
+  a source `evidence` location.
+- Name the same field at most once per instance. Instance names must not
+  contain `:[]`.
+- Each field may declare `kind` and, for bytes only, `encoding`:
 
-- `string` (default): free-form text.
-- `bytes`: an encoded byte string; `encoding` is `hex` (default) or `base64`.
-  Use this for protocol fields that are raw bytes.
-- `integer`: signed 64-bit integer.
-- `boolean`: true/false flag.
-- `list`: array value.
+  - `string` (default): free-form text.
+  - `bytes`: an encoded byte string; `encoding` is `hex` (default) or `base64`.
+    Use this for protocol fields that are raw bytes.
+  - `integer`: signed 64-bit integer.
+  - `boolean`: true/false flag.
+  - `list`: array value; items may be scalars, lists, or objects.
+  - `map`: object value whose member names are protocol structure. Mutation
+    rewrites member values recursively and never adds or removes a member, so
+    declare every member the generator must keep.
+- A `default` may accompany the field. It must match the declared `kind` and be
+  representable as a string, signed 64-bit integer, boolean, list, or object.
 
-A `default` value may accompany the mutation. Rust passes kind and encoding to
-synthesis so the generator validates the value and mutation preserves the
-declared representation.
+The service derives nothing from these fields: it validates each one, copies it
+into the frozen proposal, and hands it to synthesis unchanged.
 
 The service fills action, condition, and message, checks endpoints and campaign
 party binding, and freezes proposal.json for this request. If no defensible

@@ -89,7 +89,9 @@ class ArtifactValidationTests(unittest.TestCase):
     def test_signed_integer_boundaries_and_nested_lists(self):
         self.write_json("params.json", {"x": {"bounds": [-(1 << 63), (1 << 63) - 1, [False, ""]]}})
         self.validate()
-        for value in [-(1 << 63) - 1, 1 << 63, 1.5, None, {"nested": True}, [None]]:
+        self.write_json("params.json", {"x": {"value": {"group": 29, "key": "5e88"}}})
+        self.validate()
+        for value in [-(1 << 63) - 1, 1 << 63, 1.5, None, [None], {"": 1}]:
             with self.subTest(value=value):
                 self.write_json("params.json", {"x": {"value": value}})
                 with self.assertRaises(ValidationError):

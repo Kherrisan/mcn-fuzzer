@@ -1,8 +1,8 @@
-//! Proposal v2: ordered step instances, party/channel instances, and mutations.
+//! Proposal v2: ordered step instances with their mutable fields.
 //!
-//! The Python service fills action, condition, and message from the model and
-//! freezes the file. Rust rechecks names, endpoints, campaign binding, and
-//! mutations. Request identity is the session and request id, not a digest.
+//! The Python service validates the request and freezes the file, including
+//! the projected mutable field declarations. Rust trusts that validation and
+//! only projects the trace onto generator-owned actions.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -15,7 +15,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use super::mutations;
 use crate::{
     engine::input::{BytesEncoding, FieldKind, ParamValue},
     protocol::{Binding, IndexedModel, PartyRole, Processing, StepRecord},
@@ -46,6 +45,12 @@ pub struct MutableField {
     pub encoding: Option<BytesEncoding>,
     #[serde(default)]
     pub default: Option<ParamValue>,
+    /// Why the field is mutable, carried from the analysis proposal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggestion: Option<String>,
+    /// Decisive source location for the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
     #[serde(default)]
     pub source: String,
 }
@@ -91,15 +96,6 @@ pub struct ProposalStep {
     pub mutable_fields: Vec<MutableField>,
 }
 
-impl mutations::Named for ProposalStep {
-    fn instance_name(&self) -> &str {
-        &self.name
-    }
-    fn model_step(&self) -> &str {
-        &self.step
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Proposal {
@@ -111,8 +107,6 @@ pub struct Proposal {
     pub parties: BTreeMap<String, String>,
     pub channels: BTreeMap<String, ProposalChannel>,
     pub trace: Vec<ProposalStep>,
-    #[serde(default)]
-    pub mutations: Vec<Value>,
     #[serde(default)]
     pub dependencies: Vec<ProposalDependency>,
 }
@@ -161,14 +155,6 @@ impl ProposalMailbox {
             .unwrap_or_else(|error| error.into_inner())
             .clone()
     }
-}
-
-/// Identity of the analysis or synthesis request a proposal must belong to.
-#[derive(Clone, Debug)]
-pub struct ProposalIdentity {
-    pub session: String,
-    pub build: String,
-    pub snapshot: String,
 }
 
 /// One party instance, one channel instance, and one step instance per model step.
@@ -258,7 +244,6 @@ pub fn instantiate(model: &IndexedModel, steps: &[StepRecord]) -> Result<Proposa
         parties,
         channels,
         trace,
-        mutations: Vec::new(),
         dependencies,
     })
 }
@@ -271,358 +256,59 @@ impl Proposal {
             .map_err(|error| format!("parsing {}: {error}", path.display()))
     }
 
-    /// Validate names, endpoints, binding, and mutations. Returns the model steps in trace order.
-    pub fn validate(
-        &self,
-        model: &IndexedModel,
-        binding: &Binding,
-        expected: &ProposalIdentity,
-    ) -> Result<Vec<StepRecord>, String> {
-        if self.origin != "coverage" && self.origin != "autonomous" {
-            return Err("proposal origin must be coverage or autonomous".into());
-        }
-        for (name, actual, wanted) in [
-            ("session", &self.session, &expected.session),
-            ("build", &self.build, &expected.build),
-            ("snapshot", &self.snapshot, &expected.snapshot),
-        ] {
-            if self.origin == "autonomous"
-                && (name == "build" || name == "snapshot")
-                && wanted.is_empty()
-            {
-                continue;
-            }
-            if !wanted.is_empty() && actual != wanted {
-                return Err(format!("proposal.{name} does not match the frozen request"));
-            }
-        }
-        if self.origin == "coverage" && self.goal.handler_ids.is_empty() {
-            return Err("coverage proposals need goal.handler_ids".into());
-        }
-        if self.goal.reason.trim().is_empty() {
-            return Err("proposal.goal.reason is required".into());
-        }
-        if self.trace.is_empty() {
-            return Err("proposal trace must not be empty".into());
-        }
-        let names = mutations::instance_names(&self.trace)?;
-        if names.len() != names.iter().collect::<BTreeSet<_>>().len() {
-            return Err("duplicate instance name".into());
-        }
-        for (instance, party) in &self.parties {
-            if party.is_empty() || model.party_names().get(party).is_none() {
-                return Err(format!(
-                    "party instance {instance} does not name a model party"
-                ));
-            }
-        }
-        for (instance, channel) in &self.channels {
-            if model.channel(&channel.channel).is_none() {
-                return Err(format!(
-                    "channel instance {instance} does not name a model channel"
-                ));
-            }
-            for endpoint in &channel.endpoints {
-                if !self.parties.contains_key(endpoint) {
-                    return Err(format!(
-                        "channel {instance} endpoint {endpoint} is not a party instance"
-                    ));
-                }
-            }
-        }
-        let mut steps = Vec::with_capacity(self.trace.len());
-        for item in &self.trace {
-            let step = model
-                .steps
-                .iter()
-                .find(|step| step.name == item.step)
-                .ok_or_else(|| format!("unknown step {}", item.step))?
-                .clone();
-            if !model.carries_step(&step, binding) {
-                return Err(format!(
-                    "step {} cannot be carried by this campaign",
-                    item.step
-                ));
-            }
-            self.check_binding(model, item, &step)?;
-            if item.reason.trim().is_empty() {
-                return Err(format!("instance {} needs a reason", item.name));
-            }
-            steps.push(step);
-        }
-        mutations::validate_mutations(
-            &names,
-            |index| self.trace[index].action == "send",
-            &self.mutations,
-        )?;
-        for dependency in &self.dependencies {
-            if !names.contains(&dependency.prior) || !names.contains(&dependency.dependent) {
-                return Err(format!(
-                    "dependency {} -> {} references an unknown instance",
-                    dependency.prior, dependency.dependent
-                ));
-            }
-            if dependency.prior == dependency.dependent {
-                return Err("dependency cannot point an instance at itself".into());
-            }
-            let kind = if dependency.kind.is_empty() {
-                "order"
-            } else {
-                dependency.kind.as_str()
-            };
-            if kind != "order" && kind != "data" && kind != "resource" && kind != "state" {
-                return Err(format!("unknown dependency kind {}", dependency.kind));
-            }
-        }
-        Ok(steps)
-    }
-
-    fn check_binding(
-        &self,
-        model: &IndexedModel,
-        item: &ProposalStep,
-        step: &StepRecord,
-    ) -> Result<(), String> {
-        if let Some(processing) = &item.processing {
-            if step.processing.as_ref() != Some(processing) {
-                return Err(format!(
-                    "instance {} processing does not match the model step",
-                    item.name
-                ));
-            }
-        }
-        if item.action != step.action.name() {
-            return Err(format!(
-                "instance {} action does not match the model step",
-                item.name
-            ));
-        }
-        if item.condition != step.condition {
-            return Err(format!(
-                "instance {} condition does not match the model step",
-                item.name
-            ));
-        }
-        if item.message.as_deref() != step.message_name() {
-            return Err(format!(
-                "instance {} message does not match the model step",
-                item.name
-            ));
-        }
-        let channel = self
-            .channels
-            .get(&item.channel)
-            .ok_or_else(|| format!("unknown channel instance {}", item.channel))?;
-        if channel.channel != step.channel_name {
-            return Err(format!(
-                "instance {} channel does not match the model step",
-                item.name
-            ));
-        }
-        let party_model = |instance: &str| -> Result<String, String> {
-            if !channel.endpoints.iter().any(|name| name == instance) {
-                return Err(format!(
-                    "party instance {instance} is not an endpoint of {}",
-                    item.channel
-                ));
-            }
-            self.parties
-                .get(instance)
-                .cloned()
-                .ok_or_else(|| format!("unknown party instance {instance}"))
-        };
-        if step.action.name() == "send" {
-            let sender = party_model(item.sender.as_deref().unwrap_or(""))?;
-            let receiver = party_model(item.receiver.as_deref().unwrap_or(""))?;
-            if Some(sender.as_str()) != step.sender_name()
-                || Some(receiver.as_str()) != step.receiver_name()
-            {
-                return Err(format!(
-                    "instance {} endpoints do not match the model step",
-                    item.name
-                ));
-            }
-            if item.party.is_some() {
-                return Err(format!("send instance {} cannot name a party", item.name));
-            }
-        } else {
-            let actor = party_model(item.party.as_deref().unwrap_or(""))?;
-            if Some(actor.as_str()) != step.party_name() {
-                return Err(format!(
-                    "instance {} party does not match the model step",
-                    item.name
-                ));
-            }
-            if item.sender.is_some() || item.receiver.is_some() {
-                return Err(format!(
-                    "network instance {} cannot name a sender or receiver",
-                    item.name
-                ));
-            }
-        }
-        let _ = model;
-        Ok(())
-    }
-
-    /// Downstream copy for synthesis: strip mutation strategy, expose mutable
-    /// fields, and project the trace onto generator-owned actions.
+    /// Downstream copy for synthesis: drop the mutation strategy and project the
+    /// trace onto generator-owned actions.
+    ///
+    /// The Python service validated the frozen proposal, including the mutable
+    /// field declarations, so this projection is mechanical.
     ///
     /// Model `send` steps keep their direction in `sender`/`receiver`:
     /// - sender is the generator: `action = "send"`, drop `sender`;
-    /// - sender is the SUT: `action = "recv"`, drop `receiver`;
+    /// - sender is the SUT: `action = "recv"`, drop `receiver` and its fields;
     /// - SUT `listen`/`connect`/`close` steps are omitted;
     /// - generator network actions are kept as-is.
-    pub fn synthesis_copy(&self, binding: &Binding) -> Result<Self, String> {
-        let names = mutations::instance_names(&self.trace)?;
-        let role_of = |instance: &str| -> Result<PartyRole, String> {
-            let model_party = self
-                .parties
+    pub fn synthesis_copy(&self, binding: &Binding) -> Self {
+        let role_of = |instance: &str| {
+            self.parties
                 .get(instance)
-                .ok_or_else(|| format!("instance {instance} does not name a proposal party"))?;
-            Ok(binding.role(model_party))
+                .map(|party| binding.role(party))
+                .unwrap_or(PartyRole::Unavailable)
         };
-        let mut expanded: Vec<Vec<MutableField>> = vec![Vec::new(); self.trace.len()];
-        let mut declared = BTreeSet::new();
-        for mutation in &self.mutations {
-            let op = mutation
-                .get("op")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "mutation needs an op".to_string())?;
-            if op != "field" {
-                return Err(format!(
-                    "unsupported mutation op {op:?}; only field mutations are supported"
-                ));
-            }
-            let field = mutation
-                .get("field")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if field.is_empty() {
-                continue;
-            }
-            let (kind, encoding, default) = mutations::field_type(mutation)?;
-            let indexes = match mutations::selection(
-                mutation.get("steps").unwrap_or(&Value::Null),
-                &names,
-            )? {
-                mutations::Selector::Each(indexes) => indexes,
-                mutations::Selector::Range(start, end) => (start..=end).collect(),
-            };
-            for index in indexes {
-                let step = &self.trace[index];
-                if step.action != "send" {
-                    return Err(format!("mutation targets non-send instance {}", step.name));
-                }
-                let sender = step.sender.as_deref().unwrap_or("");
-                if role_of(sender)? != PartyRole::Generator {
-                    return Err(format!(
-                        "mutation targets SUT-sent step {}; generator cannot fill it",
-                        step.name
-                    ));
-                }
-                let key = (index, field.clone());
-                if declared.insert(key) {
-                    expanded[index].push(MutableField {
-                        field: field.clone(),
-                        kind,
-                        encoding,
-                        default: default.clone(),
-                        source: "proposal".into(),
-                    });
-                }
-            }
-        }
-
         let mut trace = Vec::new();
-        for (index, item) in self.trace.iter().enumerate() {
+        for item in &self.trace {
             match item.action.as_str() {
-                "send" => {
-                    let sender = item
-                        .sender
-                        .as_deref()
-                        .ok_or_else(|| format!("send instance {} needs a sender", item.name))?;
-                    match role_of(sender)? {
-                        PartyRole::Generator => {
-                            if item.receiver.is_none() {
-                                return Err(format!(
-                                    "generator send instance {} needs a receiver",
-                                    item.name
-                                ));
-                            }
-                            let mut step = item.clone();
-                            step.action = "send".into();
-                            step.sender = None;
-                            step.mutable_fields = std::mem::take(&mut expanded[index]);
-                            trace.push(step);
-                        }
-                        PartyRole::Sut => {
-                            let receiver = item.receiver.as_deref().ok_or_else(|| {
-                                format!("SUT send instance {} needs a receiver", item.name)
-                            })?;
-                            if role_of(receiver)? != PartyRole::Generator {
-                                return Err(format!(
-                                    "SUT send instance {} receiver {receiver} is not a generator party",
-                                    item.name
-                                ));
-                            }
-                            let mut step = item.clone();
-                            step.action = "recv".into();
-                            step.receiver = None;
-                            step.mutable_fields.clear();
-                            trace.push(step);
-                        }
-                        PartyRole::Unavailable => {
-                            return Err(format!(
-                                "send instance {} uses unavailable sender {sender}",
-                                item.name
-                            ));
-                        }
+                "send" => match role_of(item.sender.as_deref().unwrap_or("")) {
+                    PartyRole::Generator => {
+                        let mut step = item.clone();
+                        step.sender = None;
+                        trace.push(step);
                     }
-                }
-                "recv" => {
-                    return Err(format!(
-                        "proposal instance {} already uses recv; synthesis_copy adds it",
-                        item.name
-                    ));
-                }
+                    PartyRole::Sut => {
+                        let mut step = item.clone();
+                        step.action = "recv".into();
+                        step.receiver = None;
+                        step.mutable_fields.clear();
+                        trace.push(step);
+                    }
+                    PartyRole::Unavailable => {}
+                },
                 "listen" | "connect" | "close" => {
-                    let party = item
-                        .party
-                        .as_deref()
-                        .ok_or_else(|| format!("network instance {} needs a party", item.name))?;
-                    match role_of(party)? {
-                        PartyRole::Generator => {
-                            let mut step = item.clone();
-                            step.mutable_fields.clear();
-                            trace.push(step);
-                        }
-                        PartyRole::Sut => {}
-                        PartyRole::Unavailable => {
-                            return Err(format!(
-                                "network instance {} uses unavailable party {party}",
-                                item.name
-                            ));
-                        }
+                    if role_of(item.party.as_deref().unwrap_or("")) == PartyRole::Generator {
+                        let mut step = item.clone();
+                        step.mutable_fields.clear();
+                        trace.push(step);
                     }
                 }
-                other => {
-                    return Err(format!("instance {} has unknown action {other}", item.name));
-                }
+                _ => {}
             }
-        }
-        if trace.is_empty() {
-            return Err("synthesis trace has no generator action".into());
         }
         let kept: BTreeSet<String> = trace.iter().map(|step| step.name.clone()).collect();
         let mut copy = self.clone();
-        copy.mutations.clear();
         copy.trace = trace;
         copy.dependencies.retain(|dependency| {
             kept.contains(&dependency.prior) && kept.contains(&dependency.dependent)
         });
-        Ok(copy)
+        copy
     }
 
     pub fn write_copy(&self, path: &Path) -> Result<(), String> {
@@ -705,14 +391,6 @@ mod tests {
         (model, binding)
     }
 
-    fn identity() -> ProposalIdentity {
-        ProposalIdentity {
-            session: "s".into(),
-            build: "b".into(),
-            snapshot: "000001".into(),
-        }
-    }
-
     fn base(model: &IndexedModel) -> Proposal {
         let mut proposal = instantiate(model, &model.steps).unwrap();
         proposal.origin = "coverage".into();
@@ -728,52 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_instances_and_distinct_party_channels_validate() {
-        let (model, binding) = fixture();
-        let mut proposal = base(&model);
-        let first = proposal.trace[0].clone();
-        let mut second = first.clone();
-        second.name = "hello_again".into();
-        proposal.trace.insert(1, second);
-        proposal
-            .validate(&model, &binding, &identity())
-            .expect("repeated step instances");
-        let mut clients = proposal.clone();
-        clients.parties.insert("client_b".into(), "client".into());
-        clients
-            .channels
-            .get_mut("control")
-            .unwrap()
-            .endpoints
-            .push("client_b".into());
-        clients.trace[0].sender = Some("client_b".into());
-        clients
-            .validate(&model, &binding, &identity())
-            .expect("two client instances");
-    }
-
-    #[test]
     fn illegal_endpoint_action_and_network_handler_ids_fail() {
-        let (model, binding) = fixture();
-        let mut proposal = base(&model);
-        proposal.trace[0].sender = Some("server_side".into());
-        proposal
-            .parties
-            .insert("server_side".into(), "server".into());
-        proposal
-            .channels
-            .get_mut("control")
-            .unwrap()
-            .endpoints
-            .push("server_side".into());
-        let error = proposal
-            .validate(&model, &binding, &identity())
-            .unwrap_err();
-        assert!(error.contains("endpoints"), "{error}");
-        let mut action = base(&model);
-        action.trace[1].action = "send".into();
-        let error = action.validate(&model, &binding, &identity()).unwrap_err();
-        assert!(error.contains("action"), "{error}");
         let raw = json!({
             "origin": "coverage", "session": "s",
             "build": "b", "snapshot": "000001",
@@ -786,7 +419,6 @@ mod tests {
                 "party": "peer", "reason": "listen", "constraints": [],
                 "handler_ids": ["h"]
             }],
-            "mutations": []
         });
         let error = serde_json::from_value::<Proposal>(raw).unwrap_err();
         assert!(error.to_string().contains("handler_ids"), "{error}");
@@ -803,67 +435,27 @@ mod tests {
     }
 
     #[test]
-    fn autonomous_proposal_allows_empty_build_and_snapshot() {
+    fn synthesis_copy_copies_validated_mutable_fields() {
         let (model, binding) = fixture();
         let mut proposal = base(&model);
-        proposal.origin = "autonomous".into();
-        proposal.goal.handler_ids.clear();
-        proposal.build.clear();
-        proposal.snapshot.clear();
-        let expected = ProposalIdentity {
-            build: String::new(),
-            snapshot: String::new(),
-            ..identity()
+        let field = MutableField {
+            field: "username".into(),
+            kind: FieldKind::String,
+            encoding: None,
+            default: Some(ParamValue::Str("ubuntu".into())),
+            suggestion: None,
+            evidence: None,
+            source: "proposal".into(),
         };
-        proposal.validate(&model, &binding, &expected).unwrap();
-    }
-
-    #[test]
-    fn instance_dependencies_validate() {
-        let (model, binding) = fixture();
-        let mut proposal = base(&model);
-        proposal.dependencies.push(ProposalDependency {
-            prior: "hello".into(),
-            dependent: "bye".into(),
-            condition: String::new(),
-            kind: "data".into(),
-            fields: vec!["challenge".into()],
-        });
-        proposal
-            .validate(&model, &binding, &identity())
-            .expect("dependencies");
-        let mut bad = proposal;
-        bad.dependencies[0].dependent = "missing".into();
-        assert!(bad.validate(&model, &binding, &identity()).is_err());
-    }
-
-    #[test]
-    fn synthesis_copy_strips_mutations_and_adds_mutable_fields() {
-        let (model, binding) = fixture();
-        let mut proposal = base(&model);
-        proposal.mutations = vec![json!({
-            "op": "field", "steps": ["hello"], "field": "username",
-            "kind": "bytes", "encoding": "base64", "default": "AAE=",
-            "suggestion": "empty or boundary", "evidence": "src/a.c:1"
-        })];
-        let copy = proposal.synthesis_copy(&binding).unwrap();
-        assert!(copy.mutations.is_empty());
-        let hello = copy.trace.iter().find(|step| step.step == "hello").unwrap();
-        assert_eq!(hello.mutable_fields.len(), 1);
-        assert_eq!(hello.mutable_fields[0].field, "username");
-        assert_eq!(
-            hello.mutable_fields[0].kind,
-            crate::engine::input::FieldKind::Bytes
-        );
-        assert_eq!(
-            hello.mutable_fields[0].encoding,
-            Some(crate::engine::input::BytesEncoding::Base64)
-        );
-        assert_eq!(
-            hello.mutable_fields[0].default,
-            Some(ParamValue::Str("AAE=".into()))
-        );
-        assert_eq!(proposal.mutations.len(), 1);
+        proposal.trace[0].mutable_fields = vec![field.clone()];
+        let copy = proposal.synthesis_copy(&binding);
+        let hello = copy.trace.iter().find(|step| step.name == "hello").unwrap();
+        assert_eq!(hello.mutable_fields, vec![field]);
+        for step in &copy.trace {
+            if step.action == "recv" {
+                assert!(step.mutable_fields.is_empty(), "{}", step.name);
+            }
+        }
     }
 
     #[test]
@@ -903,7 +495,7 @@ mod tests {
             fields: Vec::new(),
         });
 
-        let copy = proposal.synthesis_copy(&binding).unwrap();
+        let copy = proposal.synthesis_copy(&binding);
         assert_eq!(copy.trace.len(), 4, "{:?}", copy.trace);
         assert!(copy.trace.iter().all(|step| step.name != "server_listen"));
 
@@ -968,7 +560,7 @@ mod tests {
         server_reply.receiver = Some("client_1".into());
         proposal.trace.push(server_reply);
 
-        let copy = proposal.synthesis_copy(&binding).unwrap();
+        let copy = proposal.synthesis_copy(&binding);
         assert_eq!(copy.trace[0].action, "send");
         assert_eq!(copy.trace[0].receiver.as_deref(), Some("server_1"));
         assert_eq!(copy.trace[1].party.as_deref(), Some("peer_1"));
@@ -979,25 +571,6 @@ mod tests {
             .unwrap();
         assert_eq!(reply.action, "recv");
         assert_eq!(reply.sender.as_deref(), Some("server_1"));
-    }
-
-    #[test]
-    fn synthesis_copy_rejects_mutation_on_sut_sent_step() {
-        let (model, binding) = fixture();
-        let mut proposal = base(&model);
-        let mut server_reply = proposal.trace[0].clone();
-        server_reply.name = "server_reply".into();
-        server_reply.step = "server_reply".into();
-        server_reply.sender = Some("server".into());
-        server_reply.receiver = Some("client".into());
-        proposal.trace.push(server_reply);
-        proposal.mutations = vec![json!({
-            "op": "field", "steps": ["server_reply"], "field": "challenge",
-            "kind": "string", "suggestion": "boundary", "evidence": "src/a.c:1"
-        })];
-
-        let error = proposal.synthesis_copy(&binding).unwrap_err();
-        assert!(error.contains("SUT-sent"), "{error}");
     }
 
     #[test]
@@ -1014,11 +587,16 @@ mod tests {
             on_receive: Vec::new(),
         };
         proposal.trace[0].processing = Some(processing.clone());
-        proposal.mutations = vec![json!({
-            "op": "field", "steps": ["hello"], "field": "username",
-            "kind": "string", "suggestion": "boundary", "evidence": "src/a.c:1"
-        })];
-        let copy = proposal.synthesis_copy(&binding).unwrap();
+        proposal.trace[0].mutable_fields = vec![MutableField {
+            field: "username".into(),
+            kind: FieldKind::String,
+            encoding: None,
+            default: Some(ParamValue::Str("ubuntu".into())),
+            suggestion: Some("boundary".into()),
+            evidence: Some("src/a.c:1".into()),
+            source: "proposal".into(),
+        }];
+        let copy = proposal.synthesis_copy(&binding);
         let hello = copy.trace.iter().find(|step| step.name == "hello").unwrap();
         assert_eq!(hello.processing.as_ref(), Some(&processing));
     }
@@ -1039,7 +617,6 @@ mod tests {
                 parties: BTreeMap::new(),
                 channels: BTreeMap::new(),
                 trace: vec![],
-                mutations: vec![],
                 dependencies: vec![],
             },
             path: PathBuf::from(id),

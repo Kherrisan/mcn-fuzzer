@@ -63,7 +63,7 @@ enum Command {
     Coverage {
         #[arg(long)]
         campaign: PathBuf,
-        /// Parent directory for the generated coverage campaign root. Defaults to cwd.
+        /// Empty directory that receives the coverage CSV and snapshots.
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
         /// Defaults to the campaign corpus.
@@ -165,7 +165,7 @@ fn main() -> ExitCode {
             }
         };
         output_root = match &cli.command {
-            Command::Run { output, .. } | Command::Coverage { output, .. } => {
+            Command::Run { output, .. } => {
                 match mcn_fuzz::app::config::create_campaign_root(output.as_deref()) {
                     Ok(path) => Some(path),
                     Err(error) => {
@@ -174,6 +174,9 @@ fn main() -> ExitCode {
                     }
                 }
             }
+            // Coverage writes its CSV straight into the requested directory so
+            // callers can read the result without discovering a run timestamp.
+            Command::Coverage { output, .. } => coverage_output_directory(output.as_deref()),
             _ => None,
         };
         if let Some(root) = &output_root {
@@ -256,9 +259,9 @@ fn main() -> ExitCode {
             step,
             ..
         } => load(campaign).and_then(|campaign| {
-            let output = output_root.as_deref().ok_or_else(|| {
-                Error::unknown("coverage campaign root was not created".to_string())
-            })?;
+            let output = output_root
+                .as_deref()
+                .ok_or_else(|| Error::unknown("coverage needs --output".to_string()))?;
             mcn_fuzz::coverage::command::run(&campaign, output, corpus.as_deref(), *step)
         }),
         Command::SymbolMap {
@@ -313,6 +316,11 @@ fn main() -> ExitCode {
         mcn_fuzz::runtime::report_child_exit(code);
     }
     ExitCode::from(code as u8)
+}
+
+/// The directory `coverage` writes into: the caller's `--output`, never a child.
+fn coverage_output_directory(output: Option<&std::path::Path>) -> Option<PathBuf> {
+    output.map(std::path::Path::to_path_buf)
 }
 
 fn capture_requested(command: &Command, output_root: Option<&std::path::Path>) -> bool {
@@ -620,6 +628,34 @@ mod cli_tests {
                 assert_eq!(symbolizer, "llvm-symbolizer-18");
             }
             _ => panic!("symbol-map arguments were not parsed"),
+        }
+    }
+
+    #[test]
+    fn coverage_writes_into_the_given_output_directory() {
+        let cli = Cli::try_parse_from([
+            "mcn-fuzz",
+            "coverage",
+            "--campaign",
+            "campaign.toml",
+            "--output",
+            "coverage-out",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Coverage { output, .. } => {
+                let directory = coverage_output_directory(output.as_deref()).unwrap();
+                assert_eq!(directory, std::path::Path::new("coverage-out"));
+                assert!(
+                    !directory
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("mcn-fuzzer-"),
+                    "coverage must not append a timestamped child"
+                );
+            }
+            _ => panic!("coverage arguments were not parsed"),
         }
     }
 

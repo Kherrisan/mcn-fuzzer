@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::{prompts, GeneratorInput, TraceOrigin};
 use crate::coverage::proposal::Proposal;
-use crate::engine::input::{FieldSpec, InstanceParams, StepInstance};
+use crate::engine::input::{InstanceParams, StepInstance};
 
 /// Identity and artifact directory shared by dispatch, prompting, and validation.
 pub(super) struct GeneratorRequest {
@@ -113,29 +113,7 @@ pub(crate) fn build_generator_input(
             origin: "proposal".into(),
         })
         .collect();
-    let mut param_kinds = std::collections::BTreeMap::new();
-    for step in &proposal.trace {
-        let Some(values) = params.get(&step.name) else {
-            continue;
-        };
-        let mut kinds = std::collections::BTreeMap::new();
-        for field in &step.mutable_fields {
-            if values.contains_key(&field.field) {
-                kinds.insert(
-                    field.field.clone(),
-                    FieldSpec {
-                        kind: field.kind,
-                        encoding: field.encoding,
-                    },
-                );
-            }
-        }
-        if !kinds.is_empty() {
-            param_kinds.insert(step.name.clone(), kinds);
-        }
-    }
     let mut input = GeneratorInput::with_trace(generator, step_trace, params);
-    input.param_kinds = param_kinds;
     input.trace.dependencies = dependencies;
     input.validate()?;
     Ok(input)
@@ -162,14 +140,8 @@ impl GeneratorRequest {
     pub(super) fn accept(&self) -> Result<ValidatedGenerator, String> {
         let (result, params) = super::artifacts::check(&self.output_dir, &self.id)?;
         let proposal = Proposal::read(&self.output_dir.join("proposal.json"))?;
-        if !proposal.mutations.is_empty() {
-            return Err(
-                "synthesis proposal still contains mutations; Rust must strip them before synthesis"
-                    .to_string(),
-            );
-        }
         // MCP already validated the proposal. Rust only checks the handoff:
-        // mutations were stripped, and the file belongs to this request.
+        // the file belongs to this request and has the right origin.
         if self.autonomous {
             if proposal.origin != "autonomous" {
                 return Err("autonomous synthesis needs an autonomous proposal".into());

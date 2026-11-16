@@ -218,6 +218,10 @@ def _proposal_command(args):
         from coverage_analysis.handlers import load_handlers
         handlers = load_handlers(args.handlers)
     draft = json.loads(Path(args.draft).read_text())
+    if draft.get("mutations"):
+        raise proposal_mod.ProposalError(
+            "proposal drafts declare mutable_fields per trace instance, not mutations"
+        )
     proposal = proposal_mod.build_proposal(
         graph,
         origin=str(draft.get("origin") or "autonomous"),
@@ -229,7 +233,6 @@ def _proposal_command(args):
         handlers=handlers,
         parties=draft.get("parties") or {},
         channels=draft.get("channels") or {},
-        mutations=draft.get("mutations") or [],
         dependencies=draft.get("dependencies"),
     )
     proposal_mod.validate_proposal(proposal, graph, handlers)

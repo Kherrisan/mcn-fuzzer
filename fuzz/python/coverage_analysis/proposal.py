@@ -4,7 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from coverage_analysis.mutations import MutationError, field_type, validate_mutations
+from coverage_analysis.mutations import MutationError, field_type
 from coverage_analysis.protocol import ProtocolError
 
 ORIGINS = {"coverage", "autonomous"}
@@ -156,13 +156,19 @@ def _mutable_fields(values):
             kind, encoding = field_type(item)
         except MutationError as error:
             raise ProposalError(str(error)) from error
-        out.append({
-            "field": field,
-            "kind": kind,
-            "encoding": encoding,
-            "default": item.get("default"),
-            "source": str(item.get("source") or "proposal"),
-        })
+        entry = {"field": field, "kind": kind}
+        if encoding is not None:
+            entry["encoding"] = encoding
+        if "default" in item:
+            entry["default"] = item["default"]
+        suggestion = str(item.get("suggestion") or "").strip()
+        evidence = str(item.get("evidence") or "").strip()
+        if suggestion:
+            entry["suggestion"] = suggestion
+        if evidence:
+            entry["evidence"] = evidence
+        entry["source"] = str(item.get("source") or "proposal")
+        out.append(entry)
     return out
 
 
@@ -209,8 +215,55 @@ def _dependencies(values, names):
     return out
 
 
+def _roles(graph):
+    return graph.catalog.get("binding") or {}
+
+
+def _check_mutable_fields(graph, item, fields):
+    """Mutable fields belong to instances the generator fills."""
+    if not fields:
+        return
+    step = graph.step(item["step"])
+    action = step.get("action") or "send"
+    if action != "send":
+        raise ProposalError(
+            f"instance {item['name']} cannot declare mutable fields on a {action} step"
+        )
+    roles = _roles(graph)
+    if roles and roles.get(step.get("sender_name") or "") != "generator":
+        raise ProposalError(
+            f"instance {item['name']} mutable fields need a generator-sent step"
+        )
+
+
+def _check_projectable(graph, trace):
+    """Every frozen trace must project onto at least one generator action."""
+    roles = _roles(graph)
+    if not roles:
+        return
+    kept = 0
+    for item in trace:
+        step = graph.step(item["step"])
+        action = step.get("action") or "send"
+        if action == "send":
+            sender = step.get("sender_name") or ""
+            receiver = step.get("receiver_name") or ""
+            role = roles.get(sender)
+            if role == "generator":
+                kept += 1
+            elif role == "sut" and roles.get(receiver) != "generator":
+                raise ProposalError(
+                    f"SUT send instance {item['name']} receiver {receiver} "
+                    "is not a generator party"
+                )
+        elif roles.get(step.get("party_name") or "") == "generator":
+            kept += 1
+    if kept == 0:
+        raise ProposalError("trace has no generator action")
+
+
 def build_proposal(graph, origin, session, build, snapshot,
-                   goal, trace, handlers, parties, channels, mutations=None,
+                   goal, trace, handlers, parties, channels,
                    dependencies=None):
     if origin not in ORIGINS:
         raise ProposalError(f"origin must be one of {sorted(ORIGINS)}")
@@ -234,6 +287,8 @@ def build_proposal(graph, origin, session, build, snapshot,
             raise ProposalError(f"trace step {item['name']} needs a reason")
         if model.get("action") != "send" and goal_handlers:
             pass
+        mutable = _mutable_fields(item.get("mutable_fields") or [])
+        _check_mutable_fields(graph, item, mutable)
         normalized.append({
             "name": item["name"],
             "step": step_name,
@@ -247,12 +302,9 @@ def build_proposal(graph, origin, session, build, snapshot,
             "reason": reason,
             "constraints": [str(value) for value in _as_list(item.get("constraints") or [], "constraints")],
             "processing": model.get("processing"),
-            "mutable_fields": _mutable_fields(item.get("mutable_fields") or []),
+            "mutable_fields": mutable,
         })
-    try:
-        validate_mutations(normalized, mutations or [], graph.steps)
-    except MutationError as error:
-        raise ProposalError(str(error)) from error
+    _check_projectable(graph, normalized)
     known_handlers = set(handlers.by_id) if handlers else set()
     for handler in goal_handlers:
         if handlers is not None and handler not in known_handlers:
@@ -285,7 +337,6 @@ def build_proposal(graph, origin, session, build, snapshot,
         "parties": parties or {},
         "channels": channels or {},
         "trace": normalized,
-        "mutations": list(mutations or []),
         "dependencies": dependencies,
     }
 
@@ -294,7 +345,7 @@ def validate_proposal(proposal, graph, handlers, request=None):
     if not isinstance(proposal, dict):
         raise ProposalError("proposal must be an object")
     allowed = {"origin", "session", "build", "snapshot", "goal", "parties",
-               "channels", "trace", "mutations", "dependencies"}
+               "channels", "trace", "dependencies"}
     unknown = sorted(set(proposal) - allowed)
     if unknown:
         raise ProposalError(f"unknown proposal fields: {', '.join(unknown)}")
@@ -327,13 +378,11 @@ def validate_proposal(proposal, graph, handlers, request=None):
         _check_binding(graph, proposal.get("parties") or {}, proposal.get("channels") or {}, item)
         if not str(item.get("reason") or "").strip():
             raise ProposalError(f"trace step {item.get('name')} needs a reason")
-    try:
-        validate_mutations(trace, proposal.get("mutations") or [], graph.steps)
-    except MutationError as error:
-        raise ProposalError(str(error)) from error
-    names = _instances(trace)
     for item in trace:
-        _mutable_fields(item.get("mutable_fields") or [])
+        mutable = _mutable_fields(item.get("mutable_fields") or [])
+        _check_mutable_fields(graph, item, mutable)
+    _check_projectable(graph, trace)
+    names = _instances(trace)
     _dependencies(proposal.get("dependencies") or [], names)
     known_handlers = set(handlers.by_id) if handlers else set()
     for handler in goal.get("handler_ids") or []:

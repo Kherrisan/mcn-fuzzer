@@ -34,9 +34,10 @@ generator.log
 coverage-generator.log
 ```
 
-To run only coverage replay, use `mcn-fuzz coverage -o /tmp/asan-coverage-runs
+To run only coverage replay, use `mcn-fuzz coverage -o /tmp/asan-coverage
 --campaign tests/asan-smoke/campaign.toml --corpus <run>/corpus --step 1`; it
-creates a timestamped campaign root and does not add a build-hash directory.
+writes `cov_over_time.csv` and its snapshots directly into that directory, which
+must be empty. It does not create a timestamped campaign root.
 
 The ASAN observer parses `asan/asanlog.<pid>` and the objective combines:
 

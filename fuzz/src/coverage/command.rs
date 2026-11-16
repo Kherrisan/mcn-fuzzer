@@ -10,14 +10,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use libafl::{Error, inputs::Input};
+use libafl::{inputs::Input, Error};
 
 #[cfg(test)]
 use crate::coverage::SourceCoverageProgress;
 
 use super::{
-    BatchReport, BatchTimings, CaseLocation, CoverageSummary, OutputLock, PendingCase,
-    discover_progress, replay_pending,
+    discover_progress, replay_pending, BatchReport, BatchTimings, CaseLocation, CoverageSummary,
+    OutputLock, PendingCase,
 };
 use crate::{app::config::Campaign, engine::input::GeneratorInput};
 
@@ -371,9 +371,15 @@ mod tests {
             ),
         );
         sleep(Duration::from_millis(20));
-        touch(&later, "{\"generator\":\"gen.py\",\"params\":{\"unit\":{\"n\":2}}}\n");
+        touch(
+            &later,
+            "{\"generator\":\"gen.py\",\"params\":{\"unit\":{\"n\":2}}}\n",
+        );
         let same = dir.join("c.json");
-        touch(&same, "{\"generator\":\"gen.py\",\"params\":{\"unit\":{\"n\":2}}}\n");
+        touch(
+            &same,
+            "{\"generator\":\"gen.py\",\"params\":{\"unit\":{\"n\":2}}}\n",
+        );
         let selected = select_inputs(&dir).unwrap();
         let names: Vec<_> = selected.iter().map(|item| item.name.clone()).collect();
         assert_eq!(names, vec!["a.json", "b.json", "c.json"]);

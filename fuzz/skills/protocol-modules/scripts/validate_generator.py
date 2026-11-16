@@ -63,9 +63,15 @@ def check_value(value, path):
         for index, item in enumerate(value):
             check_value(item, f"{path}[{index}]")
         return
+    if isinstance(value, dict):
+        for name, item in value.items():
+            if not name:
+                raise ValidationError(f"{path}: object member names must be nonempty")
+            check_value(item, f"{path}.{name}")
+        return
     if isinstance(value, float):
         raise ValidationError(f"{path}: only integer parameters can be stored in GeneratorInput")
-    raise ValidationError(f"{path}: objects and null are not representable as ParamValue")
+    raise ValidationError(f"{path}: null is not representable as ParamValue")
 
 
 def check_parameters(schema, params):
@@ -105,7 +111,8 @@ def check_parameters(schema, params):
                 for field in inst_required:
                     if isinstance(field, str) and field not in fields:
                         raise ValidationError(f"{path} is missing required field {field}")
-            types = {"string": str, "integer": int, "boolean": bool, "array": list}
+            types = {"string": str, "integer": int, "boolean": bool, "array": list,
+                     "object": dict}
             if isinstance(inst_props, dict):
                 for field, value in fields.items():
                     field_spec = inst_props.get(field)
@@ -113,7 +120,7 @@ def check_parameters(schema, params):
                         continue
                     kind = field_spec.get("type")
                     if isinstance(kind, str) and kind in types and type(value) is not types[kind]:
-                        article = "an" if kind in ("integer", "array") else "a"
+                        article = "an" if kind in ("integer", "array", "object") else "a"
                         raise ValidationError(f"{path}.{field} must be {article} {kind}")
         for field, value in fields.items():
             check_value(value, f"{path}.{field}")

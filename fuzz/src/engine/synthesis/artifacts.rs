@@ -9,10 +9,7 @@ use serde_json::Value;
 use crate::agents::artifacts::{check_identity, read_json};
 use crate::engine::input::InstanceParams;
 
-pub(super) fn check(
-    output: &Path,
-    request: &str,
-) -> Result<(Value, InstanceParams), String> {
+pub(super) fn check(output: &Path, request: &str) -> Result<(Value, InstanceParams), String> {
     let result = read_json(&output.join("result.json"))?;
     check_identity(&result, &[("request_id", request)])?;
     if result.get("status").and_then(Value::as_str) != Some("ok") {
@@ -74,7 +71,9 @@ fn check_parameters(schema: &Value, params: &Value) -> Result<(), String> {
         for instance in params.keys() {
             let known = properties.is_some_and(|properties| properties.contains_key(instance));
             if !known {
-                return Err(format!("params.json instance {instance} is not in the schema"));
+                return Err(format!(
+                    "params.json instance {instance} is not in the schema"
+                ));
             }
         }
     }
@@ -86,9 +85,9 @@ fn check_parameters(schema: &Value, params: &Value) -> Result<(), String> {
         }
     }
     for (instance, value) in params {
-        let fields = value.as_object().ok_or_else(|| {
-            format!("params.json.{instance} must be an object of mutable fields")
-        })?;
+        let fields = value
+            .as_object()
+            .ok_or_else(|| format!("params.json.{instance} must be an object of mutable fields"))?;
         if fields.is_empty() {
             return Err(format!("params.json.{instance} is empty"));
         }
@@ -138,10 +137,11 @@ fn check_instance_schema(
                 "integer" => value.as_number().is_some_and(|n| n.is_i64() || n.is_u64()),
                 "boolean" => value.is_boolean(),
                 "array" => value.is_array(),
+                "object" => value.is_object(),
                 _ => true,
             };
             if !matches {
-                let article = if matches!(kind, "integer" | "array") {
+                let article = if matches!(kind, "integer" | "array" | "object") {
                     "an"
                 } else {
                     "a"
@@ -166,9 +166,16 @@ fn check_value(value: &Value, path: &str) -> Result<(), String> {
             }
             Ok(())
         }
-        _ => Err(format!(
-            "{path}: objects and null are not representable as ParamValue"
-        )),
+        Value::Object(fields) => {
+            for (name, item) in fields {
+                if name.is_empty() {
+                    return Err(format!("{path}: object member names must be nonempty"));
+                }
+                check_value(item, &format!("{path}.{name}"))?;
+            }
+            Ok(())
+        }
+        _ => Err(format!("{path}: null is not representable as ParamValue")),
     }
 }
 
@@ -290,7 +297,7 @@ mod tests {
                 "properties":{"value":{"type":"array"}}}}});
         check_parameters(
             &schema,
-            &json!({"hello":{"value":[i64::MIN, i64::MAX, true, "x", []]}}),
+            &json!({"hello":{"value":[i64::MIN, i64::MAX, true, "x", [], {}, {"group":29}]}}),
         )
         .unwrap();
         for (params, expected) in [
@@ -298,7 +305,6 @@ mod tests {
             (json!({"hello":{"value":true}}), "must be an array"),
             (json!({"hello":{"value":[1.0]}}), "integer"),
             (json!({"hello":{"value":[null]}}), "not representable"),
-            (json!({"hello":{"value":[{}]}}), "not representable"),
             (json!({"hello":{}}), "is empty"),
         ] {
             let error = check_parameters(&schema, &params).unwrap_err();

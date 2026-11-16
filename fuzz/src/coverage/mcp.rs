@@ -11,15 +11,15 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
     sync::{
-        Mutex,
         atomic::{AtomicU64, Ordering},
+        Mutex,
     },
     time::{Duration, Instant},
 };
 
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
-use crate::runtime::{TargetIdentity, drop_privileges, prepare_owned_dir};
+use crate::runtime::{drop_privileges, prepare_owned_dir, TargetIdentity};
 
 type Result<T> = std::result::Result<T, libafl::Error>;
 

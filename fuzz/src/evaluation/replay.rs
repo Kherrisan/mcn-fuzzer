@@ -31,11 +31,6 @@ struct StoredInput {
     dependencies: Vec<crate::engine::input::DependencyInstance>,
     #[serde(default)]
     params: InstanceParams,
-    #[serde(default)]
-    param_kinds: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<String, crate::engine::input::FieldSpec>,
-    >,
     origin: TraceOrigin,
 }
 
@@ -78,7 +73,6 @@ pub fn validate_task(task: &mut Task) -> Result<(), (String, String)> {
         "step_trace": input.trace.steps,
         "dependencies": input.trace.dependencies,
         "params": params_json(&input.params)?,
-        "param_kinds": input.param_kinds,
         "origin": TraceOrigin {
             request_id: task.request_id.clone(),
             session: proposal.session,
@@ -170,6 +164,13 @@ fn param_json(value: &ParamValue) -> Result<Value, (String, String)> {
                 "invalid_params".to_string(),
                 "byte parameters are outside the production subset".to_string(),
             ));
+        }
+        ParamValue::Map(values) => {
+            let mut fields = serde_json::Map::new();
+            for (name, value) in values {
+                fields.insert(name.clone(), param_json(value)?);
+            }
+            Value::Object(fields)
         }
     })
 }

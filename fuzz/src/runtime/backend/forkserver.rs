@@ -139,7 +139,10 @@ impl ForkserverBackend {
         }
         let asan_dir = super::asan_log_dir(campaign);
         fs::create_dir_all(&asan_dir).map_err(|error| {
-            Error::unknown(format!("creating ASAN log dir {}: {error}", asan_dir.display()))
+            Error::unknown(format!(
+                "creating ASAN log dir {}: {error}",
+                asan_dir.display()
+            ))
         })?;
         let mut asan_options = inherited_asan.unwrap_or_default();
         if !asan_options.is_empty() {

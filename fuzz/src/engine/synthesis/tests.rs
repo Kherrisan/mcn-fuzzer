@@ -142,6 +142,8 @@ fn accepted_input_carries_step_trace_and_mutable_field_defaults() {
             kind: crate::engine::input::FieldKind::Bytes,
             encoding: Some(crate::engine::input::BytesEncoding::Hex),
             default: None,
+            suggestion: None,
+            evidence: None,
             source: "proposal".into(),
         });
     fs::write(

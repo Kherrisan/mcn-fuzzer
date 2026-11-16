@@ -560,6 +560,9 @@ fn child_setup(
     if generation {
         crate::agents::boot_if_requested(identity)?;
         crate::coverage::mcp::boot_if_requested(identity)?;
+        if crate::coverage::mcp::requested() {
+            crate::coverage::introspection::bind_host_listener()?;
+        }
         nix::sched::unshare(CloneFlags::CLONE_NEWNET).map_err(|error| {
             Error::unknown(format!("PID 1 unshare(CLONE_NEWNET) failed: {error}"))
         })?;
