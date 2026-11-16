@@ -1,7 +1,7 @@
 //! One background HC terminal per agent. Stages exchange typed commands/outcomes;
 //! protocol-specific preparation and artifact acceptance are supplied as traits.
 
-use super::{AgentFailure, CommandLine, HcClient, TerminalFact};
+use super::{hc::SendReceipt, AgentFailure, CommandLine, HcClient, TerminalFact};
 use std::{
     io,
     path::{Path, PathBuf},
@@ -226,7 +226,7 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
             // The init prompt waits until the status line shows that name.
             // A dead terminal is an initialization failure.
             let ui_deadline =
-                std::time::Instant::now() + self.config.init_timeout.min(Duration::from_secs(15));
+                std::time::Instant::now() + self.config.init_timeout.min(Duration::from_secs(60));
             if let Err(reason) = self.wait_for_screen(
                 client,
                 ui_deadline,
@@ -256,11 +256,11 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
                 return self.failure(reason, client);
             }
             let rename = format!("/rename {}", self.initial_terminal);
-            if let Err(error) = client.send(&self.config.terminal, &rename) {
+            if let Err(error) = self.send_when_settled(client, &rename) {
                 return self.failure(
                     format!(
-                        "Codex composer unavailable on {}: {}",
-                        self.config.terminal, error.message
+                        "Codex composer unavailable on {}: {error}",
+                        self.config.terminal
                     ),
                     client,
                 );
@@ -388,6 +388,30 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
     }
 
     /// Send only after HC reports the agent idle, then confirm a turn started.
+    /// Send into the Codex composer, retrying while the TUI is still painting.
+    ///
+    /// HC rejects `terminal.send` with "still starting: its output has not
+    /// settled" until the screen stops updating. Codex startup can take longer
+    /// than the composer wait window, so retry the exact send instead of
+    /// failing initialization.
+    fn send_when_settled(&self, client: &mut HcClient, text: &str) -> Result<SendReceipt, String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(90);
+        loop {
+            match client.send(&self.config.terminal, text) {
+                Ok(receipt) => return Ok(receipt),
+                Err(error) => {
+                    let retry = error.message.contains("still starting")
+                        || error.message.contains("has not settled")
+                        || error.message.contains("nothing was typed");
+                    if !retry || std::time::Instant::now() >= deadline {
+                        return Err(error.message);
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        }
+    }
+
     fn send_checked(
         &self,
         client: &mut HcClient,
@@ -396,9 +420,9 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
         require_status: bool,
     ) -> Result<(), String> {
         self.wait_idle(client, what, require_status)?;
-        let receipt = client
-            .send(&self.config.terminal, text)
-            .map_err(|error| error.message)?;
+        let receipt = self
+            .send_when_settled(client, text)
+            .map_err(|error| error)?;
         if receipt.started == Some(false) {
             // HC saw no turn within its short window, but the paste may still
             // be queued. Give the program fifteen seconds to start working
@@ -911,7 +935,10 @@ mod tests {
             agent_activity(Some(r#"{"app":"codex","state":"blocked"}"#), true),
             AgentActivity::Blocked
         );
-        assert_eq!(agent_activity(Some("not_started"), true), AgentActivity::Busy);
+        assert_eq!(
+            agent_activity(Some("not_started"), true),
+            AgentActivity::Busy
+        );
     }
 
     #[test]

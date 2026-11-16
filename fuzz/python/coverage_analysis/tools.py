@@ -64,8 +64,7 @@ TOOLS = [
      _schema({"callgraph_dot": {"type": "string"}}, ("callgraph_dot",))),
     ("load_protocol", "Load the protocol model and optional checkpoint.",
      _schema({"protocol_path": {"type": "string"},
-              "checkpoint_path": {"type": "string"},
-              "request_id": {"type": "string"}}, ("protocol_path",))),
+              "checkpoint_path": {"type": "string"}}, ("protocol_path",))),
     ("load_handlers", "Load the initialized inbound message to handler mapping.",
      _schema({"handlers_path": {"type": "string"}}, ("handlers_path",))),
     ("show_overview_code_coverage", "Project-wide branch coverage plus per-module summaries.",
@@ -275,15 +274,8 @@ def tool_load_callgraph(state, arguments):
 
 
 def tool_load_protocol(state, arguments):
-    binding = None
-    request_id = arguments.get("request_id")
-    if request_id:
-        request = state.request(request_id)
-        binding = {name: "sut" for name in request.sut_parties}
-        binding.update({name: "generator" for name in request.generator_parties})
-        binding.update({name: "unavailable" for name in request.unavailable_parties})
     return state.load_protocol(arguments["protocol_path"],
-                               arguments.get("checkpoint_path"), binding)
+                               arguments.get("checkpoint_path"))
 
 
 def tool_load_handlers(state, arguments):

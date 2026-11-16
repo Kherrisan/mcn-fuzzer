@@ -32,8 +32,8 @@ proposal takes precedence over memories of previous requests. Do not construct a
 WORKSPACE is the fixed agent working directory for this campaign. OUTPUT_DIR is
 the new, separate artifact directory assigned to this request; the fuzzer has
 already created it. Write request artifacts using absolute paths under
-OUTPUT_DIR. You may create new generic shared helpers under
-WORKSPACE/lib and reuse existing helpers as-is; do not edit or overwrite an
+OUTPUT_DIR. Place reusable helper functions under WORKSPACE/lib and import them
+from generator.py. Reuse existing helpers as-is; do not edit or overwrite an
 existing helper file. Never write request artifacts at the WORKSPACE root,
 reuse an earlier OUTPUT_DIR, or modify an earlier request's files.
 The agent's launch directory remains {{ campaign.workspace }} and does not change
@@ -131,8 +131,8 @@ Before selecting baseline parameters for this proposal, read the relevant extra
 reference files and check which account, password, access level, certificate,
 root directory, and other deployment fact applies. A proposal condition such as
 "upload permission" must be satisfied with an account whose configured access
-actually grants it. Never guess generic credentials (for example `ftpuser` or
-`ftppass`) when a provided file states the real values. Interpret placeholders in
+actually grants it. Never guess credentials when a provided file states the real
+values. Interpret placeholders in
 those files with the campaign context above; keep `ctx.host` / `ctx.port` for the
 actual endpoint and never hard-code a template or run-time port. If a required
 fact is absent, record the assumption or publish a specific failure instead of
@@ -171,15 +171,29 @@ claiming it was verified.
 
 ## Reuse generated helpers, own state transitions
 
-Before writing, inspect {{ campaign.workspace }}/lib. Reuse a compatible helper
-instead of repeating the same code in every request. Create or extend generic
-modules there when several tasks need the same:
+Before implementing protocol message construction or parsing, certificate
+handling, encryption or decryption, inspect the relevant installed modules in
+the protocol-modules skill. Prefer their APIs when they support the requested
+process and exact field values. Implement the missing or customizable parts
+yourself when no available API can express them. Simple byte encoding and
+decoding of basic data types may be implemented directly. Preserve the supplied
+trace and malformed values.
+
+Before writing, create {{ campaign.workspace }}/lib if needed and inspect its
+modules. Reuse a compatible helper instead of repeating the same code in every
+request. Put self-implemented helper functions in this directory, including on
+their first use, and import them in generator.py. This includes:
 
 - message/packet/field construction and parsing;
 - record, frame, length-prefix, compression, and checksum handling;
 - crypto primitives, key-schedule helpers, AEAD, hashing, and signatures;
 - bounded transport adapters and buffered readers;
 - generic fixture/encoding/validation helpers.
+
+Keep proposal-specific handlers and orchestration in generator.py. Review
+generator.py before publishing and move self-implemented helper functions to
+WORKSPACE/lib. Do not change the
+requested trace or normalize malformed data.
 
 Keep task-specific protocol behavior, phase, expected message, ordering,
 conditions, dependencies, retries, transcript/key state, sequence numbers,
@@ -193,7 +207,7 @@ The generator server automatically adds WORKSPACE/lib to `sys.path` when it
 loads generator.py. Import shared helpers directly after their module names:
 
 ~~~python
-from tls_record_v1 import read_record, write_record
+from codec_v1 import read_frame, write_frame
 ~~~
 
 Do not add a `sys.path` bootstrap or scan parent directories from generator.py.
@@ -201,12 +215,13 @@ The artifact validator is given the same shared-lib path through `--shared-lib`
 so its import probe sees the same modules.
 
 Reuse existing helper modules as-is. If they do not fit or need different
-behavior, add a new versioned module name (for example
-`tls_record_v2.py`); never edit an existing helper file under the same name. The
+behavior, use them as a reference and write a modified copy under a new versioned module name (for example
+`codec_v2.py`); never edit an existing helper file under the same name. The
 generator server can cache an imported module for the life of the campaign, so
 an in-place edit could change behavior for already accepted generators without
-changing them. Do not add protocol-specific helper implementations to the
-repository or skill. The skill and scaffold provide library/API guidance only.
+changing them. Protocol-specific reusable helpers belong in WORKSPACE/lib.
+Do not add them to the repository or skill. The skill and scaffold provide
+library/API guidance only.
 
 # Reference scaffold and params schema
 
@@ -214,13 +229,12 @@ Read these two reference files before writing handlers:
 
 - `{{ campaign.pythonpath }}/generator_server/template.py` — a detailed
   scaffold with common imports, field/state helpers, listener/connection
-  patterns, and one commented `@step_handler` example for every ProfuzzGym
-  target: DAAP, DICOM, DNS, DTLS, BFTPD, LightFTP, ProFTPD, PureFTPD, RTSP,
-  SIP, SMTP, SSH, and TLS. It shows the actual `ctx` API: `ctx.send`,
+  patterns, and commented `@step_handler` examples for supported targets.
+  It shows the actual `ctx` API: `ctx.send`,
   `ctx.recv`, `ctx.connect`, `ctx.accept`, `ctx.save_state`,
   `ctx.load_state`, `ctx.load_depending_state`, `ctx.step_instance`,
-  `ctx.step_name`, and cleanup. Copy only the relevant pattern and replace
-  placeholder step names and fields; do not copy all examples.
+  `ctx.step_name`, and cleanup. Use it to learn the `ctx` API. Do not paste
+  its helper functions or handler examples into generator.py.
 - `{{ campaign.pythonpath }}/generator_server/params.schema.json` — the empty
   production-compatible schema shape (`type`, `properties`, `required`,
   `additionalProperties`). Copy it and add one property per step instance that
@@ -292,8 +306,9 @@ share helpers and case-local connection state via ctx; create resources inside
 the worker and clean them up in handlers. Do not perform another trace step's
 message exchange as an implicit substitute for its handler.
 
-Implement every handler in generator.py; put only generic reusable helpers in
-WORKSPACE/lib. The example above only
+Implement every handler in generator.py; put reusable helpers in
+WORKSPACE/lib, including protocol-specific codecs, record framing, crypto,
+and message construction. The example above only
 illustrates the API; omit the initializer if it has no work. Submit no stubs, ellipsis,
 unimplemented branches, or unconditional
 success paths. The return value is ignored. Do not use async def as the entrypoint,
@@ -323,8 +338,8 @@ effects inside the initializer or handlers. Create case resources there; the
 runtime closes ctx-managed resources after dispatch. No resources or state should need to survive worker exit.
 
 Only generator.py and params.schema.json are published into the request's
-published directory. generator.py may import generic shared helpers under
-WORKSPACE/lib; that campaign-scoped directory remains a runtime dependency for
+published directory. generator.py may import shared helpers under
+WORKSPACE/lib, including protocol-specific helpers; that campaign-scoped directory remains a runtime dependency for
 replay. Keep task-specific mock implementations, handlers, and SDK glue in
 generator.py. Do not depend at runtime on proposal.json, params.json, the
 request output directory, another request's files, or a particular cwd.
@@ -354,8 +369,8 @@ Read context.py if uncertain. Use these exact signatures; times are in seconds.
 | channel.close(), listener.close() | Close explicit resources. |
 | ctx.close_extra(), ctx.close_all() | Close listeners/extra channels; close_all also closes the default session. |
 
-Channel is opaque: it has no public socket/fd, send(), recv(), or TLS wrapping
-method. Pass channel=channel to ctx.send/ctx.recv. For UDP listeners, TLS, socket
+Channel is opaque: it has no public socket/fd, send(), recv(), or transport wrapping
+method. Pass channel=channel to ctx.send/ctx.recv. For datagram listeners, secure transport, socket
 options, or SDKs that require sockets, use public Python socket/ssl APIs or the
 installed SDK directly. Do not access private Ctx/Channel internals. Bound I/O
 and explicitly clean up resources you create outside Ctx.
@@ -390,7 +405,7 @@ the synchronous entrypoint, worker cleanup, or the artifact contract.
 
 Check SDK availability with the campaign Python at {{ campaign.python }} and
 PYTHONPATH={{ campaign.pythonpath }}, not the agent's interpreter.
-Installed SDKs such as pyftpdlib or dnslib may implement assigned server/upstream
+Installed SDKs may implement assigned server/upstream
 roles. Inspect the installed API/version before using it; do not invent methods.
 Do not install dependencies. If a needed SDK is missing, implement that peer with
 the socket API.
@@ -442,7 +457,7 @@ wire content back to fixed valid values.
 - result.json: final completion signal. It is read immediately when it appears.
   Echo the exact IDs below; added_steps must be an array of strings, even if empty.
 
-Optional shared helpers belong under WORKSPACE/lib, never in OUTPUT_DIR. They are
+Shared helpers belong under WORKSPACE/lib, never in OUTPUT_DIR. They are
 campaign-scoped code reused by later requests, not per-request artifacts.
 
 Successful result (list local support setup in added_steps, if any):

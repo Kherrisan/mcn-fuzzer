@@ -21,8 +21,12 @@ below are relative to this SKILL.md, independent of the agent's working director
    using `importlib.metadata.version`, `inspect.signature`, `help` or installed
    source. Inventory versions describe the prepared `fuzz/.venv`; campaigns can
    configure a different interpreter. Do not install packages during synthesis.
-4. Use SDKs for requested exchanges, authentication, crypto and assigned
-   peers. For malformed wire values, use raw bytes or suitable codecs to preserve exactly
+4. Prefer installed modules for protocol message construction and parsing,
+   certificates, encryption, decryption, authentication and assigned peers
+   when they support the requested process and exact field values. Implement the
+   missing parts yourself when their APIs cannot support the operation or its
+   requested customization. Simple byte encoding and decoding of basic data
+   types may be implemented directly. For malformed wire values, use raw bytes or suitable codecs to preserve exactly
    what the trace specifies. High-level libraries may
    reject malformed fields, repair lengths/checksums, reorder fields or hide
    intermediate steps. Never let that erase the requested behavior.
@@ -72,15 +76,15 @@ below are relative to this SKILL.md, independent of the agent's working director
   daemon thread or an unbounded `serve_forever()` running. Twisted's global
   reactor is not restartable; prefer message codecs or a case-local integration.
 - Only generator.py and params.schema.json are published into the request's
-  `published/` directory. generator.py may import generic shared helper modules
-  from `WORKSPACE/lib`; that campaign-scoped directory remains a runtime
+  `published/` directory. generator.py may import shared helper modules
+  from `WORKSPACE/lib`, including protocol-specific codecs and crypto helpers; that campaign-scoped directory remains a runtime
   dependency. Inline task-specific mock implementations, handlers, and SDK glue
   in generator.py. Do not depend at runtime on proposal.json, params.json, the
   request directory, or another request's files.
 - The calling prompt points to `generator_server/template.py` and
-  `generator_server/params.schema.json`. The scaffold's imports, helpers and
-  per-target handler examples are copy references; adapt only the relevant
-  block to the proposal and do not publish the scaffold itself.
+  `generator_server/params.schema.json`. Use the scaffold to learn the `ctx` API.
+  Do not paste its helper functions or handler examples into generator.py, and
+  do not publish the scaffold itself.
 - This skill supplements the calling prompt. Party ownership, receipt order,
   parameter representation, lifecycle, verification and result.json rules from
   that prompt still apply. Report checks performed; module imports or codec
@@ -88,8 +92,10 @@ below are relative to this SKILL.md, independent of the agent's working director
 
 ## Reusable helpers versus handler-owned state
 
-Synthesis may create reusable helpers under `WORKSPACE/lib` for work that repeats
-across requests. Keep that layer generic and stateless:
+For each request, reuse compatible helpers from `WORKSPACE/lib` and write
+self-implemented helper functions there, including on their first use. Import them
+from generator.py so later requests can reuse them. Create the directory if it
+does not exist. Protocol-specific reusable functions belong here too. Keep helpers stateless:
 
 - message, packet, field and framing codecs;
 - record/stream buffering and bounded transport adapters;
@@ -115,12 +121,13 @@ those steps. A helper must be pure or accept an explicit state object; it must n
 hold module-level sockets, sessions, credentials or case state.
 
 Inspect existing helpers before writing and reuse them as-is. Do not edit or
-overwrite an existing helper file. If behavior must change or a new helper is
-needed, add a versioned module name (for example `tls_record_v2.py`); the
+overwrite an existing helper file. If behavior must change, use the existing
+implementation as a reference and write a modified version under a new versioned
+module name (for example `codec_v2.py`); the
 generator server caches imported modules for the life of the campaign, so an
 in-place edit could change behavior for already accepted generators. Do not add
-protocol-specific helper implementations to the repository or skill; they are
-generated in the campaign workspace.
+protocol-specific helper implementations to the repository or skill; generate
+them in the campaign workspace, including `WORKSPACE/lib`.
 
 ## Validate before publishing (every successful generation)
 

@@ -60,7 +60,7 @@ trace selection.
 A coverage-analysis MCP service is running. Start with `get_loaded_state`, then
 load exactly this request's inputs:
 
-1. `load_protocol` with `{"protocol_path": "MODEL", "request_id": "REQUEST"}`.
+1. `load_protocol` with `{"protocol_path": "MODEL"}`.
 2. `load_handlers` with `{"handlers_path": "HANDLERS"}`.
 3. `load_cfg` with `{"cfg_dir": "CFG_DIR"}`.
 4. `load_callgraph` with `{"callgraph_dot": "CALLGRAPH_DOT"}`.

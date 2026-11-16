@@ -70,7 +70,7 @@ ambiguous.
 A coverage-analysis MCP service is running for this session. Useful calls:
 
 - `get_loaded_state` — report what is loaded. Empty at session start.
-- `load_protocol` with `{"protocol_path": "MODEL", "request_id": "REQUEST"}`
+- `load_protocol` with `{"protocol_path": "MODEL"}`
   — load the protocol model.
 - `get_protocol_steps` — list steps by their unique `name`.
 

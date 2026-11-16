@@ -404,7 +404,17 @@ class State:
             llvm_cov=str(payload["llvm_cov"]) if payload.get("llvm_cov") else None,
         )
         self.requests[request.request_id] = request
+        loaded = self.latest.get("protocol")
+        if loaded is not None:
+            loaded.value.catalog["binding"] = self._binding(request)
         return request.identity()
+
+    @staticmethod
+    def _binding(request):
+        binding = {name: "sut" for name in request.sut_parties}
+        binding.update({name: "generator" for name in request.generator_parties})
+        binding.update({name: "unavailable" for name in request.unavailable_parties})
+        return binding
 
     def request(self, request_id):
         request = self.requests.get(request_id)

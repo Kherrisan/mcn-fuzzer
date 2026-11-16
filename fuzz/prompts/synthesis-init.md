@@ -56,19 +56,29 @@ overwrite an earlier request's artifacts. The terminal's current directory does
 not automatically change when a new request arrives.
 
 WORKSPACE/lib is a writable, campaign-scoped directory for reusable synthesis
-helpers. You may create new generic helper modules there when the same codec,
-framing, crypto, record, or transport-adapter work is useful across requests.
+helpers. For each generation request, place reusable codec, framing, crypto,
+record, or transport-adapter functions in this directory and import them from
+generator.py, including on the first request that needs them. Create the
+directory if it does not exist.
 Reuse existing helpers as-is; do not edit or overwrite an existing helper file.
 Do not write case-specific state, credentials, SUT fixtures, or
-proposal-specific handlers there. Do not implement protocol-specific helpers in
-advance; the repository and skill contain library guidance, not prebuilt
-protocol generators. The generator server adds WORKSPACE/lib to `sys.path` when
+proposal-specific handlers there. Protocol-specific reusable helpers belong in
+WORKSPACE/lib.
+Do not add those helpers to the repository or skill in advance; those contain
+library guidance, not prebuilt protocol generators. The generator server adds WORKSPACE/lib to `sys.path` when
 loading a generator; import helpers directly rather than adding a path
 bootstrap.
 
 ## Reuse modules and own state transitions
 
-Reuse Python modules at the codec and primitive layer:
+Use the protocol-modules skill to find installed modules for protocol message
+construction and parsing, certificates, cryptography and decryption. Prefer their
+APIs when they can express the requested operations and exact field values.
+Implement a process yourself only when available modules cannot support it or
+cannot provide the requested customization. Simple byte encoding and decoding of
+basic data types may be implemented directly. Put self-implemented helper
+functions in WORKSPACE/lib, including protocol-specific ones, and import them in
+generator.py. Relevant helper types include:
 
 - message/packet/field construction and parsing;
 - record, frame, length-prefix, compression, and checksum helpers;
@@ -90,8 +100,9 @@ explicit state object; no module-level socket, session, credential, or case
 state.
 
 Inspect WORKSPACE/lib before writing. Reuse existing helpers as-is. If they do
-not fit or need different behavior, add a new versioned helper module (for
-example `tls_record_v2.py`); never edit an existing helper file under the same
+not fit or need different behavior, use them as a reference and create a modified
+version under a new versioned helper module name (for
+example `codec_v2.py`); never edit an existing helper file under the same
 name. Helpers may already be imported by a running generator server, so an
 in-place edit would make accepted generators see different behavior without
 their own change.
@@ -185,7 +196,7 @@ operation cannot be carried out; never fabricate a reply or claim runtime succes
    services implemented with installed Python modules, hand-written mocks, and
    concurrency needed by those roles.
    Preserve the requested order and operations, including malformed behavior.
-3. Write a self-contained generator module, a parameter schema, and valid initial
+3. Write a generator module, shared helpers as needed, a parameter schema, and valid initial
    parameters. Keep imports safe before fork and case resources inside the initializer or handlers.
    Follow the detailed API/lifecycle rules supplied by the generation task.
 4. Use the skill's fixed validator with the campaign Python for syntax, interface,
@@ -225,10 +236,11 @@ publish matching IDs, a non-ok status, and a specific error in result.json.
 A conversational answer alone is not a completion signal.
 
 Only generator.py and params.schema.json are copied to the published generator
-directory. generator.py may import generic shared helpers under WORKSPACE/lib;
+directory. generator.py may import shared helpers under WORKSPACE/lib,
+including protocol-specific codec, record, and crypto helpers;
 that directory is campaign-scoped and remains a runtime dependency for replay.
 The script must not depend on the proposal, params.json, another request's
 OUTPUT_DIR, or other mutable workspace files. Keep task-specific mock
 implementations, handlers, and SDK glue in generator.py; use installed packages
-or the shared helper modules for generic code. Do not install packages, edit
+or the shared helper modules for reusable code. Do not install packages, edit
 fuzzer/SUT configuration or source, or overwrite artifacts from earlier requests.
