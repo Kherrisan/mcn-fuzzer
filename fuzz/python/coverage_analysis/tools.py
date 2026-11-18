@@ -4,136 +4,65 @@ import json
 from pathlib import Path
 
 from coverage_analysis import coverage as coverage_mod
+from coverage_analysis import source as source_mod
+from pydantic import TypeAdapter, ValidationError
+
+from coverage_analysis import schemas
 from coverage_analysis.state import StateError
 
 PAGE_DEFAULT = 20
 PAGE_MAX = 100
 
 
-def _schema(properties, required=()):
-    return {"type": "object", "properties": properties,
-            "required": list(required), "additionalProperties": False}
+TOOL_DESCRIPTIONS = {'get_loaded_state': 'Report which datasets are loaded and their versions.',
+ 'load_coverage_json': "Load a snapshot's coverage counters, exporting them from the stored profile when "
+                       'needed.',
+ 'load_cfg': 'Parse per-function CFG DOT files and their source map.',
+ 'load_callgraph': 'Parse the callgraph DOT file.',
+ 'load_protocol': 'Load the protocol model and optional checkpoint.',
+ 'load_handlers': 'Load the initialized inbound message to handler mapping.',
+ 'write_handlers': 'Serialise handlers.json from mapping data, validate it against the loaded protocol, '
+                   'and optionally load it as the request mapping.',
+ 'show_overview_code_coverage': 'Project-wide branch coverage plus per-module summaries.',
+ 'show_module_code_coverage': 'Coverage of one module or its children.',
+ 'show_file_code_coverage': 'Coverage of files and the functions they contain.',
+ 'show_handler_code_coverage': 'Coverage of one handler and its cumulative reachable set.',
+ 'show_func_code_coverage': 'Coverage of one function and its cumulative reachable set.',
+ 'get_reachable_functions': 'Functions reachable from one function, with distance.',
+ 'get_reaching_handlers': 'Handlers that can reach a function, with one shortest path each.',
+ 'describe_handler': 'Summarize one handler in the active analysis, including its mapped steps, coverage, '
+                     'and source window.',
+ 'describe_trace_steps': 'Read model steps, distinct message fields, and transaction dependencies among '
+                         'those steps in the active analysis.',
+ 'show_source_coverage': 'Source lines and branch true/false counts in a range. Function queries use the '
+                         'C/C++ syntax definition range, with bounded windows and remaining ranges.',
+ 'get_protocol_steps': 'Protocol steps from the catalog, optionally filtered.',
+ 'list_parties': 'List protocol parties with descriptions, aliases, and current campaign bindings.',
+ 'get_step_dependencies': 'Dependencies before and after one step in the current transaction.',
+ 'list_messages': 'Page model messages with direction and the steps that carry them.',
+ 'show_message': 'Read one message: fields and the steps that carry it.',
+ 'show_step': 'Read one step: action, channel, endpoints, processing, and direct predecessors.',
+ 'update_step_annotations': 'Replace analysis annotations and constraints on one step.',
+ 'upsert_dependency': 'Add or replace a dependency edge in the analysis transaction.',
+ 'remove_dependency': 'Remove a dependency edge in the analysis transaction.',
+ 'begin_analysis': 'Open the graph transaction and make the request current for target tools.',
+ 'select_analysis_target': 'Select the primary handler for the active analysis.',
+ 'get_analysis_target': "Read the active analysis's primary handler and selection reason.",
+ 'switch_analysis_target': "Replace the active analysis's primary handler with a different handler.",
+ 'show_function_source': "Read one or more functions' source with branch counts; whole=true reads the full "
+                         'body.',
+ 'show_replay_logs': "Read a bounded, line-numbered window of a request's frozen replay logs.",
+ 'submit_proposal': 'Validate and freeze a proposal, ending graph edits.'}
 
-
-REQUEST = {"type": "string", "description": "registered analysis request id"}
-STEP = {"type": "string", "description": "exact step name from the catalog"}
-FIELD_KIND = {"type": "string", "enum": ["string", "bytes", "integer", "boolean", "list", "map"]}
-BYTES_ENCODING = {"type": "string", "enum": ["hex", "base64"]}
-MUTABLE_FIELD = _schema({
-    "field": {"type": "string", "minLength": 1},
-    "kind": FIELD_KIND,
-    "encoding": BYTES_ENCODING,
-    "default": {},
-    "suggestion": {"type": "string", "minLength": 1},
-    "evidence": {"type": "string", "minLength": 1},
-    "source": {"type": "string"},
-}, ("field",))
-TRACE_STEP = _schema({
-    "name": {"type": "string", "description": "unique step instance name"},
-    "step": STEP,
-    "channel": {"type": "string"},
-    "sender": {"type": "string"},
-    "receiver": {"type": "string"},
-    "party": {"type": "string"},
-    "reason": {"type": "string"},
-    "constraints": {"type": "array", "items": {"type": "string"}},
-    "mutable_fields": {"type": "array", "items": MUTABLE_FIELD},
-}, ("name", "step", "channel", "reason"))
-PAGE_PROPS = {
-    "offset": {"type": "integer", "minimum": 0, "default": 0},
-    "limit": {"type": "integer", "minimum": 1, "maximum": PAGE_MAX, "default": PAGE_DEFAULT},
-}
-
-TOOLS = [
-    ("get_loaded_state", "Report which datasets are loaded and their versions.",
-     _schema({})),
-    ("load_coverage_json", "Load a snapshot's coverage counters, exporting them from the stored profile when needed.",
-     _schema({"request_id": REQUEST, "snapshot_dir": {"type": "string"}},
-             ("request_id", "snapshot_dir"))),
-    ("load_cfg", "Parse per-function CFG DOT files and their source map.",
-     _schema({"cfg_dir": {"type": "string"}}, ("cfg_dir",))),
-    ("load_callgraph", "Parse the callgraph DOT file.",
-     _schema({"callgraph_dot": {"type": "string"}}, ("callgraph_dot",))),
-    ("load_protocol", "Load the protocol model and optional checkpoint.",
-     _schema({"protocol_path": {"type": "string"},
-              "checkpoint_path": {"type": "string"}}, ("protocol_path",))),
-    ("load_handlers", "Load the initialized inbound message to handler mapping.",
-     _schema({"handlers_path": {"type": "string"}}, ("handlers_path",))),
-    ("show_overview_code_coverage", "Project-wide branch coverage plus per-module summaries.",
-     _schema({"request_id": REQUEST, **PAGE_PROPS})),
-    ("show_module_code_coverage", "Coverage of one module or its children.",
-     _schema({"path": {"type": "string", "description": "relative module directory"},
-              "request_id": REQUEST, **PAGE_PROPS})),
-    ("show_file_code_coverage", "Coverage of files and the functions they contain.",
-     _schema({"file": {"type": "string", "description": "absolute or relative source file"},
-              "request_id": REQUEST, **PAGE_PROPS})),
-    ("show_handler_code_coverage", "Coverage of one handler and its cumulative reachable set.",
-     _schema({"message": {"type": "string"}, "handler_id": {"type": "string"},
-              "request_id": REQUEST,
-              "sort": {"type": "string", "enum": ["missed", "name"]}, **PAGE_PROPS})),
-    ("show_func_code_coverage", "Coverage of one function and its cumulative reachable set.",
-     _schema({"function": {"type": "string"}, "sort": {"type": "string", "enum": ["missed", "name"]},
-              "request_id": REQUEST, **PAGE_PROPS})),
-    ("get_reachable_functions", "Functions reachable from one function, with distance.",
-     _schema({"function": {"type": "string"}, "request_id": REQUEST,
-              "include_self": {"type": "boolean", "default": False},
-              "limit": {"type": "integer", "minimum": 1, "maximum": 2000}})),
-    ("get_reaching_handlers", "Handlers that can reach a function, with one shortest path each.",
-     _schema({"function": {"type": "string"}, "request_id": REQUEST})),
-    ("show_source_coverage", "Source lines and branch true/false counts in a range.",
-     _schema({"function": {"type": "string"}, "file": {"type": "string"}, "request_id": REQUEST,
-              "start_line": {"type": "integer"}, "end_line": {"type": "integer"},
-              "max_lines": {"type": "integer", "minimum": 1,
-                            "maximum": coverage_mod.MAX_SOURCE_LINES}})),
-    ("get_protocol_steps", "Protocol steps from the catalog, optionally filtered.",
-     _schema({"message": {"type": "string"}, "party": {"type": "string"},
-              "request_id": REQUEST, **PAGE_PROPS})),
-    ("get_step_dependencies", "Dependencies before and after one step in the current transaction.",
-     _schema({"request_id": REQUEST, "step": STEP}, ("request_id", "step"))),
-    ("update_step_annotations", "Replace analysis annotations and constraints on one step.",
-     _schema({"request_id": REQUEST, "step": STEP,
-              "annotations": {"type": "array", "items": {"type": "string"}},
-              "constraints": {"type": "array", "items": {"type": "string"}}},
-             ("request_id", "step"))),
-    ("upsert_dependency", "Add or replace a dependency edge in the analysis transaction.",
-     _schema({"request_id": REQUEST,
-              "prior_step": STEP, "dependent_step": STEP,
-              "condition": {"type": "string"},
-              "field_relations": {"type": "array", "items": _schema({
-                  "prior_field": {"type": "string"},
-                  "dependent_field": {"type": "string"},
-                  "derive": {"type": "string", "description": "Calculation from the prior field; empty means direct reuse"},
-              }, ("prior_field", "dependent_field"))}},
-             ("request_id", "prior_step", "dependent_step"))),
-    ("remove_dependency", "Remove a dependency edge in the analysis transaction.",
-     _schema({"request_id": REQUEST, "prior_step": STEP, "dependent_step": STEP},
-             ("request_id", "prior_step", "dependent_step"))),
-    ("begin_analysis", "Open the graph transaction for a registered request.",
-     _schema({"request_id": REQUEST}, ("request_id",))),
-    ("submit_proposal", "Validate and freeze a proposal, ending graph edits.",
-     _schema({"request_id": REQUEST,
-              "origin": {"type": "string", "enum": ["coverage", "autonomous"]},
-              "goal": {"type": "object"},
-              "parties": {"type": "object"},
-              "channels": {"type": "object"},
-              "dependencies": {"type": "array", "items": _schema({
-                  "prior": {"type": "string"}, "dependent": {"type": "string"},
-                  "kind": {"type": "string", "enum": ["order", "data", "resource", "state"]},
-                  "condition": {"type": "string"},
-                  "fields": {"type": "array", "items": {"type": "string", "minLength": 1},
-                             "description": "State keys saved by prior and read by dependent"},
-              }, ("prior", "dependent"))},
-              "trace": {"type": "array", "items": TRACE_STEP}},
-             ("request_id", "trace", "parties", "channels"))),
-]
-
-TOOL_NAMES = [name for name, _, _ in TOOLS]
-TOOL_BY_NAME = {name: (description, schema) for name, description, schema in TOOLS}
+TOOL_NAMES = list(TOOL_DESCRIPTIONS)
+OUTPUT_ADAPTERS = {name: TypeAdapter(output) for name, (_, output) in schemas.TOOL_MODELS.items()}
 
 
 def mcp_tool_list():
-    return [{"name": name, "description": description, "inputSchema": schema}
-            for name, description, schema in TOOLS]
+    return [{"name": name, "description": description,
+             "inputSchema": schemas.TOOL_MODELS[name][0].model_json_schema(),
+             "outputSchema": {**OUTPUT_ADAPTERS[name].json_schema(), "type": "object"}}
+            for name, description in TOOL_DESCRIPTIONS.items()]
 
 
 def _missing(key, *tools):
@@ -238,13 +167,21 @@ def _sort_rows(rows, sort):
 
 
 def call(state, name, arguments):
-    arguments = arguments or {}
-    if name not in TOOL_BY_NAME:
+    if name not in schemas.TOOL_MODELS:
         raise StateError("unknown_tool", f"unknown tool {name}")
+    input_model, _ = schemas.TOOL_MODELS[name]
+    try:
+        validated = input_model.model_validate(arguments or {})
+    except ValidationError as error:
+        raise StateError("bad_request", str(error)) from error
     handler = globals().get(f"tool_{name}")
     if handler is None:
         raise StateError("unknown_tool", f"tool {name} has no implementation")
-    return handler(state, arguments)
+    result = handler(state, validated.model_dump(exclude_unset=True))
+    try:
+        return OUTPUT_ADAPTERS[name].validate_python(result, strict=True).model_dump(exclude_unset=True)
+    except ValidationError as error:
+        raise StateError("internal", f"invalid {name} output: {error}") from error
 
 
 # -- load tools ---------------------------------------------------------
@@ -273,6 +210,11 @@ def tool_load_handlers(state, arguments):
     return state.load_handlers(arguments["handlers_path"])
 
 
+def tool_write_handlers(state, arguments):
+    return state.write_handlers(arguments["output_dir"], arguments["session"],
+                                arguments["mappings"], arguments.get("load", True))
+
+
 # -- coverage tools -----------------------------------------------------
 def _stats_block(rows, extra=None):
     return {**(extra or {}), **rows}
@@ -286,7 +228,10 @@ def tool_show_overview_code_coverage(state, arguments):
         modules.setdefault(module, []).extend(records)
     rows = [{"module": module, **data.stats_for(records)}
             for module, records in sorted(modules.items())]
-    return _stats_block(data.all_stats(), {"modules": rows,
+    page = coverage_mod.page(rows, arguments.get("offset", 0), arguments.get("limit", PAGE_DEFAULT))
+    return _stats_block(data.all_stats(), {"modules": page["items"],
+                                           "total": page["total"],
+                                           "next_offset": page["next_offset"],
                                            "source_root": str(data.source_root or ""),
                                            "files": len(data.files),
                                            "functions": len(data.functions)})
@@ -396,31 +341,21 @@ def tool_get_reaching_handlers(state, arguments):
 
 
 def tool_show_source_coverage(state, arguments):
-    coverage = _coverage(state, arguments.get("request_id"))
-    function = arguments.get("function")
-    path = arguments.get("file")
-    records = []
-    if function:
-        canonical = _resolve_function(coverage, None, function)
-        records = coverage.branch_records(canonical)
-        if not path:
-            files = coverage.functions[canonical].files
-            path = files[0] if files else None
-    elif path:
-        match = next((candidate for candidate in coverage.files
-                      if candidate == path or coverage.relative(candidate) == path), None)
-        if match is None:
-            raise StateError("unknown_file", f"unknown source file {path}")
-        records = coverage.files[match]
-        path = match
-    else:
-        raise StateError("bad_request", "show_source_coverage needs function or file")
-    root = state.source_root or coverage.source_root
-    return coverage_mod.source_slice(root, records, path,
-                                     arguments.get("start_line"), arguments.get("end_line"))
+    return _source_window(state, arguments, coverage_mod.DEFAULT_SOURCE_LINES)
 
 
 # -- protocol tools -----------------------------------------------------
+def tool_list_parties(state, arguments):
+    graph = _protocol(state)
+    binding = graph.catalog.get("binding") or {}
+    parties = graph.base["model"].get("parties") or []
+    return {"parties": [
+        {"name": party["name"], "description": party.get("description", ""),
+         "alias": list(party.get("alias") or []), "binding": binding.get(party["name"])}
+        for party in parties
+    ]}
+
+
 def tool_get_protocol_steps(state, arguments):
     graph = _protocol(state, arguments.get("request_id"))
     rows = []
@@ -443,8 +378,172 @@ def tool_get_protocol_steps(state, arguments):
 def tool_get_step_dependencies(state, arguments):
     graph = state.txn_graph(arguments["request_id"])
     step = graph.resolve(arguments["step"])
-    return {"step": graph.view(step), **graph.dependencies(step),
-            "graph_revision": graph.revision}
+    direction = arguments.get("direction", "both")
+    if direction not in ("before", "after", "both"):
+        raise StateError("bad_request", "direction must be before, after, or both")
+    trace = arguments.get("trace_steps")
+    allowed = None if trace is None else {graph.resolve(name) for name in trace}
+    result = {"step": step, "before": [], "after": [], "graph_revision": graph.revision}
+    for side, edges in (("before", graph.graph.in_edges(step, data=True)),
+                        ("after", graph.graph.out_edges(step, data=True))):
+        if direction in (side, "both"):
+            for source, target, edge in edges:
+                neighbor = source if side == "before" else target
+                if allowed is None or neighbor in allowed:
+                    result[side].append({"step": neighbor,
+                                         "condition": edge.get("condition", ""),
+                                         "field_relations": edge.get("field_relations", [])})
+    return result
+
+
+def _binding(graph):
+    return graph.catalog.get("binding") or {}
+
+
+def tool_list_messages(state, arguments):
+    graph = _protocol(state, arguments.get("request_id"))
+    index = graph.message_index()
+    roles = _binding(graph)
+    wanted = arguments.get("direction") or "all"
+    rows = []
+    for name in sorted(index["fields"]):
+        carriers = index["steps"].get(name) or []
+        direction = graph.direction(carriers[0], roles) if carriers else "unbound"
+        if wanted != "all" and direction != wanted:
+            continue
+        rows.append({
+            "message": name,
+            "direction": direction,
+            "fields": index["fields"][name],
+            "steps": [row["step"] for row in carriers],
+        })
+    offset = max(0, int(arguments.get("offset") or 0))
+    limit = min(max(1, int(arguments.get("limit") or 20)), 50)
+    return {"total": len(rows), "offset": offset, "limit": limit,
+            "items": rows[offset:offset + limit]}
+
+
+def tool_show_message(state, arguments):
+    graph = _protocol(state, arguments.get("request_id"))
+    index = graph.message_index()
+    name = str(arguments["message"])
+    if name not in index["fields"]:
+        raise StateError("not_found", f"unknown message {name}")
+    roles = _binding(graph)
+    carriers = index["steps"].get(name) or []
+    return {
+        "message": name,
+        "fields": index["fields"][name],
+        "steps": [{**row, "direction": graph.direction(row, roles)} for row in carriers],
+    }
+
+
+def tool_show_step(state, arguments):
+    request_id = arguments.get("request_id")
+    graph = state.txn_graph(request_id) if request_id else _protocol(state)
+    name = graph.resolve(str(arguments["step"]))
+    step = graph.step(name)
+    before = graph.dependencies(name)["before"]
+    needs = []
+    for row in before[:8]:
+        condition = str(row.get("condition") or "")
+        needs.append({"step": row["step"],
+                      "action": row.get("action") or "send",
+                      "condition": condition[:160]})
+    return {
+        "step": name,
+        "action": step.get("action") or "send",
+        "message": step.get("message_name"),
+        "channel": step.get("channel_name"),
+        "sender": step.get("sender_name"),
+        "receiver": step.get("receiver_name"),
+        "party": step.get("party_name"),
+        "condition": str(step.get("condition") or "")[:200],
+        "processing": step.get("processing"),
+        "total_predecessors": len(before),
+        "needs": needs,
+    }
+
+
+def tool_describe_handler(state, arguments):
+    request = state._active_request()
+    request_id = request.request_id
+    graph = state.txn_graph(request_id)
+    handler_id = arguments.get("handler_id")
+    if handler_id is None:
+        if request.analysis_target is None:
+            raise StateError("analysis_target_required", "select a handler or provide handler_id")
+        handler_id = request.analysis_target["handler_id"]
+    handlers = state._request_handlers(request)
+    handler = handlers.by_id.get(handler_id)
+    if handler is None:
+        raise StateError("unknown_handler", f"unknown handler {handler_id!r} for this request")
+    if "coverage" not in request.bindings:
+        raise StateError("not_loaded", "the active request's coverage is not loaded",
+                         missing=["load_coverage_json"])
+    coverage = _coverage(state, request_id)
+    callgraph = _callgraph_optional(state, request_id)
+    rows = _handler_rows(coverage, callgraph, handlers, handler_id=handler_id)
+    mappings = []
+    for row in handlers.rows:
+        for mapped in row.handlers:
+            if mapped.id == handler_id:
+                steps = []
+                for name in row.step_names:
+                    view = graph.view(name)
+                    prior = list(graph.graph.in_edges(name, data=True))
+                    view["predecessors"] = [
+                        {"step": source, "condition": edge.get("condition", "")}
+                        for source, _, edge in prior[:5]
+                    ]
+                    view["predecessors_total"] = len(prior)
+                    steps.append(view)
+                mappings.append({"message": row.message, "handler": mapped.view(),
+                                 "steps": steps})
+    limit = min(max(1, int(arguments.get("limit", 10))), 50)
+    source = None
+    source_error = None
+    try:
+        source = _source_window(state, {"request_id": request_id, "function": handler.symbol,
+                                       "max_lines": arguments.get("source_lines", 60)}, 60)
+    except (StateError, coverage_mod.CoverageError) as error:
+        source_error = {"code": getattr(error, "code", "source_error"), "message": str(error)}
+    return {"request_id": request_id, "handler": handler.view(),
+            "mappings": coverage_mod.page(mappings, arguments.get("offset", 0), limit),
+            "coverage": {key: rows[0][key] for key in ("own", "cumulative", "reachable_functions", "status")},
+            "source": source, "source_error": source_error, "graph_revision": graph.revision}
+
+
+def tool_describe_trace_steps(state, arguments):
+    request = state._active_request()
+    graph = state.txn_graph(request.request_id)
+    steps = arguments.get("steps")
+    if not isinstance(steps, list) or not 1 <= len(steps) <= 50:
+        raise StateError("bad_request", "steps must contain 1 to 50 model step names")
+    names = [graph.resolve(name) for name in steps]
+    selected = set(names)
+    index = graph.message_index()
+    items = []
+    messages = {}
+    for name in names:
+        view = graph.view(name)
+        model = graph.step(name)
+        view["processing"] = model.get("processing")
+        predecessors = list(graph.graph.predecessors(name))
+        other = [prior for prior in predecessors if prior not in selected]
+        view["other_predecessors"] = other[:8]
+        view["other_predecessors_total"] = len(other)
+        items.append(view)
+        message = view["message"]
+        if message and message not in messages:
+            messages[message] = index["fields"].get(message, [])
+    dependencies = graph.induced_dependencies(selected)
+    offset = arguments.get("offset", 0)
+    limit = arguments.get("limit", PAGE_DEFAULT)
+    return {"request_id": request.request_id, "graph_revision": graph.revision,
+            "steps": coverage_mod.page(items, offset, limit),
+            "messages": messages,
+            "dependencies": coverage_mod.page(dependencies, arguments.get("dependency_offset", 0), 100)}
 
 
 def tool_update_step_annotations(state, arguments):
@@ -472,8 +571,272 @@ def tool_remove_dependency(state, arguments):
     return {**row, "graph_revision": graph.revision}
 
 
+def _coverage_source(paths, requested, root):
+    requested = Path(requested)
+    exact = [path for path in paths if Path(path) == requested]
+    if requested.is_absolute() and root is not None:
+        root = Path(root).resolve()
+        if requested.is_relative_to(root):
+            requested = requested.relative_to(root)
+    matches = exact or [
+        path for path in paths
+        if Path(path).parts[-len(requested.parts):] == requested.parts
+    ]
+    if not matches:
+        raise StateError("unknown_file", f"unknown source file {requested}")
+    if len(matches) != 1:
+        raise StateError("ambiguous_file", f"multiple coverage files match {requested}")
+    return matches[0]
+
+
+def _source_path(root, covered_path):
+    """Read the compiled source named by coverage, never an alternate copy."""
+    covered = Path(covered_path)
+    if not covered.is_absolute():
+        if root is None:
+            raise StateError("not_found", f"compiled source root is required for {covered}")
+        covered = Path(root) / covered
+    if covered.is_file():
+        return covered.resolve()
+    raise StateError("not_found", f"compiled source is missing: {covered}; "
+                     "restore the source used by the llvm-cov binary; alternate source copies are not used")
+
+
+def _line_range(start, end):
+    return {"start": start, "end": end} if start <= end else None
+
+
+def _source_window(state, arguments, default_width):
+    coverage = _coverage(state, arguments.get("request_id"))
+    root = state.source_root or coverage.source_root
+    function = arguments.get("function")
+    requested = arguments.get("file")
+    first, last = 1, None
+    if function:
+        canonical = _resolve_function(coverage, None, function)
+        paths = coverage.functions[canonical].files
+        if not paths:
+            raise StateError("not_found", f"function {canonical} has no source file")
+        covered = _coverage_source(paths, requested, root) if requested else paths[0]
+        records = [record for record in coverage.branch_records(canonical)
+                   if record.file == covered]
+    elif requested:
+        covered = _coverage_source(coverage.files, requested, root)
+        records = coverage.files[covered]
+    else:
+        raise StateError("bad_request", "show_source_coverage needs function or file")
+
+    path = _source_path(root, covered)
+    if function:
+        try:
+            first, last = source_mod.function_range(path, canonical, records)
+        except (OSError, source_mod.SourceError) as error:
+            raise StateError("source_range_unavailable", str(error)) from error
+
+    width = arguments.get("max_lines", arguments.get("radius", default_width))
+    width = max(1, min(int(width), coverage_mod.MAX_SOURCE_LINES))
+    around = arguments.get("around_line")
+    start_line = arguments.get("start_line")
+    end_line = arguments.get("end_line")
+    if around is not None:
+        if start_line is not None or end_line is not None:
+            raise StateError("bad_request", "use around_line or an explicit interval")
+        if around < first or (last is not None and around > last):
+            raise StateError("bad_request", f"around_line {around} is outside source range {first}–{last or 'EOF'}")
+        start = max(first, around - width // 2)
+        if last is not None:
+            start = min(start, max(first, last - width + 1))
+    else:
+        start = max(first, start_line or first)
+    end = start + width - 1
+    if end_line is not None:
+        end = min(end, end_line)
+    if last is not None:
+        end = min(end, last)
+    if end < start:
+        raise StateError("bad_request", f"requested interval does not intersect source range {first}–{last or 'EOF'}")
+
+    window = coverage_mod.source_slice(None, records, path, start, end)
+    if not window["lines"] or (around is not None and around > window["total_lines"]):
+        raise StateError("bad_request", f"requested window is outside {path} (1–{window['total_lines']})")
+    window["remaining"] = {
+        "before": _line_range(first, window["start"] - 1),
+        "after": _line_range(window["end"] + 1, last if last is not None else window["total_lines"]),
+    }
+    if function:
+        window.update(function=canonical, file=window["path"], stats=coverage.function_stats(canonical),
+                      range={"start": first, "end": last, "basis": "tree_sitter",
+                             "first_branch_line": min((row.line for row in records), default=None),
+                             "last_branch_line": max((row.end_line for row in records), default=None)})
+    return window
+
+
+def tool_show_function_source(state, arguments):
+    if arguments.get("functions") is not None or arguments.get("whole"):
+        return _source_bundle(state, arguments)
+    if not arguments.get("function"):
+        raise StateError("bad_request", "show_function_source needs function or functions")
+    return _source_window(state, arguments, 120)
+
+
+def _function_window(coverage, root, name, arguments):
+    """Resolve one function to a bounded window inside its syntax range."""
+    canonical = _resolve_function(coverage, None, name)
+    paths = coverage.functions[canonical].files
+    if not paths:
+        raise StateError("not_found", f"function {canonical} has no source file")
+    covered = paths[0]
+    records = [record for record in coverage.branch_records(canonical)
+               if record.file == covered]
+    path = _source_path(root, covered)
+    try:
+        first, last = source_mod.function_range(path, canonical, records)
+    except (OSError, source_mod.SourceError) as error:
+        raise StateError("source_range_unavailable", str(error)) from error
+    width = int(arguments.get("radius") or coverage_mod.DEFAULT_SOURCE_LINES)
+    width = max(10, min(width, coverage_mod.MAX_SOURCE_LINES))
+    if arguments.get("whole"):
+        start, end = first, last
+    else:
+        start = first
+        end = min(max(last, start), start + width - 1)
+    return canonical, path, records, first, last, start, end
+
+
+def _source_bundle(state, arguments):
+    """Read several functions in one call, respecting a shared line budget."""
+    coverage = _coverage(state, arguments.get("request_id"))
+    root = state.source_root or coverage.source_root
+    names = arguments.get("functions")
+    if names is None:
+        names = [arguments["function"]]
+    if not isinstance(names, list) or not names or len(names) > 8:
+        raise StateError("bad_request", "functions must hold 1 to 8 names")
+    budget = int(arguments.get("max_lines") or 400)
+    budget = max(10, min(budget, 2000))
+    results = []
+    spent = 0
+    for name in names:
+        canonical, path, records, first, last, start, end = _function_window(
+            coverage, root, str(name), arguments)
+        room = budget - spent
+        if room < 1:
+            results.append({"function": canonical, "file": str(path),
+                            "range": {"start": first, "end": last, "basis": "tree_sitter"},
+                            "skipped": True, "reason": "line budget exhausted"})
+            continue
+        end = min(end, start + room - 1)
+        window = coverage_mod.source_slice(None, records, path, start, end)
+        spent += len(window["lines"])
+        entry = {
+            "function": canonical,
+            "file": window["path"],
+            "range": {"start": first, "end": last, "basis": "tree_sitter",
+                      "first_branch_line": min((row.line for row in records), default=None),
+                      "last_branch_line": max((row.end_line for row in records), default=None)},
+            "stats": coverage.function_stats(canonical),
+            "lines": window["lines"],
+            "branches": window["branches"],
+            "truncated": window["end"] < last,
+            "remaining_after": _line_range(window["end"] + 1, last),
+        }
+        results.append(entry)
+    return {"functions": results, "max_lines": budget, "lines_returned": spent,
+            "files": sorted({entry["file"] for entry in results
+                             if entry.get("file")})}
+
+
+def _read_log(path):
+    try:
+        return path.read_text(errors="replace").splitlines()
+    except OSError as error:
+        raise StateError("not_found", f"cannot read {path}: {error}") from error
+
+
+def tool_show_replay_logs(state, arguments):
+    request = state.request(arguments["request_id"])
+    channel = arguments.get("source") or "both"
+    wanted = []
+    if channel in ("stdout", "both"):
+        wanted.append(("stdout", request.snapshot_dir / "sut.stdout.log"))
+    if channel in ("stderr", "both"):
+        wanted.append(("stderr", request.snapshot_dir / "sut.stderr.log"))
+    max_lines = min(max(10, int(arguments.get("max_lines") or 200)), 500)
+    case_id = arguments.get("case_id")
+    merged = []
+    cases = []
+    for source, path in wanted:
+        lines = _read_log(path)
+        if case_id:
+            span = _case_span(lines, str(case_id))
+            if span is None:
+                continue
+            start, end = span
+        else:
+            start = max(0, int(arguments.get("start_line") or 1) - 1)
+            end = len(lines)
+        chunk = lines[start:min(end, start + max_lines)]
+        for offset, text in enumerate(chunk):
+            merged.append({"source": source, "line": start + offset + 1, "text": text})
+        for case in _case_index(lines):
+            if case["start"] < end and case["end"] > start:
+                cases.append({**case, "source": source})
+    if not merged:
+        raise StateError("not_found", f"no replay log lines for case {case_id}")
+    return {
+        "snapshot": f"{request.snapshot:06}",
+        "sources": [source for source, _ in wanted],
+        "lines": merged[:max_lines],
+        "truncated": len(merged) > max_lines,
+        "cases": cases[:20],
+        "case_count": len(cases),
+    }
+
+
+def _case_index(lines):
+    """Locate case blocks by their MCN_REPLAY markers."""
+    cases = []
+    current = {}
+    for index, text in enumerate(lines):
+        if "MCN_REPLAY" not in text:
+            continue
+        try:
+            payload = json.loads(text.split("MCN_REPLAY", 1)[1].split("===", 1)[0].strip())
+        except (ValueError, IndexError):
+            continue
+        event = payload.get("event")
+        case = payload.get("case_id")
+        if event == "case_start" and case:
+            current[case] = index
+        elif event == "case_end" and case in current:
+            cases.append({"case_id": case, "start": current.pop(case) + 1,
+                          "end": index + 1, "outcome": payload.get("outcome")})
+    for case, start in current.items():
+        cases.append({"case_id": case, "start": start + 1, "end": len(lines), "outcome": None})
+    return cases
+
+
+def _case_span(lines, case_id):
+    for case in _case_index(lines):
+        if case["case_id"] == case_id:
+            return case["start"] - 1, case["end"]
+    return None
+
+
 def tool_begin_analysis(state, arguments):
     return state.begin_analysis(arguments["request_id"])
+
+
+def tool_select_analysis_target(state, arguments):
+    return state.select_analysis_target(arguments["handler_id"], arguments["reason"])
+
+
+def tool_get_analysis_target(state, arguments):
+    return state.get_analysis_target()
+
+
+def tool_switch_analysis_target(state, arguments):
+    return state.switch_analysis_target(arguments["handler_id"], arguments["reason"])
 
 
 def tool_submit_proposal(state, arguments):

@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import socket
 import subprocess
@@ -40,6 +41,49 @@ def _listen(handler):
 
 
 class RegistryTests(unittest.TestCase):
+    def test_replay_step_markers_from_isolated_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "generator.py"
+            script.write_text(
+                "from generator_server import step_handler\n"
+                "@step_handler('command')\n"
+                "def command(ctx, params):\n"
+                "    if ctx.step_name == 'second': raise RuntimeError('failed')\n"
+            )
+            log = root / "sut.stdout.log"
+            log.write_text("sut output\n")
+            request = {
+                "op": "run", "client": 1, "id": 1,
+                "generator": str(script), "params": {},
+                "step_trace": [
+                    {"name": "first", "step": "command"},
+                    {"name": "second", "step": "command"},
+                ],
+                "host": "127.0.0.1", "port": 1, "timeout_ms": 1000,
+                "replay_log": {
+                    "stdout_path": str(log), "batch": "batch-1",
+                    "case": 3, "case_id": "corpus:7",
+                },
+            }
+            result = cbor2.loads(run_isolated(cbor2.dumps(request)))
+            self.assertEqual(result["status"], "generator")
+            lines = log.read_text().splitlines()
+            markers = [
+                json.loads(line.removeprefix("=== MCN_REPLAY ").removesuffix(" ==="))
+                for line in lines if line.startswith("=== MCN_REPLAY ")
+            ]
+            self.assertEqual(
+                [(m["event"], m["instance"], m["index"], m.get("status")) for m in markers],
+                [("step_start", "first", 0, None), ("step_end", "first", 0, "ok"),
+                 ("step_start", "second", 1, None), ("step_end", "second", 1, "error")],
+            )
+            self.assertTrue(all(m["case_id"] == "corpus:7" and m["batch"] == "batch-1" for m in markers))
+            previous = log.read_bytes()
+            del request["replay_log"]
+            run_isolated(cbor2.dumps(request))
+            self.assertEqual(log.read_bytes(), previous)
+
     def test_legacy_generate_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "legacy.py"

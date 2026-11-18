@@ -1,6 +1,8 @@
 """Declarations and case dispatch for synthesized step handlers."""
 
 import inspect
+import json
+import os
 from types import MappingProxyType
 
 from .context import InteractionError
@@ -29,6 +31,29 @@ def _freeze(value):
     if isinstance(value, bytearray):
         return bytes(value)
     return value
+
+
+def _step_marker(replay_log, event, instance, index, status=None):
+    if replay_log is None:
+        return
+    fd, info = replay_log
+    marker = {
+        "event": event,
+        "batch": info["batch"],
+        "case": info["case"],
+        "case_id": info["case_id"],
+        "index": index,
+        "instance": instance["name"],
+        "step": instance["step"],
+    }
+    if status is not None:
+        marker["status"] = status
+    line = ("\n=== MCN_REPLAY " + json.dumps(marker, ensure_ascii=True, separators=(",", ":")) + " ===\n").encode()
+    while line:
+        written = os.write(fd, line)
+        if written == 0:
+            raise OSError("writing replay marker made no progress")
+        line = line[written:]
 
 
 def build_dispatch(module):
@@ -61,12 +86,18 @@ def build_dispatch(module):
         try:
             if initializer is not None:
                 initializer(ctx, params)
-            for instance in step_trace:
-                handler = handlers.get(instance.get("step"))
-                if handler is None:
-                    raise InteractionError("generator", f"unsupported step {instance.get('step')!r}")
+            for index, instance in enumerate(step_trace):
                 ctx.step_instance = _freeze(instance)
-                handler(ctx, params)
+                _step_marker(ctx._replay_log, "step_start", instance, index)
+                try:
+                    handler = handlers.get(instance.get("step"))
+                    if handler is None:
+                        raise InteractionError("generator", f"unsupported step {instance.get('step')!r}")
+                    handler(ctx, params)
+                except BaseException:
+                    _step_marker(ctx._replay_log, "step_end", instance, index, "error")
+                    raise
+                _step_marker(ctx._replay_log, "step_end", instance, index, "ok")
         finally:
             ctx.step_instance = None
             ctx.close_all()

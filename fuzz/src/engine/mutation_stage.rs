@@ -219,6 +219,7 @@ impl GeneratorMutationStage {
             manager,
             &candidate.input,
             Some(&candidate.origin),
+            baseline_id,
             budget,
         )
     }
@@ -231,6 +232,7 @@ impl GeneratorMutationStage {
         manager: &mut EM,
         input: &GeneratorInput,
         origin: Option<&TraceOrigin>,
+        parent_id: Option<CorpusId>,
         budget: usize,
     ) -> Result<(), Error>
     where
@@ -263,6 +265,19 @@ impl GeneratorMutationStage {
             // Solutions and filtered inputs return no corpus id. Only a new
             // corpus entry contributes. Replay never reaches this stage.
             if let Some(id) = corpus_id {
+                self.log_event(
+                    "mutation_corpus_added",
+                    json!({
+                        "parent_case_id": parent_id.map(|parent| format!("corpus:{}", parent.0)),
+                        "candidate_request": if parent_id.is_none() {
+                            origin.map(|item| item.request_id.as_str())
+                        } else {
+                            None
+                        },
+                        "case_id": format!("corpus:{}", id.0),
+                        "operations": self.mutator.operations(),
+                    }),
+                );
                 if let Some(origin) = origin {
                     if let Err(error) = attach_origin(state.corpus_mut(), id, origin) {
                         log::warn!("could not attach TraceOrigin to corpus {id:?}: {error:?}");
@@ -393,10 +408,8 @@ where
         if state.corpus().count() == 0 {
             return Ok(());
         }
-        let case_id = state
-            .current_corpus_id()
-            .ok()
-            .flatten()
+        let parent_id = state.current_corpus_id().ok().flatten();
+        let case_id = parent_id
             .map(|id| format!("corpus:{}", id.0))
             .unwrap_or_else(|| "corpus:unknown".to_string());
         self.log_event(
@@ -419,6 +432,7 @@ where
             manager,
             &input,
             origin.as_ref(),
+            parent_id,
             budget,
         )
     }

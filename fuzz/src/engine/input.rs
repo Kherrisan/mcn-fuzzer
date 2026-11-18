@@ -17,7 +17,7 @@ use libafl::{inputs::Input, Error};
 use serde::{Deserialize, Serialize};
 
 /// One concrete parameter value. Serialized as a plain JSON/CBOR value.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ParamValue {
     /// An explicitly unset shared value.
@@ -38,7 +38,9 @@ pub enum ParamValue {
 }
 
 /// Semantic kind of a mutable field.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum FieldKind {
     #[default]
@@ -52,7 +54,9 @@ pub enum FieldKind {
 }
 
 /// Wire encoding for `FieldKind::Bytes` values.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum BytesEncoding {
     #[default]
@@ -319,6 +323,23 @@ impl GeneratorInput {
         timeout_ms: u64,
         connect_timeout_ms: u64,
     ) -> Result<Vec<u8>, Error> {
+        self.run_request_with_replay(
+            client, id, worker_id, case_id, host, port, timeout_ms, connect_timeout_ms, None,
+        )
+    }
+
+    pub(crate) fn run_request_with_replay(
+        &self,
+        client: u64,
+        id: u64,
+        worker_id: u64,
+        case_id: u64,
+        host: &str,
+        port: u16,
+        timeout_ms: u64,
+        connect_timeout_ms: u64,
+        replay_log: Option<&ReplayLog>,
+    ) -> Result<Vec<u8>, Error> {
         let request = RunRequest {
             op: "run",
             client,
@@ -333,12 +354,21 @@ impl GeneratorInput {
             port,
             timeout_ms,
             connect_timeout_ms,
+            replay_log,
         };
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&request, &mut encoded)
             .map_err(|error| Error::serialize(format!("generator request cbor: {error}")))?;
         Ok(encoded)
     }
+}
+
+#[derive(Serialize)]
+pub(crate) struct ReplayLog {
+    pub stdout_path: PathBuf,
+    pub case_id: String,
+    pub case: u64,
+    pub batch: String,
 }
 
 #[derive(Serialize)]
@@ -356,6 +386,8 @@ struct RunRequest<'a> {
     port: u16,
     timeout_ms: u64,
     connect_timeout_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    replay_log: Option<&'a ReplayLog>,
 }
 
 /// `ping` or `reset`.
@@ -615,7 +647,24 @@ mod tests {
         let request: serde_json::Value = ciborium::de::from_reader(body.as_slice()).unwrap();
         assert!(request.get("parties").is_none());
         assert!(request.get("channels").is_none());
+        assert!(request.get("replay_log").is_none());
         assert_eq!(request["params"]["hello_1"]["username"], "ubuntu");
+        let replay = ReplayLog {
+            stdout_path: dir.join("sut.stdout.log"),
+            case_id: "corpus:7".to_string(),
+            case: 3,
+            batch: "batch-1".to_string(),
+        };
+        let body = input
+            .run_request_with_replay(1, 2, 3, 4, "127.0.0.1", 21, 1000, 1000, Some(&replay))
+            .unwrap();
+        let request: serde_json::Value = ciborium::de::from_reader(body.as_slice()).unwrap();
+        assert_eq!(request["replay_log"]["case_id"], "corpus:7");
+        assert_eq!(request["replay_log"]["case"], 3);
+        assert_eq!(
+            request["replay_log"]["stdout_path"],
+            replay.stdout_path.display().to_string()
+        );
         let again = GeneratorInput::from_file(&path).unwrap();
         assert_eq!(again, input);
         assert_eq!(again.trace.steps[0].name, "hello_1");

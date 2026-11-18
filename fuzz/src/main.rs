@@ -42,6 +42,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Fork an agent conversation before one recorded request and run one turn.
+    EvalRequest(mcn_fuzz::evaluation::request_eval::Options),
     /// Load the campaign seeds and fuzz.
     Run {
         #[arg(long)]
@@ -214,6 +216,9 @@ fn main() -> ExitCode {
                             output: loaded.coverage.output.clone(),
                             socket: loaded.coverage.mcp_socket.clone(),
                             source_dir: loaded.target.source_dir.clone(),
+                            session_config: Some(
+                                loaded.coverage.output.join("analysis").join("session.json"),
+                            ),
                             ready_timeout: std::time::Duration::from_secs(
                                 loaded.coverage.mcp_ready_timeout_secs.max(1),
                             ),
@@ -244,6 +249,9 @@ fn main() -> ExitCode {
         }
     }
     let result = match &cli.command {
+        Command::EvalRequest(options) => {
+            mcn_fuzz::evaluation::request_eval::run(options).map_err(Error::unknown)
+        }
         Command::Run {
             campaign,
             iterations,
@@ -336,7 +344,7 @@ fn capture_requested(command: &Command, output_root: Option<&std::path::Path>) -
         Command::Coverage { .. } | Command::Accept { .. } | Command::SymbolMap { .. } => false,
         #[cfg(feature = "stats")]
         Command::BenchJob { condition, .. } => condition == "on",
-        Command::Doctor => false,
+        Command::Doctor | Command::EvalRequest(_) => false,
         #[cfg(feature = "stats")]
         Command::BenchCapture { .. } | Command::BenchFinalize { .. } => false,
     }
@@ -548,7 +556,7 @@ fn accept_supervise_job(command: &Command) -> u64 {
 
 fn orchestrator(command: &Command) -> bool {
     match command {
-        Command::Accept { .. } => true,
+        Command::Accept { .. } | Command::EvalRequest(_) => true,
         Command::SymbolMap { .. } => true,
         #[cfg(feature = "stats")]
         Command::BenchCapture { .. } => true,

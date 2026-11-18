@@ -733,7 +733,9 @@ impl CoverageSession {
         let case_no = self
             .log
             .case_start(&&case.id, case.location.filename.as_deref())?;
-        let result = self.replay_inner(&case.input, main_forkserver, main_generator);
+        let result = self.log.replay_log(case_no, &case.id).and_then(|replay_log| {
+            self.replay_inner(&case.input, main_forkserver, main_generator, &replay_log)
+        });
         let mut outcome = match &result {
             Ok(outcome) => outcome.exit_kind.clone(),
             Err(error) => format!("error: {error:?}"),
@@ -758,6 +760,7 @@ impl CoverageSession {
         input: &GeneratorInput,
         main_forkserver: i32,
         main_generator: i32,
+        replay_log: &crate::engine::input::ReplayLog,
     ) -> Result<ReplayOutcome, Error> {
         let policy = job_policy();
         if self.backend.status_owed() && !self.backend.discard_status(policy.result_timeout)? {
@@ -779,7 +782,7 @@ impl CoverageSession {
         let worker = crate::runtime::worker_id()?.nonce;
         let case_id = self.next_case;
         self.next_case = self.next_case.saturating_add(1);
-        if let Err(error) = self.generator.submit(
+        if let Err(error) = self.generator.submit_with_replay(
             input,
             &self.campaign.target.host,
             self.port,
@@ -787,6 +790,7 @@ impl CoverageSession {
             Duration::from_millis(self.campaign.timeouts.connect_ms),
             worker,
             case_id,
+            Some(replay_log),
         ) {
             self.backend.retire();
             return Err(error);
@@ -1834,6 +1838,12 @@ mod tests {
                 .unwrap_or_else(|error| panic!("stage batch failed: {error}"));
         assert!(report.failure.is_none(), "{:?}", report.failure);
         assert_eq!(report.succeeded, 2);
+        let stdout = fs::read_to_string(dir.join("stage-root/sut.stdout.log")).unwrap();
+        assert_eq!(stdout.matches("\"event\":\"step_start\"").count(), 2, "{stdout}");
+        assert_eq!(stdout.matches("\"event\":\"step_end\"").count(), 2, "{stdout}");
+        assert!(stdout.contains("\"instance\":\"probe-1\""), "{stdout}");
+        assert!(stdout.contains("\"case_id\":\"corpus:0\""), "{stdout}");
+        assert!(stdout.contains("\"case_id\":\"corpus:1\""), "{stdout}");
         let csv = fs::read_to_string(cli_out.join("cov_over_time.csv")).unwrap();
         let last = csv.lines().last().unwrap();
         let cols: Vec<_> = last.split(',').collect();

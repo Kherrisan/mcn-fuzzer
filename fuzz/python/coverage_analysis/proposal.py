@@ -56,15 +56,22 @@ def _check_maps(graph, parties, channels):
     known_parties, known_channels, _channels = _known_names(graph)
     for instance, model_party in parties.items():
         if not isinstance(model_party, str) or model_party not in known_parties:
-            raise ProposalError(f"party instance {instance} does not name a model party")
+            raise ProposalError(
+                f"party instance {instance!r} names {model_party!r}, "
+                f"which is not a model party; known parties are {sorted(known_parties)}")
     for instance, channel in channels.items():
         if not isinstance(channel, dict):
-            raise ProposalError(f"channel instance {instance} must be an object")
+            raise ProposalError(f"channel instance {instance!r} must be an object")
         if channel.get("channel") not in known_channels:
-            raise ProposalError(f"channel instance {instance} does not name a model channel")
+            raise ProposalError(
+                f"channel instance {instance!r} names {channel.get('channel')!r}, "
+                f"which is not a model channel; known channels are {sorted(known_channels)}")
         for endpoint in channel.get("endpoints") or []:
             if endpoint not in parties:
-                raise ProposalError(f"channel {instance} endpoint {endpoint} is not a party instance")
+                raise ProposalError(
+                    f"channel {instance!r} lists endpoint {endpoint!r}, "
+                    f"which is not a declared party instance; declared instances are "
+                    f"{sorted(parties)}")
 
 
 def _carried(graph, model_step):
@@ -96,37 +103,60 @@ def _check_binding(graph, parties, channels, item):
     extra = set(item) - TRACE_FIELDS
     if extra:
         raise ProposalError(f"trace item has unsupported fields: {', '.join(sorted(extra))}")
-    step_name = graph.resolve(item["step"])
+    name = item.get("name")
+    try:
+        step_name = graph.resolve(item["step"])
+    except ValueError as error:
+        raise ProposalError(
+            f"step instance {name!r} names {item.get('step')!r}, which is not a model step; "
+            f"use the exact name from get_protocol_steps") from error
     model = graph.step(step_name)
     _carried(graph, model)
+    step_name_text = str(item.get("step") or "")
     channel_instance = str(item.get("channel") or "")
     channel = (channels or {}).get(channel_instance)
     if not isinstance(channel, dict):
-        raise ProposalError(f"unknown channel instance {channel_instance}")
+        raise ProposalError(
+            f"step instance {name!r} (model step {step_name_text!r}) uses channel "
+            f"{channel_instance!r}, which is not a declared channel instance; declared "
+            f"instances are {sorted(channels or {})}")
     if channel.get("channel") != model.get("channel_name"):
-        raise ProposalError(f"instance {item['name']} channel does not match the model step")
+        raise ProposalError(
+            f"step instance {name!r} uses channel {channel_instance!r} "
+            f"(model channel {channel.get('channel')!r}) but model step "
+            f"{step_name_text!r} belongs to {model.get('channel_name')!r}")
     endpoints = set(channel.get("endpoints") or [])
     action = model.get("action") or "send"
 
-    def party_model(instance):
+    def party_model(role, instance):
         if instance not in endpoints:
-            raise ProposalError(f"party instance {instance} is not an endpoint of {channel_instance}")
+            raise ProposalError(
+                f"step instance {name!r} (model step {step_name_text!r}) names {role} "
+                f"{instance!r}, which is not an endpoint of channel instance "
+                f"{channel_instance!r}; its endpoints are {sorted(endpoints)}")
         model_party = (parties or {}).get(instance)
         if not model_party:
-            raise ProposalError(f"unknown party instance {instance}")
+            raise ProposalError(
+                f"step instance {name!r} names {role} {instance!r}, which has no entry in "
+                f"parties; declared party instances are {sorted(parties or {})}")
         return model_party
 
     if action == "send":
-        sender = party_model(item.get("sender"))
-        receiver = party_model(item.get("receiver"))
+        sender = party_model("sender", item.get("sender"))
+        receiver = party_model("receiver", item.get("receiver"))
         if sender != model.get("sender_name") or receiver != model.get("receiver_name"):
-            raise ProposalError(f"instance {item['name']} endpoints do not match the model step")
+            raise ProposalError(
+                f"step instance {name!r} sends {sender!r} -> {receiver!r}, but model step "
+                f"{step_name_text!r} sends {model.get('sender_name')!r} -> "
+                f"{model.get('receiver_name')!r}")
         if item.get("party"):
             raise ProposalError(f"send instance {item['name']} cannot name a party")
     else:
-        actor = party_model(item.get("party"))
+        actor = party_model("party", item.get("party"))
         if actor != model.get("party_name"):
-            raise ProposalError(f"instance {item['name']} party does not match the model step")
+            raise ProposalError(
+                f"step instance {name!r} (model step {step_name_text!r}) names party "
+                f"{actor!r}, but the model step acts as {model.get('party_name')!r}")
         if item.get("sender") or item.get("receiver"):
             raise ProposalError(f"network instance {item['name']} cannot name a sender or receiver")
     if "processing" in item and item.get("processing") != model.get("processing"):
@@ -262,6 +292,18 @@ def _check_projectable(graph, trace):
         raise ProposalError("trace has no generator action")
 
 
+def _nonempty_aliases(graph):
+    """Return alias groups only when a model actually declares one.
+
+    Older campaign binaries reject unknown proposal fields, so an empty map
+    must not be emitted.
+    """
+    aliases = graph.catalog.get("party_aliases") or {}
+    if not any(aliases.values()):
+        return {}
+    return {name: list(values) for name, values in aliases.items() if values}
+
+
 def build_proposal(graph, origin, session, build, snapshot,
                    goal, trace, handlers, parties, channels,
                    dependencies=None):
@@ -335,6 +377,7 @@ def build_proposal(graph, origin, session, build, snapshot,
         "snapshot": snapshot,
         "goal": {"handler_ids": goal_handlers, "reason": str(goal["reason"])},
         "parties": parties or {},
+        **({"party_aliases": aliases} if (aliases := _nonempty_aliases(graph)) else {}),
         "channels": channels or {},
         "trace": normalized,
         "dependencies": dependencies,
@@ -345,10 +388,12 @@ def validate_proposal(proposal, graph, handlers, request=None):
     if not isinstance(proposal, dict):
         raise ProposalError("proposal must be an object")
     allowed = {"origin", "session", "build", "snapshot", "goal", "parties",
-               "channels", "trace", "dependencies"}
+               "channels", "trace", "dependencies", "party_aliases"}
     unknown = sorted(set(proposal) - allowed)
     if unknown:
         raise ProposalError(f"unknown proposal fields: {', '.join(unknown)}")
+    if "party_aliases" in proposal and proposal["party_aliases"] != graph.catalog.get("party_aliases", {}):
+        raise ProposalError("proposal.party_aliases does not match the loaded protocol")
     if proposal.get("origin") not in ORIGINS:
         raise ProposalError("proposal origin is invalid")
     for field in ("session", "build", "snapshot"):

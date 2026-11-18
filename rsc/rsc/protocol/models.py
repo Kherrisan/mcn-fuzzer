@@ -42,6 +42,10 @@ class Party(StrictModel):
     description: NonEmpty = Field(
         description="One short phrase stating the direct communication role."
     )
+    alias: list[NonEmpty] = Field(
+        default_factory=list,
+        description="Names of equivalent protocol parties; reverse declarations are optional."
+    )
 
 
 class ProtocolMessage(StrictModel):

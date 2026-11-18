@@ -13,7 +13,14 @@ GENERATOR_PARTIES={{ generator_parties }}
 UNAVAILABLE_PARTIES={{ unavailable_parties }}
 CONFIGURE_OPTIONS={{ configure_options }}
 CLI_ARGS={{ cli_args }}
-WRITE ready.json
+WRITE ready.json only after all initialization work below is complete.
+
+SOURCE_DIR is the source tree used to build the llvm-cov binary. Use this tree
+for handler discovery and source evidence, including the build's applied patches.
+Do not substitute an upstream checkout or another build's source copy. Coverage
+queries use the compiled source paths recorded by llvm-cov. If this tree is
+missing or inconsistent with those paths, report the mismatch instead of mixing
+source versions.
 
 ## Build configuration and enabled features
 
@@ -73,8 +80,16 @@ The coverage-analysis service answers protocol and handler queries. Useful calls
 
 - `get_loaded_state` — report what is loaded. Empty at session start.
 - `load_protocol` with `{"protocol_path": "MODEL"}`
-  — load the protocol model.
+  — load the protocol model once if it is unloaded.
 - `get_protocol_steps` — list steps by their unique `name`.
+- `list_parties` — list party descriptions, aliases, and current campaign bindings.
+- `list_messages` / `show_message` — page messages with their direction and
+  carrying steps; read one message's fields.
+- `show_step` — read one step's endpoints, `processing`, and direct
+  predecessors.
+
+Do not parse `protocol.json` with scripts or file tools and do not enumerate
+the tool catalogue; use these calls and keep results bounded.
 
 The campaign-introspection service is read-only and separate. Its tools are
 `list_proposals`, `get_proposal`, and `resolve_bitmap_indices`. Counts are live
@@ -84,8 +99,8 @@ and paged feedback indexes. `resolve_bitmap_indices` maps those indexes to a
 source file, line, and function. `column` is always null. A resolved location
 is the feedback site, not new source-line coverage.
 
-Call `get_loaded_state`, `load_protocol`, `get_protocol_steps`, and
-`list_proposals` before building the mapping. `list_proposals` may be empty;
+Call `get_loaded_state`, load the protocol model if needed, then call
+`get_protocol_steps` and `list_proposals` before building the mapping. `list_proposals` may be empty;
 that call only warms the introspection service. Do not load coverage data or
 open an analysis transaction during initialization.
 
@@ -111,10 +126,14 @@ STEPS={{ steps }}
 4. For an unmatched inbound message, check the dispatcher and format-handling
    path, then record the missing evidence. Do not force a mapping. Do not compute
    uncovered regions, dependencies, priorities, or refined models here.
-5. Construct handlers.json, then check valid JSON, session, exactly one
-   row per inbound message, no duplicate symbols within a row, nonempty
+5. Prepare the mapping for the `write_handlers` tool. Check the session, exactly
+   one row per inbound message, no duplicate symbols within a row, nonempty
    symbol/location/evidence for handlers, and a nonempty reason for every empty
-   handlers array. Publish ready.json only after these checks pass.
+   handlers array. For every row, call `show_message` for that exact message
+   name and copy `step_names` only from the returned `steps`. Never merge steps
+   whose message names differ even when one name is a prefix of another (for
+   example `CertificateVerify` versus `TLS 1.2 CertificateVerify`); the fuzzer
+   rejects a row whose step belongs to a different message.
 
 ## Output
 
@@ -134,8 +153,17 @@ location. Keep evidence to one sentence of at most 240 characters. Keep reasons
 to one short sentence. Do not print the complete JSON in the terminal.
 
 The fuzzer validates and freezes this mapping for subsequent coverage snapshots.
-Write handlers.json atomically, then publish ready.json atomically as the last
-action, with {"session":"SESSION above","status":"ready"}.
+Write handlers.json with the `write_handlers` tool: pass `output_dir`,
+`session`, and `mappings`, and let the service serialise, re-read, and validate
+the file against the loaded model. If the tool rejects a row, correct the
+mapping and call it again. Complete all source investigation, mapping
+corrections, and artifact checks before publishing readiness.
 
 SOURCE_DIR is only for this coverage-analysis agent. Do not modify the fuzzer,
 the SUT, or the base protocol model. Do not install packages.
+
+As your final tool call, write one JSON object to a temporary file in OUTPUT_DIR
+and atomically rename it to ready.json. Use
+{"session":"SESSION above","status":"ready"}. Immediately send a brief final
+response and end the turn. After publishing ready.json, make no further tool
+calls, checks, or changes to the mapping.

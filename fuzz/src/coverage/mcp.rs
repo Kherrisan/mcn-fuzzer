@@ -33,6 +33,8 @@ pub struct ServiceRequest {
     /// Supervisor-provided endpoint. `None` starts a private service.
     pub socket: Option<PathBuf>,
     pub source_dir: Option<PathBuf>,
+    /// Campaign-wide register facts, read once by the service at startup.
+    pub session_config: Option<PathBuf>,
     pub ready_timeout: Duration,
 }
 
@@ -126,6 +128,9 @@ pub fn boot_if_requested(identity: &TargetIdentity) -> Result<()> {
         .arg(&state);
     if let Some(source) = &request.source_dir {
         command.arg("--source-root").arg(source);
+    }
+    if let Some(config) = &request.session_config {
+        command.arg("--session-config").arg(config);
     }
     command
         .env_clear()
@@ -240,6 +245,10 @@ impl McpClient {
             socket,
             timeout: Duration::from_secs(300),
         }
+    }
+
+    pub(crate) fn with_timeout(&self, timeout: Duration) -> Self {
+        Self { socket: self.socket.clone(), timeout }
     }
 
     pub fn connect() -> Result<Self> {

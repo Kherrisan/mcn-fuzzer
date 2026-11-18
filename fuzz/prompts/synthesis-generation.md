@@ -72,6 +72,9 @@ them. Leave time for setup, all steps, and cleanup.
 {% for party in roles %}- {{ party.name }}: {{ party.description }} [{{ party.role }}]
 {% endfor %}
 GENERATOR_PARTIES lists participants used by the selected steps and channels.
+The proposal's `party_aliases` maps protocol party names to their declared
+aliases, with reverse relationships included. This is descriptive context;
+the campaign's party assignments and trace instance names remain authoritative.
 Implement all their necessary behaviors, including passive listeners, upstream
 services, other users, data-channel peers, and SDK server glue. The global
 assignment above governs the actions explicitly specified in the trace.

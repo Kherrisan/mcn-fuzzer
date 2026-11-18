@@ -30,6 +30,22 @@ pub(crate) struct SutLogCopy {
 }
 
 impl SutLog {
+    pub(crate) fn replay_log(
+        &self,
+        case: u64,
+        case_id: &str,
+    ) -> Result<crate::engine::input::ReplayLog, libafl::Error> {
+        let stdout_path = fs::canonicalize(self.root.join(STDOUT_LOG))
+            .map_err(|error| {
+                libafl::Error::unknown(format!("resolving SUT stdout log: {error}"))
+            })?;
+        Ok(crate::engine::input::ReplayLog {
+            stdout_path,
+            case_id: case_id.to_string(),
+            case,
+            batch: self.batch.clone(),
+        })
+    }
     /// Open the cumulative files and append a batch marker before any child starts.
     pub(crate) fn open(root: &Path, batch: impl Into<String>) -> Result<Self, libafl::Error> {
         fs::create_dir_all(root).map_err(|error| {

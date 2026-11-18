@@ -12,6 +12,7 @@ use libafl::{
     Error, HasMetadata,
 };
 use libafl_bolts::{rands::Rand, Named};
+use serde_json::{json, Value};
 
 use crate::{
     engine::input::{GeneratorInput, ParamValue},
@@ -26,6 +27,7 @@ const INTERESTING: &[i64] = &[
 #[derive(Debug)]
 pub struct GeneratorMutator {
     name: Cow<'static, str>,
+    operations: Vec<Value>,
 }
 
 impl Default for GeneratorMutator {
@@ -40,7 +42,12 @@ impl GeneratorMutator {
     pub fn new() -> Self {
         Self {
             name: Cow::Borrowed("GeneratorMutator"),
+            operations: Vec::new(),
         }
+    }
+
+    pub(crate) fn operations(&self) -> &[Value] {
+        &self.operations
     }
 }
 
@@ -60,7 +67,8 @@ where
         state: &mut S,
         input: &mut GeneratorInput,
     ) -> Result<MutationResult, Error> {
-        let result = mutate_generator(state.rand_mut(), input);
+        self.operations.clear();
+        let result = mutate_generator_recorded(state.rand_mut(), input, &mut self.operations);
         state
             .metadata_or_insert_with(BitmapProgress::default)
             .set_mutation_pending(result == MutationResult::Mutated);
@@ -81,30 +89,53 @@ where
 
 /// Stack 2..=64 field/step edits. Traces take precedence over params.
 pub fn mutate_generator<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
+    mutate_generator_recorded(rand, input, &mut Vec::new())
+}
+
+fn mutate_generator_recorded<R: Rand>(
+    rand: &mut R,
+    input: &mut GeneratorInput,
+    operations: &mut Vec<Value>,
+) -> MutationResult {
     if input.trace.steps.is_empty() && input.params.is_empty() {
         return MutationResult::Skipped;
     }
     let steps = 1u64 << (1 + rand.below_or_zero(6) as u64);
     let mut mutated = MutationResult::Skipped;
     for _ in 0..steps {
-        if mutate_once(rand, input) == MutationResult::Mutated {
+        if mutate_once(rand, input, operations) == MutationResult::Mutated {
             mutated = MutationResult::Mutated;
         }
     }
     mutated
 }
 
-fn mutate_once<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
+fn mutate_once<R: Rand>(
+    rand: &mut R,
+    input: &mut GeneratorInput,
+    operations: &mut Vec<Value>,
+) -> MutationResult {
     if input.trace.steps.is_empty() {
         return MutationResult::Skipped;
     }
-    if rand.below_or_zero(100) < 70 && mutate_field(rand, input) == MutationResult::Mutated {
+    if rand.below_or_zero(100) < 70
+        && mutate_field_recorded(rand, input, operations) == MutationResult::Mutated
+    {
         return MutationResult::Mutated;
     }
-    mutate_step(rand, input)
+    mutate_step_recorded(rand, input, operations)
 }
 
+#[cfg(test)]
 fn mutate_field<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
+    mutate_field_recorded(rand, input, &mut Vec::new())
+}
+
+fn mutate_field_recorded<R: Rand>(
+    rand: &mut R,
+    input: &mut GeneratorInput,
+    operations: &mut Vec<Value>,
+) -> MutationResult {
     let candidates = input
         .params
         .iter()
@@ -120,6 +151,7 @@ fn mutate_field<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRe
     };
     let keys = fields.keys().cloned().collect::<Vec<_>>();
     let field = keys[rand.below_or_zero(keys.len())].clone();
+    let before = fields.get(&field).cloned();
     if rand.below_or_zero(5) == 0 {
         if let Some(fields) = input.params.get_mut(&instance) {
             fields.remove(&field);
@@ -134,9 +166,10 @@ fn mutate_field<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRe
             .find(|step| step.name == instance)
         {
             if !step.omitted_fields.iter().any(|item| item == &field) {
-                step.omitted_fields.push(field);
+                step.omitted_fields.push(field.clone());
             }
         }
+        operations.push(json!({"type": "field", "operation": "omit", "instance": instance, "field": field, "before": before}));
         return MutationResult::Mutated;
     }
     let Some(value) = input
@@ -146,7 +179,11 @@ fn mutate_field<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRe
     else {
         return MutationResult::Skipped;
     };
-    mutate_value(rand, value)
+    let result = mutate_value(rand, value);
+    if result == MutationResult::Mutated && before.as_ref() != Some(value) {
+        operations.push(json!({"type": "field", "operation": "change", "instance": instance, "field": field, "before": before, "after": value}));
+    }
+    result
 }
 
 fn mutate_integer<R: Rand>(rand: &mut R, number: &mut i64) {
@@ -158,7 +195,16 @@ fn mutate_integer<R: Rand>(rand: &mut R, number: &mut i64) {
     }
 }
 
+#[cfg(test)]
 fn mutate_step<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
+    mutate_step_recorded(rand, input, &mut Vec::new())
+}
+
+fn mutate_step_recorded<R: Rand>(
+    rand: &mut R,
+    input: &mut GeneratorInput,
+    operations: &mut Vec<Value>,
+) -> MutationResult {
     let len = input.trace.steps.len();
     if len == 0 {
         return MutationResult::Skipped;
@@ -207,6 +253,45 @@ fn mutate_step<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationRes
             }
         }
     }
+    let before: BTreeSet<_> = original_trace.steps.iter().map(|step| &step.name).collect();
+    let after: BTreeSet<_> = input.trace.steps.iter().map(|step| &step.name).collect();
+    let added: Vec<_> = input
+        .trace
+        .steps
+        .iter()
+        .filter(|step| !before.contains(&step.name))
+        .collect();
+    let removed: Vec<_> = original_trace
+        .steps
+        .iter()
+        .filter(|step| !after.contains(&step.name))
+        .collect();
+    let swapped = if operation == "reorder" {
+        vec![
+            original_trace.steps[index].name.clone(),
+            input.trace.steps[index].name.clone(),
+        ]
+    } else {
+        Vec::new()
+    };
+    operations.push(json!({
+        "type": "step",
+        "operation": operation,
+        "index": index,
+        "added": added,
+        "removed": removed,
+        "swapped": swapped,
+        "dependencies_added": input.trace.dependencies.iter()
+            .filter(|dependency| !original_trace.dependencies.contains(dependency))
+            .collect::<Vec<_>>(),
+        "dependencies_removed": original_trace.dependencies.iter()
+            .filter(|dependency| !input.trace.dependencies.contains(dependency))
+            .collect::<Vec<_>>(),
+        "broken_dependencies": input.trace.steps.iter()
+            .filter(|step| !step.broken_dependencies.is_empty())
+            .map(|step| json!({"instance": step.name, "dependencies": step.broken_dependencies}))
+            .collect::<Vec<_>>(),
+    }));
     MutationResult::Mutated
 }
 
@@ -597,6 +682,53 @@ mod tests {
             .dependencies
             .iter()
             .any(|dependency| dependency.origin == "mutation"));
+    }
+
+    #[test]
+    fn recorded_operations_describe_field_and_step_changes() {
+        let mut input = GeneratorInput::with_trace(
+            PathBuf::from("/tmp/generator.py"),
+            vec![crate::engine::input::StepInstance {
+                name: "send_1".into(),
+                step: "send".into(),
+                action: "send".into(),
+                condition: String::new(),
+                message: None,
+                processing: None,
+                channel: "control".into(),
+                sender: None,
+                receiver: None,
+                party: None,
+                omitted_fields: vec![],
+                inputs: BTreeMap::new(),
+                broken_dependencies: vec![],
+            }],
+            BTreeMap::from([(
+                "send_1".into(),
+                BTreeMap::from([("flag".into(), ParamValue::Bool(false))]),
+            )]),
+        );
+        let mut operations = Vec::new();
+        let mut rand = StdRand::with_seed(4);
+        assert_eq!(
+            mutate_field_recorded(&mut rand, &mut input, &mut operations),
+            MutationResult::Mutated
+        );
+        assert_eq!(operations[0]["type"], "field");
+        assert_eq!(operations[0]["instance"], "send_1");
+        assert_eq!(operations[0]["field"], "flag");
+        assert_eq!(operations[0]["before"], false);
+        if operations[0]["operation"] == "change" {
+            assert_eq!(operations[0]["after"], true);
+        }
+        assert_eq!(
+            mutate_step_recorded(&mut rand, &mut input, &mut operations),
+            MutationResult::Mutated
+        );
+        assert_eq!(operations[1]["type"], "step");
+        assert_eq!(operations[1]["operation"], "duplicate");
+        assert_eq!(operations[1]["added"][0]["name"], "send_1_copy1");
+        assert_eq!(input.trace.steps[1].name, "send_1_copy1");
     }
 
     #[test]

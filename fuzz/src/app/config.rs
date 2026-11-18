@@ -69,7 +69,9 @@ impl Default for Timeouts {
 pub struct TargetConfig {
     /// PCGUARD forkserver ELF.
     pub binary: PathBuf,
-    /// Optional SUT source directory. Coverage analysis reads it. Synthesis prompts do not.
+    /// Source tree used by coverage.binary, including applied build patches.
+    /// Analysis initialization and MCP source queries share this root.
+    /// Synthesis prompts do not read it.
     #[serde(default)]
     pub source_dir: Option<PathBuf>,
     /// Directory in which the target runs.

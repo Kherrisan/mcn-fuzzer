@@ -33,6 +33,7 @@ use crate::{
         AgentOutcome, AgentTask, CommandLine, SessionInit, WorkerConfig,
     },
     app::config::{AgentProvider, Campaign},
+    engine::stagnation::BitmapProgress,
     protocol::{load_model, Binding, IndexedModel, PartyRole},
 };
 
@@ -245,6 +246,7 @@ pub struct CoverageAnalysisStage {
     phase: Phase,
     inflight: Option<Inflight>,
     pending: Option<u64>,
+    retried_snapshot: Option<u64>,
     /// Newest snapshot that arrived before initialization finished.
     skipped_snapshot: Option<u64>,
     seen_snapshots: BTreeSet<u64>,
@@ -347,6 +349,27 @@ impl CoverageAnalysisStage {
                 PartyRole::Unavailable => unavailable_parties.push(name.to_string()),
             }
         }
+        // Campaign-wide register facts belong to the service, not to each
+        // request. Write them before the client starts the service.
+        let session_path = analysis_root.join("session.json");
+        fs::write(
+            &session_path,
+            serde_json::to_vec_pretty(&json!({
+                "session": boot.session,
+                "build": fingerprint,
+                "model": campaign.generator_synthesis.model,
+                "handlers": handlers_path,
+                "llvm_cov": campaign.coverage.llvm_cov,
+                "source_dir": campaign.target.source_dir,
+                "sut_parties": sut_parties,
+                "generator_parties": generator_parties,
+                "unavailable_parties": unavailable_parties,
+                "configure_options": campaign.target.configure_options,
+                "cli_args": campaign.target.cli_args,
+            }))
+            .map_err(|error| Error::unknown(format!("serialising session config: {error}")))?,
+        )
+        .map_err(|error| Error::unknown(format!("writing session config: {error}")))?;
         let mut stage = Self {
             enabled: true,
             campaign: campaign.clone(),
@@ -368,6 +391,7 @@ impl CoverageAnalysisStage {
             phase: Phase::Idle,
             inflight: None,
             pending: None,
+            retried_snapshot: None,
             skipped_snapshot: None,
             seen_snapshots: BTreeSet::new(),
             worker: None,
@@ -403,6 +427,7 @@ impl CoverageAnalysisStage {
             phase: Phase::Idle,
             inflight: None,
             pending: None,
+            retried_snapshot: None,
             skipped_snapshot: None,
             seen_snapshots: BTreeSet::new(),
             worker: None,
@@ -578,22 +603,14 @@ impl CoverageAnalysisStage {
             .mcp
             .as_ref()
             .ok_or_else(|| Error::unknown("coverage MCP client is missing"))?;
+        // Only per-request facts travel here: session, build, model, handlers,
+        // parties, and llvm-cov were read by the service at startup from
+        // analysis/session.json.
         mcp.register(&json!({
             "request_id": request,
-            "session": self.session,
-            "build": self.fingerprint,
             "snapshot": format!("{snapshot:06}"),
             "output_dir": output_dir,
             "snapshot_dir": snapshot_dir,
-            "model": self.campaign.generator_synthesis.model,
-            "handlers": self.handlers_path,
-            "source_dir": self.campaign.target.source_dir,
-            "configure_options": self.campaign.target.configure_options,
-            "cli_args": self.campaign.target.cli_args,
-            "sut_parties": self.sut_parties,
-            "generator_parties": self.generator_parties,
-            "unavailable_parties": self.unavailable_parties,
-            "llvm_cov": self.campaign.coverage.llvm_cov.clone(),
         }))?;
         let prompt = render_task(
             self,
@@ -611,6 +628,9 @@ impl CoverageAnalysisStage {
                 log::warn!("introspection register {request}: {error}");
             }
         }
+        crate::evaluation::request_eval::capture(
+            &output_dir, &prompt, Some(mcp), self.introspection.as_ref(),
+        );
         if self
             .worker
             .as_ref()
@@ -769,6 +789,17 @@ impl CoverageAnalysisStage {
                         "analysis_failed",
                         json!({"request": inflight.request, "reason": failure.reason}),
                     );
+                    if failure.prompt_wait_timed_out
+                        && self.pending.is_none()
+                        && self.retried_snapshot != Some(inflight.snapshot)
+                    {
+                        self.retried_snapshot = Some(inflight.snapshot);
+                        self.pending = Some(inflight.snapshot);
+                        self.log_event(
+                            "analysis_snapshot_requeued",
+                            json!({"snapshot": inflight.snapshot, "reason": "prompt_wait_timeout"}),
+                        );
+                    }
                 }
             }
             Phase::Idle => {
@@ -881,6 +912,15 @@ where
         self.poll_agent()?;
         if self.initialized && self.inflight.is_none() {
             self.dispatch()?;
+            // No analysis can fill the mailbox for this trigger. Resume the
+            // stagnation counter after failures, no_proposal, or an empty replay.
+            if self.inflight.is_none() {
+                if let Ok(progress) = state.metadata_mut::<BitmapProgress>() {
+                    if progress.synthesis_due() && self.mailbox.peek().is_none() {
+                        progress.take_synthesis_request();
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -1106,9 +1146,8 @@ mod tests {
     use super::*;
     use crate::agents::TerminalFact;
 
-    #[test]
-    fn init_timeout_count_is_per_stage_and_only_the_third_is_fatal() {
-        let campaign: Campaign = toml::from_str(
+    fn test_campaign() -> Campaign {
+        toml::from_str(
             r#"
 [target]
 binary = "b"
@@ -1127,7 +1166,12 @@ python = "python"
 pythonpath = "pp"
 "#,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn init_timeout_count_is_per_stage_and_only_the_third_is_fatal() {
+        let campaign = test_campaign();
         let mut first = CoverageAnalysisStage::disabled(&campaign, ProposalMailbox::default());
         let mut second = CoverageAnalysisStage::disabled(&campaign, ProposalMailbox::default());
         for stage in [&mut first, &mut second] {
@@ -1165,6 +1209,55 @@ pythonpath = "pp"
             ))
             .unwrap();
         assert_eq!(second.init_timeouts, 1);
+    }
+
+    #[test]
+    fn unsent_request_retries_once_then_releases_the_synthesis_trigger() {
+        let mut stage = CoverageAnalysisStage::disabled(&test_campaign(), ProposalMailbox::default());
+        stage.enabled = true;
+        stage.initialized = true;
+        let mut state = libafl::state::NopState::<()>::new();
+        let mut progress = BitmapProgress::new(1).unwrap();
+        progress.set_mutation_pending(true);
+        progress.observe(&[0], true);
+        progress.finish_source_coverage();
+        assert!(progress.synthesis_due());
+        state.add_metadata(progress);
+
+        let failure = || {
+            let mut failure =
+                AgentFailure::new("prompt wait timed out".into(), TerminalFact::default());
+            failure.prompt_wait_timed_out = true;
+            failure
+        };
+        stage.phase = Phase::Running;
+        stage.inflight = Some(Inflight {
+            request: "first".into(),
+            snapshot: 2,
+        });
+        stage.consume_failure(failure()).unwrap();
+        assert_eq!(stage.pending.take(), Some(2));
+
+        // A redispatched request for the same snapshot uses a fresh identity.
+        stage.phase = Phase::Running;
+        stage.inflight = Some(Inflight {
+            request: "retry".into(),
+            snapshot: 2,
+        });
+        let (commands, _requests) = std::sync::mpsc::channel();
+        let (outcomes, receiver) = std::sync::mpsc::channel();
+        stage.worker = Some(Client::from_channels(commands, receiver));
+        stage.perform(&mut (), &mut (), &mut state, &mut ()).unwrap();
+        assert!(state.metadata::<BitmapProgress>().unwrap().synthesis_due());
+
+        outcomes.send(AgentOutcome::Failed(failure())).unwrap();
+        stage.perform(&mut (), &mut (), &mut state, &mut ()).unwrap();
+        assert!(stage.pending.is_none());
+        let progress = state.metadata_mut::<BitmapProgress>().unwrap();
+        assert!(!progress.synthesis_due());
+        progress.set_mutation_pending(true);
+        progress.observe(&[0], true);
+        assert!(progress.source_coverage_due());
     }
 
     #[test]

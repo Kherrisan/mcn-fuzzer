@@ -16,6 +16,7 @@ pub(crate) struct AgentFailure {
     pub(crate) reason: String,
     pub(crate) fact: TerminalFact,
     pub(crate) timeout: bool,
+    pub(crate) prompt_wait_timed_out: bool,
 }
 
 pub(crate) fn redact_text(text: &str, secrets: &[String]) -> String {
@@ -53,6 +54,7 @@ impl AgentFailure {
             reason,
             fact,
             timeout,
+            prompt_wait_timed_out: false,
         }
     }
 }

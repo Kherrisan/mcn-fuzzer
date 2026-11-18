@@ -195,6 +195,12 @@ Parsed data, the committed graph checkpoint, `service.jsonl` call records, and
 socket lives under `/tmp/mcn-mcp-*`. `service.jsonl` is the audit trail for
 agent tool calls.
 
+Coverage MCP tools use Pydantic input and output models. The stdio bridge
+publishes both schemas and returns successful results as JSON text and MCP
+structured content. The Unix socket and MCP bridge share validation and the
+existing structured error codes. `mcp` and `pydantic` are direct Python
+dependencies of the coverage service.
+
 The service tool set is explicit: `load_coverage_json`, `load_cfg`, `load_callgraph`,
 `load_protocol`, `load_handlers`, `get_loaded_state`; five coverage views
 (`show_overview/module/file/handler/func_code_coverage`); `get_reachable_functions`,
@@ -204,6 +210,16 @@ The service tool set is explicit: `load_coverage_json`, `load_cfg`, `load_callgr
 Unloaded data returns `not_loaded` with the load tool to call; mismatched builds
 return `incompatible_data`. Coverage counts come from the frozen
 `coverage.json` true/false source branches, not from reconstructed IR edges.
+
+Function source windows (`show_function_source`, `show_source_coverage` with a
+function, and `describe_handler`) use Tree-sitter C/C++ definition boundaries.
+The returned `range` describes the whole function; `start`/`end` and `remaining`
+describe the bounded window. Branch coordinates remain coverage annotations and
+do not truncate the function. Parsing is cached by resolved path, modification
+time, and file size. Missing or ambiguous definitions return
+`source_range_unavailable`; use an explicit file window to inspect unsupported
+or macro-generated definitions. Install the parser dependencies from
+`python/pyproject.toml` or `python/requirements-protocols.txt`.
 
 After a coverage snapshot is frozen, the coverage agent loads that request's
 inputs, explores the handler and reachable-function summaries, and writes a
@@ -298,7 +314,16 @@ The audit checks 32 cataloged distributions and runs protocol/crypto/codec probe
 
 Coverage-analysis init and task prompts receive `[target].source_dir` as `SOURCE_DIR`,
 plus `[target].configure_options` and `[target].cli_args` as `CONFIGURE_OPTIONS` and
-`CLI_ARGS`. The prompts tell the agent to combine those switches with other build
+`CLI_ARGS`. Set `source_dir` to the source tree actually used by `coverage.binary`,
+including applied patches: LightFTP uses `build-llvm-cov/LightFTP`; the OpenSSL
+4.0.2 out-of-tree build uses `../../.deps/openssl/openssl-4.0.2-s-server-only`,
+as recorded by its `configdata.pm`. The MCP service receives the same root.
+Absolute llvm-cov source paths are read exactly; relative paths are resolved
+against this root. Missing compiled files are errors, with no fallback to an
+upstream checkout or another file with the same name. Existing sessions and
+accepted handler mappings must be regenerated in a new campaign to change their
+source evidence.
+The prompts tell the agent to combine those switches with other build
 material (`configdata.pm`, `CMakeCache.txt`, generated headers, build logs) to
 decide which protocol features are compiled in, to avoid goals for disabled
 features, and to prioritize enabled features in proposals and trace selection.
@@ -357,3 +382,26 @@ All campaigns use the ASAN target; only the coverage binary is non-ASAN. `build-
 `build-graphs/graphs` is exported from the pruned 4.0.2 source: `opt -passes=dot-callgraph` on the linked bitcode, and `dot-cfg-only` per object in parallel (the linked-module pass is ~100x slower). The old `llvm-compatible/` SVF bundle stays for history but is no longer referenced by campaigns. The alias join still reports inline/header function records that have no standalone symbol as unmatched instead of guessing.
 
 `generators/tls12.py` is a params-only example; new synthesis generators use decorated step handlers. It reads the current instance's entry from `params`, rebuilds TLS lengths, then applies `version`, `cipher`, `sni`, `extensions_hex`, and `truncate`. The response reader takes the 5-byte record header and then at most 18432 body bytes. A ServerHello is `ok`. An alert is `alert`. A short close is `eof`. Connect failures stay `conn` and read deadlines stay `timeout`.
+
+### Evaluate one recorded agent request
+
+Run a single analysis or synthesis turn from the point just before its original
+prompt with the stage's Agent profile from the supplied campaign TOML.
+
+```sh
+mcn-fuzz eval-request --campaign campaign.toml --run-dir path/to/run \
+  --stage analysis --request-id 000002-example --out path/to/new-eval-dir
+```
+
+Use `--prompt FILE` for a complete replacement or `--replace-from FILE
+--replace-with FILE` for an exact single substitution. Pass a different campaign
+TOML to compare Agent profile settings. Both stages require a Codex profile with
+the app-server's bounded thread fork support and access to the original local
+session recording. The output directory must be new.
+
+The evaluation starts private Coverage and Campaign Introspection MCP services,
+forks the session before the original request, and sends one turn. The output
+includes the exact prompt, restored MCP state, turn timing, tool call metadata,
+and artifact validation results. For older campaigns the evaluator reconstructs
+the service state from events and records the missing historical statistics in
+`mcp-initial-state.json`.

@@ -15,7 +15,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
@@ -32,7 +32,7 @@ const DEFAULT_INDEX_LIMIT: usize = 256;
 const MAX_INDEX_LIMIT: usize = 1024;
 const MAX_ERROR_BYTES: usize = 4096;
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 pub struct ProposalId(String);
 
 impl ProposalId {
@@ -64,7 +64,7 @@ pub struct CampaignIdentity {
     pub started_at_unix_ms: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProposalOrigin {
     Coverage,
@@ -106,7 +106,7 @@ impl ProposalStatus {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProposalIdentity {
     pub id: ProposalId,
     pub origin: ProposalOrigin,
@@ -116,20 +116,20 @@ pub struct ProposalIdentity {
     pub created_at_unix_ms: u64,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GeneratorArtifacts {
     pub generator_py: PathBuf,
     pub params_json: PathBuf,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct MutationStats {
     attempts: u64,
     changed_candidates: u64,
     skipped_or_unchanged: u64,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct ExecutionStats {
     started: u64,
     completed: u64,
@@ -142,20 +142,20 @@ struct ExecutionStats {
     last_error: Option<ExecutionError>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct ExecutionError {
     at_unix_ms: u64,
     category: String,
     message: String,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct ContributionStats {
     corpus_cases: BTreeSet<u64>,
     feedback_novelty_indices: BTreeSet<u32>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct ProposalStats {
     mutations: MutationStats,
     executions: ExecutionStats,
@@ -168,6 +168,25 @@ struct ProposalData {
     synthesis_request_id: Option<String>,
     artifacts: Option<GeneratorArtifacts>,
     stats: ProposalStats,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct ProposalSnapshot {
+    pub(crate) identity: ProposalIdentity,
+    pub(crate) status: ProposalStatus,
+    pub(crate) proposal: Option<Proposal>,
+    pub(crate) synthesis_request_id: Option<String>,
+    pub(crate) artifacts: Option<GeneratorArtifacts>,
+    #[serde(default)]
+    stats: ProposalStats,
+}
+
+impl ProposalSnapshot {
+    pub(crate) fn legacy(identity: ProposalIdentity, status: ProposalStatus,
+                         proposal: Proposal) -> Self {
+        Self { identity, status, proposal: Some(proposal), synthesis_request_id: None,
+               artifacts: None, stats: ProposalStats::default() }
+    }
 }
 
 pub struct ProposalRecord {
@@ -283,6 +302,39 @@ impl IntrospectionHandle {
 
     pub fn store(&self) -> Arc<IntrospectionStore> {
         self.with(RegistryWriter::store)
+    }
+
+    pub(crate) fn snapshot(&self) -> Result<Vec<ProposalSnapshot>, String> {
+        self.with(|writer| {
+            let records = writer.shared.proposals.read().map_err(|_| "proposal list poisoned")?;
+            records.iter().map(|record| {
+                let data = record.read_data()?;
+                Ok(ProposalSnapshot {
+                    identity: record.identity.clone(),
+                    status: data.status,
+                    proposal: data.proposal.as_deref().cloned(),
+                    synthesis_request_id: data.synthesis_request_id.clone(),
+                    artifacts: data.artifacts.clone(),
+                    stats: data.stats.clone(),
+                })
+            }).collect()
+        })
+    }
+
+    pub(crate) fn restore(&self, snapshots: Vec<ProposalSnapshot>) -> Result<(), String> {
+        self.with_mut(|writer| {
+            for snapshot in snapshots {
+                let record = writer.register(snapshot.identity)?;
+                *record.data.write().map_err(|_| "proposal record poisoned")? = ProposalData {
+                    status: snapshot.status,
+                    proposal: snapshot.proposal.map(Arc::new),
+                    synthesis_request_id: snapshot.synthesis_request_id,
+                    artifacts: snapshot.artifacts,
+                    stats: snapshot.stats,
+                };
+            }
+            Ok(())
+        })
     }
 
     pub fn register_coverage(
@@ -796,6 +848,16 @@ impl IntrospectionStore {
         index_offset: Option<usize>,
         index_limit: Option<usize>,
     ) -> Result<Value, String> {
+        self.get_proposal_view(id, index_offset, index_limit, false)
+    }
+
+    fn get_proposal_view(
+        &self,
+        id: &ProposalId,
+        index_offset: Option<usize>,
+        index_limit: Option<usize>,
+        summary_only: bool,
+    ) -> Result<Value, String> {
         let limit = page_limit(index_limit, DEFAULT_INDEX_LIMIT, MAX_INDEX_LIMIT)?;
         let offset = index_offset.unwrap_or(0);
         let records = self
@@ -808,7 +870,7 @@ impl IntrospectionStore {
             .cloned()
             .ok_or_else(|| format!("unknown proposal {id}"))?;
         drop(records);
-        Ok(self.response(record.detail(offset, limit)?))
+        Ok(self.response(record.detail(offset, limit, summary_only)?))
     }
 
     pub fn resolve_indices(&self, indices: &[u32]) -> Result<Value, String> {
@@ -930,7 +992,7 @@ impl ProposalRecord {
         }))
     }
 
-    fn detail(&self, offset: usize, limit: usize) -> Result<Value, String> {
+    fn detail(&self, offset: usize, limit: usize, summary_only: bool) -> Result<Value, String> {
         let snap = {
             let data = self.read_data()?;
             let indices: Vec<u32> = data
@@ -942,21 +1004,29 @@ impl ProposalRecord {
                 .collect();
             (
                 data.status,
-                data.proposal.clone(),
+                data.proposal
+                    .as_ref()
+                    .map(|proposal| {
+                        if summary_only {
+                            Ok(json!({
+                                "handler_ids": proposal.goal.handler_ids,
+                                "reason": proposal.goal.reason,
+                            }))
+                        } else {
+                            serde_json::to_value(proposal)
+                        }
+                    })
+                    .transpose()
+                    .map_err(|error| format!("serializing proposal: {error}"))?,
                 data.synthesis_request_id.clone(),
                 data.artifacts.clone(),
                 data.stats.clone(),
                 indices,
             )
         };
-        let (status, proposal, synthesis_request_id, artifacts, stats, indices) = snap;
+        let (status, proposal_value, synthesis_request_id, artifacts, stats, indices) = snap;
         let (page, next_offset) = page_slice(&indices, PageRequest { offset, limit });
-        let proposal = proposal
-            .as_ref()
-            .map(serde_json::to_value)
-            .transpose()
-            .map_err(|error| format!("serializing proposal: {error}"))?;
-        Ok(json!({
+        let mut result = json!({
             "proposal_id": self.identity.id,
             "origin": self.identity.origin,
             "status": status,
@@ -965,7 +1035,6 @@ impl ProposalRecord {
             "snapshot": self.identity.snapshot,
             "created_at_unix_ms": self.identity.created_at_unix_ms,
             "synthesis_request_id": synthesis_request_id,
-            "proposal": proposal,
             "artifacts": artifacts.as_ref().map(|item| json!({
                 "generator_py": item.generator_py,
                 "params_json": item.params_json,
@@ -1003,7 +1072,10 @@ impl ProposalRecord {
                 "items": page,
                 "next_offset": next_offset,
             },
-        }))
+        });
+        result[if summary_only { "goal" } else { "proposal" }] =
+            proposal_value.unwrap_or(Value::Null);
+        Ok(result)
     }
 }
 
@@ -1019,10 +1091,160 @@ pub mod http {
         },
         ServerHandler,
     };
-    use serde::Deserialize;
+    use serde::{Deserialize, Serialize};
     use tokio::sync::oneshot;
 
-    use super::{IntrospectionStore, ProposalId, ProposalStatus};
+    use super::{IntrospectionStore, ProposalId, ProposalOrigin, ProposalStatus};
+    use crate::coverage::proposal::{Proposal, ProposalGoal};
+    use std::collections::BTreeMap;
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct Response<T> {
+        run_id: String,
+        observed_at_unix_ms: u64,
+        data: T,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct Page<T> {
+        total: usize,
+        offset: usize,
+        limit: usize,
+        items: Vec<T>,
+        next_offset: Option<usize>,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct ProposalSummary {
+        proposal_id: String,
+        origin: ProposalOrigin,
+        status: ProposalStatus,
+        analysis_request_id: Option<String>,
+        session: String,
+        snapshot: Option<String>,
+        goal: Option<ProposalGoal>,
+        generator_py: Option<String>,
+        mutations: u64,
+        mutation_attempts: u64,
+        executions: u64,
+        corpus_cases: usize,
+        novelty_indices: usize,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct Artifacts {
+        generator_py: String,
+        params_json: String,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct MutationCounts {
+        attempts: u64,
+        changed_candidates: u64,
+        skipped_or_unchanged: u64,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct ExecutionErrorInfo {
+        at_unix_ms: u64,
+        category: String,
+        message: String,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct ExecutionCounts {
+        started: u64,
+        completed: u64,
+        valid: u64,
+        invalid: u64,
+        infrastructure_errors: u64,
+        target_outcomes: BTreeMap<String, u64>,
+        generator_statuses: BTreeMap<String, u64>,
+        generator_exits: BTreeMap<String, u64>,
+        last_error: Option<ExecutionErrorInfo>,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct ContributionCounts {
+        corpus_cases: usize,
+        novelty_indices: usize,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct ProposalStats {
+        mutations: MutationCounts,
+        executions: ExecutionCounts,
+        contribution: ContributionCounts,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct ProposalDetail {
+        proposal_id: String,
+        origin: ProposalOrigin,
+        status: ProposalStatus,
+        analysis_request_id: Option<String>,
+        session: String,
+        snapshot: Option<String>,
+        created_at_unix_ms: u64,
+        synthesis_request_id: Option<String>,
+        artifacts: Option<Artifacts>,
+        stats: ProposalStats,
+        feedback_novelty_indices: Page<u32>,
+        #[serde(flatten)]
+        body: ProposalDetailBody,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(untagged)]
+    enum ProposalDetailBody {
+        Summary {
+            #[serde(deserialize_with = "required_option")]
+            goal: Option<ProposalGoal>,
+        },
+        Full {
+            #[serde(deserialize_with = "required_option")]
+            proposal: Option<Proposal>,
+        },
+    }
+
+    fn required_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        Option::<T>::deserialize(deserializer)
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    #[serde(rename_all = "snake_case")]
+    enum ResolutionStatus {
+        Resolved,
+        UnknownIndex,
+        NoDebugLocation,
+        MappingUnavailable,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct ResolvedIndex {
+        index: u32,
+        status: ResolutionStatus,
+        file: Option<String>,
+        line: Option<u32>,
+        column: Option<u32>,
+        function: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct ResolvedIndices {
+        items: Vec<ResolvedIndex>,
+    }
+
+    fn typed<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, String> {
+        serde_json::from_value(value)
+            .map_err(|error| format!("invalid introspection response: {error}"))
+    }
 
     #[derive(Clone)]
     pub struct IntrospectionServer {
@@ -1042,6 +1264,8 @@ pub mod http {
         proposal_id: String,
         index_offset: Option<usize>,
         index_limit: Option<usize>,
+        #[serde(default)]
+        summary_only: bool,
     }
 
     #[derive(Debug, Deserialize, JsonSchema)]
@@ -1064,28 +1288,29 @@ pub mod http {
         fn list_proposals(
             &self,
             Parameters(request): Parameters<ListProposalsRequest>,
-        ) -> Result<String, String> {
+        ) -> Result<rmcp::Json<Response<Page<ProposalSummary>>>, String> {
             let value = self.store.list_proposals(
                 request.statuses.as_deref(),
                 request.offset,
                 request.limit,
             )?;
-            Ok(value.to_string())
+            Ok(rmcp::Json(typed(value)?))
         }
 
         #[tool(
-            description = "Read one proposal, its frozen proposal body, artifact paths, and live stats. feedback_novelty_indices is paged in ascending order. Novelty includes first hits and hit-count bucket increases, so an index is not always a new source line. Read-only."
+            description = "Read a proposal's artifact paths, live stats, and frozen body. Set summary_only to return its goal in place of the body. feedback_novelty_indices is paged in ascending order. Novelty includes first hits and hit-count bucket increases, so an index is not always a new source line. Read-only."
         )]
         fn get_proposal(
             &self,
             Parameters(request): Parameters<GetProposalRequest>,
-        ) -> Result<String, String> {
-            let value = self.store.get_proposal(
+        ) -> Result<rmcp::Json<Response<ProposalDetail>>, String> {
+            let value = self.store.get_proposal_view(
                 &ProposalId(request.proposal_id),
                 request.index_offset,
                 request.index_limit,
+                request.summary_only,
             )?;
-            Ok(value.to_string())
+            Ok(rmcp::Json(typed(value)?))
         }
 
         #[tool(
@@ -1094,9 +1319,9 @@ pub mod http {
         fn resolve_bitmap_indices(
             &self,
             Parameters(request): Parameters<ResolveBitmapIndicesRequest>,
-        ) -> Result<String, String> {
+        ) -> Result<rmcp::Json<Response<ResolvedIndices>>, String> {
             let value = self.store.resolve_indices(&request.indices)?;
-            Ok(value.to_string())
+            Ok(rmcp::Json(typed(value)?))
         }
     }
 
@@ -1234,6 +1459,7 @@ mod tests {
                 reason: "reason".into(),
             },
             parties: BTreeMap::new(),
+            party_aliases: BTreeMap::new(),
             channels: BTreeMap::new(),
             trace: vec![ProposalStep {
                 name: "step".into(),
@@ -1647,6 +1873,17 @@ mod tests {
         let detail = store
             .get_proposal(&ProposalId::coverage("req"), None, Some(2))
             .unwrap();
+        let summary = store
+            .get_proposal_view(&ProposalId::coverage("req"), None, Some(2), true)
+            .unwrap();
+        let mut expected = detail["data"].clone();
+        let proposal = expected
+            .as_object_mut()
+            .unwrap()
+            .remove("proposal")
+            .unwrap();
+        expected["goal"] = proposal["goal"].clone();
+        assert_eq!(summary["data"], expected);
         let reported = detail["data"]["artifacts"]["params_json"].as_str().unwrap();
         assert_eq!(fs::read(reported).unwrap().as_slice(), params.as_slice());
         assert!(reported.ends_with("params.json"), "{reported}");
@@ -1720,6 +1957,8 @@ mod tests {
             None,
         );
         left.register_coverage("alpha", "s", "000001").unwrap();
+        left.accept(&ProposalId::coverage("alpha"), proposal("build1"))
+            .unwrap();
         right.register_coverage("beta", "s", "000001").unwrap();
         let left_listener = prebound_listener();
         let right_listener = prebound_listener();
@@ -1745,12 +1984,45 @@ mod tests {
         assert!(listed.contains("list_proposals"), "{listed}");
         assert!(listed.contains("get_proposal"), "{listed}");
         assert!(listed.contains("resolve_bitmap_indices"), "{listed}");
+        assert_eq!(listed.matches("outputSchema").count(), 3, "{listed}");
         let left_rows = mcp_exchange(
             &left_addr,
             Some(&left_session),
             r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_proposals","arguments":{}}}"#,
         );
         assert!(left_rows.contains("campaign-a"), "{left_rows}");
+        assert!(left_rows.contains("structuredContent"), "{left_rows}");
+        assert!(left_rows.contains("\\\"proposal_id\\\""), "{left_rows}");
+        let left_result = mcp_json(&left_rows);
+        assert_eq!(
+            left_result["result"]["structuredContent"]["data"]["items"][0]["proposal_id"],
+            "coverage:alpha"
+        );
+        let text = left_result["result"]["content"][0]["text"].as_str().unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(text).unwrap(),
+            left_result["result"]["structuredContent"]
+        );
+        for summary_only in [true, false] {
+            let request = json!({"jsonrpc":"2.0", "id":10, "method":"tools/call", "params":{
+                "name":"get_proposal", "arguments":{"proposal_id":"coverage:alpha", "summary_only":summary_only}
+            }}).to_string();
+            let response = mcp_json(&mcp_exchange(&left_addr, Some(&left_session), &request));
+            let data = &response["result"]["structuredContent"]["data"];
+            if summary_only {
+                assert_eq!(data["goal"]["handler_ids"][0], "handler");
+                assert!(data.get("proposal").is_none());
+            } else {
+                assert_eq!(data["proposal"]["goal"]["handler_ids"][0], "handler");
+                assert!(data.get("goal").is_none());
+            }
+        }
+        let request = r#"{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"resolve_bitmap_indices","arguments":{"indices":[1]}}}"#;
+        let response = mcp_json(&mcp_exchange(&left_addr, Some(&left_session), request));
+        assert_eq!(
+            response["result"]["structuredContent"]["data"]["items"][0]["status"],
+            "mapping_unavailable"
+        );
         assert!(left_rows.contains("coverage:alpha"), "{left_rows}");
         assert!(!left_rows.contains("coverage:beta"), "{left_rows}");
         let right_rows = mcp_exchange(
@@ -1769,6 +2041,8 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_proposal","arguments":{"proposal_id":"coverage:beta"}}}"#,
         );
         assert!(still.contains("coverage:beta"), "{still}");
+        assert!(still.contains("structuredContent"), "{still}");
+        assert!(still.contains("\\\"proposal\\\""), "{still}");
         right_http.shutdown();
     }
 
@@ -1776,6 +2050,12 @@ mod tests {
         url.trim_start_matches("http://")
             .trim_end_matches("/mcp")
             .to_string()
+    }
+
+    fn mcp_json(response: &str) -> Value {
+        let body = response.split_once("\r\n\r\n").expect("HTTP response body").1;
+        let json = body.lines().find_map(|line| line.strip_prefix("data: ")).unwrap_or(body);
+        serde_json::from_str(json.trim()).expect("MCP JSON response")
     }
 
     fn mcp_exchange(addr: &str, session: Option<&str>, body: &str) -> String {

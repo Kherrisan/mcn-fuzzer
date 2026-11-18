@@ -328,6 +328,15 @@
           "minLength": 1,
           "title": "Description",
           "type": "string"
+        },
+        "alias": {
+          "description": "Names of equivalent protocol parties; reverse declarations are optional.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Alias",
+          "type": "array"
         }
       },
       "required": [

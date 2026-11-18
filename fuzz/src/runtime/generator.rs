@@ -21,7 +21,7 @@ use libafl::Error;
 use serde::Deserialize;
 
 use crate::{
-    engine::input::{ControlRequest, GeneratorInput, GeneratorResponse},
+    engine::input::{ControlRequest, GeneratorInput, GeneratorResponse, ReplayLog},
     runtime::lifecycle::{response_disposition, ResponseDisposition, ResponseId},
 };
 
@@ -145,6 +145,22 @@ impl GeneratorClient {
         worker_id: u64,
         case_id: u64,
     ) -> Result<(), Error> {
+        self.submit_with_replay(
+            input, host, port, io_timeout, connect_timeout, worker_id, case_id, None,
+        )
+    }
+
+    pub(crate) fn submit_with_replay(
+        &mut self,
+        input: &GeneratorInput,
+        host: &str,
+        port: u16,
+        io_timeout: Duration,
+        connect_timeout: Duration,
+        worker_id: u64,
+        case_id: u64,
+        replay_log: Option<&ReplayLog>,
+    ) -> Result<(), Error> {
         if self.dead {
             return Err(Error::unknown(
                 "generator server was stopped and is not restarted".to_string(),
@@ -158,7 +174,7 @@ impl GeneratorClient {
         self.drain_tombstones()?;
         self.ensure_alive()?;
         let request = self.allocate_id();
-        let body = input.run_request(
+        let body = input.run_request_with_replay(
             self.client_id,
             request,
             worker_id,
@@ -167,6 +183,7 @@ impl GeneratorClient {
             port,
             as_millis(io_timeout),
             as_millis(connect_timeout),
+            replay_log,
         )?;
         if body.len() > MAX_MESSAGE {
             return Err(Error::illegal_argument(

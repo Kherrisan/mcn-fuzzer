@@ -22,7 +22,7 @@ There is no proposal for this initial task.
 
 # Current assignment and working paths
 
-WRITE ready.json
+WRITE ready.json only after all initialization work below is complete.
 SESSION={{ session }}
 HOLD={{ hold }}
 WORKSPACE={{ campaign.workspace }}
@@ -211,16 +211,20 @@ operation cannot be carried out; never fabricate a reply or claim runtime succes
 # Files and completion protocol
 
 This initialization writes only ready.json in the initialization OUTPUT_DIR.
-After the essential reading, write a temporary JSON file in that directory and
-atomically rename it to ready.json with this exact content:
+Finish all required reading and checks first. As your final tool call, write a
+temporary JSON file in that directory and atomically rename it to ready.json
+with this exact content:
 
 ~~~json
 {{ ready_json }}
 ~~~
 
-ready.json must include this session id.
+ready.json must include this session id. The file must contain exactly one
+JSON object: no trailing `\n` escape, comment, second document, or extra text.
+Write the object with `json.dump` and do not append anything afterwards.
 If HOLD=1, withhold ready.json and wait; this is an initialization test control.
-Otherwise publish promptly, then finish your response and await a proposal.
+After publishing ready.json, make no further tool calls or checks. Immediately
+send a brief final response and end the turn.
 
 Every later successful request writes four files in its own OUTPUT_DIR:
 

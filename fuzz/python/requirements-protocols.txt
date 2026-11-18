@@ -80,3 +80,6 @@ zeroconf==0.153.0
 zope.interface==8.7
 networkx==3.6.1
 pydot==4.0.1
+tree-sitter==0.25.2
+tree-sitter-c==0.24.2
+tree-sitter-cpp==0.23.4

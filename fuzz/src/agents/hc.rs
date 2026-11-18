@@ -331,7 +331,9 @@ fn mock_loop(
                 }
                 "terminal.read" => json!({"text": screen.clone()}),
                 "terminal.get" => {
-                    json!({"terminal": params.get("terminal").and_then(Value::as_str).unwrap_or("agent"), "state": "live", "status": "idle"})
+                    let status = std::fs::read_to_string(sends.with_extension("status"))
+                        .unwrap_or_else(|_| "idle".into());
+                    json!({"terminal": params.get("terminal").and_then(Value::as_str).unwrap_or("agent"), "state": "live", "status": status})
                 }
                 "terminal.interrupt" | "terminal.kill" | "server.stop" | "core.shutdown" => {
                     json!({"ok": true, "stopped": true})

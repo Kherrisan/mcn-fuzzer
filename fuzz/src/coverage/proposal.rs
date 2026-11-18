@@ -20,7 +20,7 @@ use crate::{
     protocol::{Binding, IndexedModel, PartyRole, Processing, StepRecord},
 };
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalGoal {
     #[serde(default)]
@@ -28,14 +28,14 @@ pub struct ProposalGoal {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalChannel {
     pub channel: String,
     pub endpoints: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MutableField {
     pub field: String,
@@ -55,7 +55,7 @@ pub struct MutableField {
     pub source: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalDependency {
     pub prior: String,
@@ -68,7 +68,7 @@ pub struct ProposalDependency {
     pub fields: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProposalStep {
     pub name: String,
@@ -96,7 +96,7 @@ pub struct ProposalStep {
     pub mutable_fields: Vec<MutableField>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Proposal {
     pub origin: String,
@@ -105,6 +105,8 @@ pub struct Proposal {
     pub snapshot: String,
     pub goal: ProposalGoal,
     pub parties: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub party_aliases: BTreeMap<String, Vec<String>>,
     pub channels: BTreeMap<String, ProposalChannel>,
     pub trace: Vec<ProposalStep>,
     #[serde(default)]
@@ -242,6 +244,7 @@ pub fn instantiate(model: &IndexedModel, steps: &[StepRecord]) -> Result<Proposa
             reason: String::new(),
         },
         parties,
+        party_aliases: model.party_aliases(),
         channels,
         trace,
         dependencies,
@@ -343,7 +346,7 @@ mod tests {
         let body = json!({
             "meta": {"protocol": "demo", "complete": true, "documents": []},
             "parties": [
-                {"name": "client", "description": "c"},
+                {"name": "client", "description": "c", "alias": ["peer"]},
                 {"name": "server", "description": "s"},
                 {"name": "peer", "description": "p"}
             ],
@@ -403,6 +406,17 @@ mod tests {
             item.reason = format!("exercise {}", item.name);
         }
         proposal
+    }
+
+    #[test]
+    fn party_aliases_are_symmetric_and_survive_synthesis_projection() {
+        let (model, binding) = fixture();
+        let proposal = base(&model).synthesis_copy(&binding);
+        assert_eq!(proposal.party_aliases["client"], vec!["peer"]);
+        assert_eq!(proposal.party_aliases["peer"], vec!["client"]);
+        let encoded = serde_json::to_vec(&proposal).unwrap();
+        let decoded: Proposal = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.party_aliases, proposal.party_aliases);
     }
 
     #[test]
@@ -615,6 +629,7 @@ mod tests {
                     reason: "g".into(),
                 },
                 parties: BTreeMap::new(),
+                party_aliases: BTreeMap::new(),
                 channels: BTreeMap::new(),
                 trace: vec![],
                 dependencies: vec![],

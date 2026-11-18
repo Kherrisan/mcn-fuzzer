@@ -20,6 +20,11 @@ SUT_STDERR_LOG={{ sut_stderr_log }}
 CONFIGURE_OPTIONS={{ configure_options }}
 CLI_ARGS={{ cli_args }}
 
+SOURCE_DIR is the source tree used by the llvm-cov build, also used during
+initialization. Read source evidence from that tree or the exact compiled paths
+returned by coverage tools. Do not substitute an upstream source copy. Report
+missing compiled sources or a source-version mismatch instead of mixing versions.
+
 The fuzzer already replayed this frozen snapshot. The MCP service exports
 the detailed counters from the stored profile when needed. Do not re-run
 coverage, call a measurement command, or open coverage JSON or CFG files
@@ -50,15 +55,14 @@ CONFIGURE_OPTIONS lists the build-time switches used for this SUT; CLI_ARGS
 lists the runtime command-line flags. Use them together with other build
 material (configdata.pm, CMakeCache.txt, generated headers, build logs,
 linked libraries) to decide which protocol features are actually compiled in
-and enabled. Do not propose goals for features that are disabled or were not
-built. Prioritize enabled features: inspect their handlers, branches, and
-dependencies thoroughly, and make them the primary targets of proposals and
-trace selection.
+and enabled. Consider only handlers for features that are compiled in and
+enabled when choosing the primary target.
 
 ## Registered proposals
 
 The campaign-introspection MCP service is read-only. Start this request by
-calling `list_proposals`. Then call `get_proposal` for the rows you need.
+calling `list_proposals`. Then call `get_proposal` with `summary_only: true` for the execution feedback
+you need. Request the full proposal when you need to compare its trace.
 Read `generator.py` and the params file only when `get_proposal` returns those
 paths, and use the file tools on bounded ranges. Use `SUT_STDOUT_LOG` and
 `SUT_STDERR_LOG` the same way. Do not scan the analysis directory for historical
@@ -90,49 +94,78 @@ earlier trace only when the evidence is a concrete implementation error. If
 the earlier exploration is saturated or still running, pick a different goal
 or return `status: no_proposal` and cite the proposal id.
 
-Treat two proposals as the same exploration when the goal handler set, the
+Treat two proposals as the same exploration when the primary handler, the
 ordered model-step sequence, and the concrete mutable fields match.
 Renaming instances, changing comments, or reordering equivalent steps does not
 make a proposal different.
 
 ## Load the request
 
-A coverage-analysis MCP service is also running. After `list_proposals`, call
-`get_loaded_state`, then load exactly this request's inputs:
+After `list_proposals`, call `get_loaded_state`. Initialization already wrote
+and loaded the handler mapping with `write_handlers`, along with `MODEL`.
+Load only static datasets marked unloaded, using `MODEL` for `load_protocol`,
+`CFG_DIR` for `load_cfg`, and `CALLGRAPH_DOT` for `load_callgraph`. Never call
+`load_handlers`: the mapping is already loaded, and a request whose registered
+file is byte-identical resolves to it.
 
-1. `load_protocol` with `{"protocol_path": "MODEL"}`.
-2. `load_handlers` with `{"handlers_path": "HANDLERS"}`.
-3. `load_cfg` with `{"cfg_dir": "CFG_DIR"}`.
-4. `load_callgraph` with `{"callgraph_dot": "CALLGRAPH_DOT"}`.
-5. `load_coverage_json` with `{"request_id": "REQUEST", "snapshot_dir": "SNAPSHOT_DIR"}`.
-6. `begin_analysis` with `{"request_id": "REQUEST"}`.
+For each request, call `load_coverage_json` with `request_id` and `snapshot_dir`,
+then call `begin_analysis` with `request_id` to open a transaction based on the
+latest committed graph.
 
-If a tool returns `not_loaded`, load the missing dataset and retry. If it returns
+If a tool returns `not_loaded`, load that dataset and retry, except for handlers:
+that error means the service and the campaign disagree about the mapping, so
+write an error result instead of calling `load_handlers`. If a tool returns
 `incompatible_data`, stop and write an error result; do not mix builds.
-Pass `request_id` to every query tool after `load_coverage_json` so the request keeps
-reading the snapshot it registered, even if another load happens later.
+Pass `request_id` to snapshot queries that accept it so the request keeps reading
+its registered snapshot. The target tools use the request opened by `begin_analysis`.
 
-## Explore
+## Select the primary target
 
-Budget matters: inspect summaries first and drill down only where the evidence
-justifies it.
+After `begin_analysis`, use `show_overview_code_coverage` and
+`show_handler_code_coverage` to review project, module, and handler branch
+coverage. Compare the summaries with registered proposals and the known build
+and runtime configuration. Prefer a feasible handler with a large reachable
+missed area, especially if it has yet to execute.
 
-1. `show_overview_code_coverage` — project and module branch coverage.
-2. `show_handler_code_coverage` — handler own and cumulative reachable coverage,
-   sorted by missed branches. Prefer handlers that are not yet exercised and have
-   a larger reachable missed area; there is no fixed percentage threshold.
-3. `show_func_code_coverage` and `get_reachable_functions` — locate heavy missed
-   callees behind a handler.
-4. `show_source_coverage` — read a bounded source slice with true/false counts
-   for the conditions that block progress.
-5. `get_reaching_handlers` and `get_step_dependencies` — find which messages can
-   reach a function and which prerequisites the model already knows.
-6. `get_protocol_steps` — obtain exact step names. Only these names are accepted
-   in the proposal; do not invent names or use any digest.
+Call `select_analysis_target` with one `handler_id` and a `reason` before
+reading source, message fields, or detailed dependencies. Use
+`get_analysis_target` to recover the selection when reopening a request. If you
+find a concrete blocker, call `switch_analysis_target` with a different
+`handler_id` and use `reason` to explain the evidence for the new choice.
+Follow the `no_proposal` flow if no handler is feasible.
+
+## Explore the selected handler
+
+Call `describe_handler` without arguments to inspect the selected handler's
+mapping, coverage, associated model steps and compiled source window. The tool
+uses the request bound by `begin_analysis`; it does not take a request id.
+Page the mappings when needed. A source error reports the missing evidence.
+
+Choose the model steps for the target and its prerequisites, then call
+`describe_trace_steps` with their exact names in the `steps` array. It uses
+the current transaction and returns the steps, distinct message fields, and
+their mutual dependencies. Page the step list if needed. Repeat the call when
+you add steps. Page dependencies separately with `dependency_offset`.
+Confirm the trace ordering and whether additional predecessors are necessary.
+
+For remaining gaps, use `show_function_source`, `show_source_coverage`,
+`get_reachable_functions`, `get_reaching_handlers`, `show_step`,
+`get_step_dependencies`, `show_message`, or `show_replay_logs` as needed.
+Read every function you still need in one `show_function_source` call with
+`functions: [...]`, `whole: true`, and a `max_lines` budget; fall back to a
+single `function` with `around_line` only for one specific branch. Do not read
+the same function twice through overlapping windows.
+Pass `request_id` to these tools when their schemas accept it. Prefer targeted
+queries over rereading the same source window or step.
+
+Do not read `protocol.json` with scripts or file tools, do not enumerate the
+tool catalogue, and do not dump unbounded output: pass `offset`/`limit` to the
+paged tools and keep any single tool result under roughly 8k characters.
 
 Use protocol dependencies, sender/receiver roles, and source conditions to build
 one coherent trace: the goal handler's own inbound step(s) plus the smallest set
-of prerequisite and reply steps that make the interaction meaningful. The service
+of prerequisite and reply steps that make the interaction meaningful. Include
+steps that reach other handlers when they are necessary prerequisites. The service
 derives message-to-handler associations from the loaded handler mapping; do not
 include handler IDs on trace steps. A prefix, environment, or reply step must
 still have a reason. Do not add a dependency that the evidence does not support.
@@ -147,7 +180,9 @@ the proposal):
 ## Propose
 
 Before `submit_proposal`, compare the goal, trace, and concrete fields with the
-registered proposals. If you reuse an earlier trace because of a concrete
+registered proposals. Confirm the prerequisites, dependencies, and key fields.
+Set `goal.handler_ids` to an array containing only the selected handler ID.
+If you reuse an earlier trace because of a concrete
 implementation error, `goal.reason` must name that proposal id, the evidence,
 and the correction.
 
@@ -184,7 +219,7 @@ Declare the mutable fields on each generator-filled send instance itself:
 
 ~~~json
 {"origin": "coverage",
- "goal": {"handler_ids": ["handler name from show_handler_code_coverage"],
+ "goal": {"handler_ids": ["selected primary handler ID"],
           "reason": "which handler/internal path to reach and the coverage evidence"},
  "parties": {"client_1": "client", "server_1": "server"},
  "channels": {"control_1": {"channel": "control", "endpoints": ["client_1", "server_1"]}},

@@ -166,6 +166,17 @@ pub fn validate_generator_artifacts(
     })
 }
 
+pub(crate) fn validate_historical_request(
+    out: &Path, request_id: &str, session: &str, autonomous: bool,
+) -> Result<(), String> {
+    request::GeneratorRequest {
+        output_dir: out.to_path_buf(),
+        id: request_id.to_string(),
+        session: session.to_string(),
+        autonomous,
+    }.accept().map(|_| ())
+}
+
 /// Stage placed before mutation. Disabled campaigns do not load a model.
 pub struct GeneratorSynthesisStage {
     enabled: bool,
@@ -475,6 +486,10 @@ impl GeneratorSynthesisStage {
                 return Err(error);
             }
         };
+        let coverage_mcp = crate::coverage::mcp::McpClient::connect().ok();
+        crate::evaluation::request_eval::capture(
+            &generation.output_dir, &prompt, coverage_mcp.as_ref(), self.introspection.as_ref(),
+        );
         let worker = self
             .worker
             .as_ref()

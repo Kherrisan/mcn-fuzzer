@@ -303,4 +303,4 @@ def source_slice(source_root, files, path, start=None, end=None):
             "false_count": record.false_count,
         })
     return {"path": str(resolved), "start": start, "end": end,
-            "lines": snippet, "branches": branches}
+            "lines": snippet, "branches": branches, "total_lines": len(lines)}

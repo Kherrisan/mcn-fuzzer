@@ -74,6 +74,16 @@ def _dispatch(state, message):
         with state.lock:
             result = state.loaded_state()
         return {"id": request_id, "ok": True, "result": result}
+    if op == "eval_state":
+        with state.lock:
+            loaded = state.loaded_state()
+            version = loaded["coverage"].get("version")
+            if version is not None:
+                loaded["coverage_request"] = next(
+                    (request.request_id for request in reversed(state.requests.values())
+                     if request.bindings.get("coverage") == version), None)
+            result = {"loaded": loaded, "checkpoint": state.committed_checkpoint}
+        return {"id": request_id, "ok": True, "result": result}
     if op == "shutdown":
         return {"id": request_id, "ok": True, "result": {"stopping": True}}
     raise StateError("unknown_op", f"unknown operation {op}")
@@ -130,12 +140,14 @@ async def _handle(reader, writer, state, stop_event):
             pass
 
 
-async def serve(socket_path, state_dir, source_root):
+async def serve(socket_path, state_dir, source_root, session_config=None):
     path = Path(socket_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         path.unlink()
     state = State(state_dir, source_root)
+    if session_config:
+        state.load_session_config(session_config)
     stop_event = asyncio.Event()
     server = await asyncio.start_unix_server(
         lambda r, w: _handle(r, w, state, stop_event), path=str(path))
@@ -166,49 +178,76 @@ def _call(socket_path, payload, timeout=600.0):
         raise RuntimeError("coverage service closed the connection without a reply")
     reply = json.loads(body)
     if not reply.get("ok"):
-        raise RuntimeError(json.dumps(reply.get("error") or reply))
+        error = reply["error"]
+        raise StateError(error["code"], error["message"], error["missing"])
     return reply.get("result")
 
 
 def _mcp_server(socket_path):
-    from mcp.server.lowlevel import Server
-    from mcp.types import CallToolResult, ListToolsResult, TextContent, Tool
+    import inspect
+    from typing import Annotated
 
-    async def list_tools(context, params):
-        return ListToolsResult(tools=[
-            Tool(name=item["name"], description=item["description"],
-                 inputSchema=item["inputSchema"])
-            for item in tools.mcp_tool_list()
-        ])
+    from mcp.server import MCPServer
+    from mcp.types import CallToolResult, TextContent
+    from pydantic import TypeAdapter
 
-    async def call_tool(context, params):
+    from coverage_analysis import schemas
+
+    async def dispatch(name, arguments):
         try:
             result = await asyncio.to_thread(
                 _call, socket_path,
-                {"op": "tool", "name": params.name,
-                 "arguments": params.arguments or {}})
-            return CallToolResult(content=[TextContent(
-                text=json.dumps(result, ensure_ascii=False))])
-        except Exception as error:  # noqa: BLE001 - surface the service error to the agent
+                {"op": "tool", "name": name, "arguments": arguments})
+            return CallToolResult(
+                content=[TextContent(text=json.dumps(result, ensure_ascii=False))],
+                structuredContent=result,
+            )
+        except StateError as error:
             return CallToolResult(isError=True, content=[TextContent(
-                text=json.dumps({"code": "service_error", "message": str(error)},
-                                ensure_ascii=False))])
+                text=json.dumps(_error(None, error)["error"], ensure_ascii=False))])
+        except Exception as error:
+            return CallToolResult(isError=True, content=[TextContent(
+                text=json.dumps({"code": "service_error", "message": str(error)}, ensure_ascii=False))])
 
-    return Server("coverage-analysis", version="1",
-                  on_list_tools=list_tools, on_call_tool=call_tool)
+    class CoverageMCPServer(MCPServer):
+        async def _handle_call_tool(self, ctx, params):
+            # Send raw arguments through the shared socket dispatcher so MCP
+            # and Rust use the same models and structured error responses.
+            return await dispatch(params.name, params.arguments or {})
+
+    server = CoverageMCPServer("coverage-analysis")
+
+    def register(name, description, input_model, output_model):
+        async def invoke(**arguments):
+            validated = input_model.model_validate(arguments)
+            return await dispatch(name, validated.model_dump(exclude_none=True))
+
+        parameters = []
+        for field_name, field in input_model.model_fields.items():
+            parameters.append(inspect.Parameter(
+                field_name, inspect.Parameter.KEYWORD_ONLY,
+                default=inspect.Parameter.empty if field.is_required() else field.default,
+                annotation=field.rebuild_annotation(),
+            ))
+        invoke.__signature__ = inspect.Signature(
+            parameters, return_annotation=Annotated[CallToolResult, output_model])
+        server.add_tool(invoke, name=name, description=description)
+        tool = server._tool_manager.get_tool(name)
+        tool.parameters = input_model.model_json_schema()
+        # The SDK wraps unions in {"result": ...}; all these variants already
+        # are objects and must retain their established JSON shape.
+        tool.fn_metadata.output_model = output_model
+        tool.fn_metadata.output_schema = TypeAdapter(output_model).json_schema()
+        tool.fn_metadata.output_schema.setdefault("type", "object")
+        tool.fn_metadata.wrap_output = False
+
+    for name, description in tools.TOOL_DESCRIPTIONS.items():
+        register(name, description, *schemas.TOOL_MODELS[name])
+    return server
 
 
 async def stdio(socket_path):
-    from mcp.server.models import InitializationOptions
-    from mcp.server.stdio import stdio_server
-    from mcp.types import ServerCapabilities, ToolsCapability
-
-    server = _mcp_server(socket_path)
-    options = InitializationOptions(
-        server_name="coverage-analysis", server_version="1",
-        capabilities=ServerCapabilities(tools=ToolsCapability(listChanged=False)))
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, options)
+    await _mcp_server(socket_path).run_stdio_async()
 
 
 def _proposal_command(args):
@@ -258,6 +297,8 @@ def main(argv=None):
     serve_parser.add_argument("--socket", required=True)
     serve_parser.add_argument("--state-dir", required=True)
     serve_parser.add_argument("--source-root")
+    serve_parser.add_argument("--session-config")
+
     stdio_parser = sub.add_parser("stdio")
     stdio_parser.add_argument("--socket", required=True)
     proposal_parser = sub.add_parser("proposal")
@@ -273,7 +314,8 @@ def main(argv=None):
     validate_parser.add_argument("--proposal", required=True)
     args = parser.parse_args(argv)
     if args.command == "serve":
-        asyncio.run(serve(args.socket, args.state_dir, args.source_root))
+        asyncio.run(serve(args.socket, args.state_dir, args.source_root,
+                          args.session_config))
     elif args.command == "stdio":
         asyncio.run(stdio(args.socket))
     elif args.command == "proposal":

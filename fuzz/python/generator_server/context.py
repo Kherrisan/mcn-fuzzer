@@ -78,6 +78,7 @@ class Ctx:
         self.states: dict[tuple[str, str], object] = {}
         self.generator_params: dict = {}
         self.step_instance = None
+        self._replay_log = None
 
     def get_global(self, name: str, default=None):
         """Read a testcase-scoped shared parameter."""

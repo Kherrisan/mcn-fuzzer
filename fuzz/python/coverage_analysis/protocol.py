@@ -49,6 +49,7 @@ class ProtocolGraph:
                                     field_relations=list(dependency.get("field_relations") or []),
                                     origin="base")
         self.revision = 0
+        self.checkpoint_request_id = None
         self.committed_at = None
 
     def copy(self):
@@ -115,6 +116,42 @@ class ProtocolGraph:
                 })
         return rows
 
+    def message_index(self):
+        """Map message name to the steps that carry it, plus model fields."""
+        model = self.base.get("model") or {}
+        fields = {}
+        for message in model.get("messages") or []:
+            name = message.get("name")
+            if name:
+                fields[name] = [field.get("name") for field in message.get("associated_fields") or []]
+        index = {name: [] for name in fields}
+        for step in self.steps.values():
+            message = step.get("message_name")
+            if not message:
+                continue
+            index.setdefault(message, []).append({
+                "step": step["name"],
+                "action": step.get("action") or "send",
+                "channel": step.get("channel_name") or "",
+                "sender": step.get("sender_name"),
+                "receiver": step.get("receiver_name"),
+                "party": step.get("party_name"),
+            })
+        return {"fields": fields, "steps": index}
+
+    def direction(self, row, roles):
+        """Classify one carrying step from the campaign's party roles."""
+        if row["action"] != "send":
+            return "network"
+        sender, receiver = row.get("sender"), row.get("receiver")
+        if roles.get(receiver) == "sut" and roles.get(sender) != "sut":
+            return "sut_inbound"
+        if roles.get(sender) == "sut" and roles.get(receiver) != "sut":
+            return "sut_outbound"
+        if roles.get(sender) == "generator" or roles.get(receiver) == "generator":
+            return "generator_local"
+        return "unbound"
+
     def checkpoint(self, request_id=None):
         nodes = []
         for step, attrs in sorted(self.graph.nodes(data=True)):
@@ -130,14 +167,25 @@ class ProtocolGraph:
             edges.append({"prior": source, "dependent": target,
                           "condition": attrs.get("condition", ""),
                           "field_relations": list(attrs.get("field_relations") or [])})
+        removed = [
+            {"prior": edge["prior_step"], "dependent": edge["dependent_step"]}
+            for edge in self.catalog.get("dependencies", [])
+            if edge["prior_step"] in self.steps and edge["dependent_step"] in self.steps
+            and not self.graph.has_edge(edge["prior_step"], edge["dependent_step"])
+        ]
         return {
             "revision": self.revision,
             "request_id": request_id,
             "nodes": nodes,
             "edges": edges,
+            **({"removed_edges": removed} if removed else {}),
         }
 
     def apply_checkpoint(self, checkpoint):
+        for edge in checkpoint.get("removed_edges") or []:
+            prior, dependent = self.resolve(edge["prior"]), self.resolve(edge["dependent"])
+            if self.graph.has_edge(prior, dependent):
+                self.graph.remove_edge(prior, dependent)
         for node in checkpoint.get("nodes") or []:
             step = self.resolve(node["step"])
             self.graph.nodes[step]["annotations"] = list(node.get("annotations") or [])
@@ -149,6 +197,7 @@ class ProtocolGraph:
                                 field_relations=list(edge.get("field_relations") or []),
                                 origin="analysis")
         self.revision = int(checkpoint.get("revision") or self.revision)
+        self.checkpoint_request_id = checkpoint.get("request_id")
 
 
 def _validate_protocol_shape(model):
@@ -190,6 +239,23 @@ def load_protocol(protocol_path, checkpoint_path=None, binding=None):
     except (OSError, json.JSONDecodeError) as error:
         raise ProtocolError(f"cannot read protocol model {path}: {error}") from error
     _validate_protocol_shape(model)
+    parties = model["parties"]
+    by_name = {party["name"]: party for party in parties}
+    if len(by_name) != len(parties):
+        raise ProtocolError("party names must be unique")
+    for party in parties:
+        aliases = party.get("alias", [])
+        if not isinstance(aliases, list) or any(not isinstance(name, str) or not name for name in aliases):
+            raise ProtocolError(f"party {party['name']} alias must be an array of nonempty party names")
+        for name in aliases:
+            if name not in by_name or name == party["name"]:
+                raise ProtocolError(f"party {party['name']} has invalid alias {name!r}")
+    aliases = {name: set(party.get("alias", [])) for name, party in by_name.items()}
+    for name, values in list(aliases.items()):
+        for other in list(values):
+            aliases[other].add(name)
+    for name, party in by_name.items():
+        party["alias"] = sorted(aliases[name])
     meta = model["meta"]
     base = {"protocol_name": meta.get("protocol", ""), "model": model}
     catalog = build_catalog(model)
@@ -235,6 +301,8 @@ def build_catalog(model, protocol_id=None):
         "protocol_name": (model.get("meta") or {}).get("protocol", ""),
         "binding": {},
         "parties": [party.get("name") for party in model.get("parties") or []],
+        "party_aliases": {party["name"]: list(party.get("alias") or [])
+                          for party in model.get("parties") or []},
         "steps": steps,
         "dependencies": dependencies,
         "documents": (model.get("meta") or {}).get("documents") or [],
@@ -272,15 +340,20 @@ def context_for(graph, trace_ids, handlers):
 
 
 def validate_handlers(handlers, graph):
-    """Every handler mapping must reference a step name that exists in the catalog."""
-    known = set(graph.steps)
+    """Every mapping must name steps that exist and carry that exact message."""
     problems = []
     for row in handlers.rows:
         normalized = []
         for step in row.step_names:
-            if step in known:
-                normalized.append(step)
-            else:
+            if step not in graph.steps:
                 problems.append(f"handler {row.message} references unknown step {step}")
+                continue
+            expected = graph.steps[step].get("message_name")
+            if expected != row.message:
+                problems.append(
+                    f"handler {row.message} references step {step} of message {expected}"
+                )
+                continue
+            normalized.append(step)
         row.step_names = normalized
     return problems

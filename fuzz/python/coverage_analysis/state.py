@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import threading
@@ -65,6 +66,7 @@ class Request:
     llvm_cov: str | None = None
     bindings: dict = field(default_factory=dict)
     txn: object = None
+    analysis_target: dict | None = None
     proposal: dict | None = None
     proposal_digest: str | None = None
     committed: bool = False
@@ -85,6 +87,9 @@ class State:
         self.latest = {}
         self.counter = 0
         self.requests = {}
+        self.session_config = {}
+        self.session_config_path = None
+        self.active_request_id = None
         self.committed = None
         self.committed_checkpoint = None
         self.committed_proposal = None
@@ -105,6 +110,17 @@ class State:
                 handle.write(json.dumps(event, ensure_ascii=False) + "\n")
 
     # -- loaders ---------------------------------------------------------
+    def _store_handlers(self, value, identity):
+        """Keep exactly one authoritative handler mapping.
+
+        Initialization may revise the mapping several times and every request
+        reads the current one, so versions and digests are not recorded.
+        """
+        loaded = Loaded("handlers", 1, "", identity, value)
+        self.versions["handlers"] = OrderedDict({1: loaded})
+        self.latest["handlers"] = loaded
+        return loaded
+
     def _store(self, key, value, digest, identity):
         self.counter += 1
         loaded = Loaded(key, self.counter, digest, identity, value)
@@ -328,7 +344,12 @@ class State:
             raise StateError("incompatible_data", f"cannot read exported json: {error}")
         return digest, raw, [output, profdata]
 
+    def _check_static_load(self, key):
+        if key in self.latest:
+            raise StateError("already_loaded", f"{key} is already loaded for this service")
+
     def load_cfg(self, cfg_dir):
+        self._check_static_load("cfg")
         root = Path(cfg_dir).resolve()
         if not root.is_dir():
             raise StateError("incompatible_data", f"CFG directory {root} does not exist")
@@ -341,6 +362,7 @@ class State:
         return {"version": loaded.version, **identity}
 
     def load_callgraph(self, callgraph_dot):
+        self._check_static_load("callgraph")
         path = Path(callgraph_dot).resolve()
         if not path.is_file():
             raise StateError("incompatible_data", f"callgraph {path} does not exist")
@@ -355,38 +377,154 @@ class State:
                 if self.latest.get("coverage") else 0}
 
     def load_protocol(self, protocol_path, checkpoint_path=None, binding=None):
+        self._check_static_load("protocol")
         graph = protocol_mod.load_protocol(protocol_path, checkpoint_path, binding)
         identity = {"protocol_name": graph.base["protocol_name"],
                     "steps": len(graph.steps), "revision": graph.revision}
         digest = sha256_file(protocol_path)
         loaded = self._store("protocol", graph, digest, identity)
         self.committed = graph
-        self.committed_checkpoint = graph.checkpoint(None)
+        self.committed_request_id = graph.checkpoint_request_id
+        self.committed_checkpoint = graph.checkpoint(self.committed_request_id)
         self.graph_revision = graph.revision
         return {"version": loaded.version, **identity}
 
+    def write_handlers(self, output_dir, session, mappings, load=True):
+        """Serialise a handler mapping, re-read it, and load it.
+
+        Agents describe mappings as data instead of writing JSON text, so a
+        stray escape or trailing document cannot abort campaign initialization.
+        The loaded mapping is authoritative for this service: requests whose
+        registered file is byte-identical resolve without a separate
+        ``load_handlers`` call.
+        """
+        output = Path(output_dir)
+        output.mkdir(parents=True, exist_ok=True)
+        target = output / "handlers.json"
+        document = {"session": str(session or ""), "mappings": list(mappings or [])}
+        if not document["session"]:
+            raise StateError("bad_request", "write_handlers needs a session")
+        temporary = target.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(document, ensure_ascii=False, separators=(",", ":")))
+        os.replace(temporary, target)
+        # Re-read through the production loader: it enforces the same shape the
+        # campaign would otherwise validate only at startup.
+        value = handlers_mod.load_handlers(target)
+        graph = self.committed
+        if graph is None and self.latest.get("protocol") is not None:
+            graph = self.latest["protocol"].value
+        problems = protocol_mod.validate_handlers(value, graph) if graph is not None else []
+        if problems:
+            raise StateError("incompatible_data", "; ".join(problems[:5]))
+        identity = {"handlers_path": str(target.resolve()),
+                    "messages": len(value.rows),
+                    "handlers": len(value.by_id)}
+        result = {"handlers_path": identity["handlers_path"],
+                  "messages": identity["messages"],
+                  "handlers": identity["handlers"],
+                  "bytes": target.stat().st_size}
+        if load:
+            # Initialization may revise the mapping several times; the newest
+            # write simply replaces the authoritative mapping.
+            self._store_handlers(value, identity)
+        return result
+
     def load_handlers(self, handlers_path):
         value = handlers_mod.load_handlers(handlers_path)
-        identity = {"handlers": str(Path(handlers_path).resolve()),
+        identity = {"handlers_path": str(Path(handlers_path).resolve()),
                     "messages": len(value.rows),
                     "handlers": len(value.by_id)}
         digest = sha256_file(handlers_path)
-        loaded = self._store("handlers", value, digest, identity)
-        if self.committed:
-            problems = protocol_mod.validate_handlers(value, self.committed)
+        # The protocol graph may exist before any proposal commits; validate
+        # against it so a bad step/message pairing fails here instead of
+        # aborting the campaign later during initialization.
+        graph = self.committed
+        if graph is None and self.latest.get("protocol") is not None:
+            graph = self.latest["protocol"].value
+        if graph is not None:
+            problems = protocol_mod.validate_handlers(value, graph)
             if problems:
-                self.versions["handlers"].pop(loaded.version)
-                self.latest.pop("handlers", None)
                 raise StateError("incompatible_data", "; ".join(problems[:5]))
+        loaded = self._store_handlers(value, identity)
         return {"version": loaded.version, **identity}
 
     # -- requests and transactions --------------------------------------
+    def load_session_config(self, path):
+        """Load campaign-wide facts once, when the service starts.
+
+        Session, build, model, handler mapping, party bindings, and the
+        llvm-cov tool are identical for every analysis request in a campaign.
+        The server reads them from this file instead of receiving copies on
+        every register call.
+        """
+        config_path = Path(path)
+        self.session_config_path = config_path
+        try:
+            document = json.loads(config_path.read_text())
+        except FileNotFoundError:
+            # The supervisor starts the service before the analysis stage
+            # writes this file; load it on the first register instead.
+            return {"session_config": str(config_path), "deferred": True}
+        except (OSError, json.JSONDecodeError) as error:
+            raise StateError("incompatible_data",
+                             f"cannot read session config {config_path}: {error}") from error
+        if not isinstance(document, dict):
+            raise StateError("incompatible_data", "session config must be an object")
+        allowed = {"session", "build", "model", "handlers", "llvm_cov",
+                   "source_dir", "sut_parties", "generator_parties",
+                   "unavailable_parties", "configure_options", "cli_args"}
+        unknown = sorted(set(document) - allowed)
+        if unknown:
+            raise StateError("incompatible_data",
+                             f"session config has unknown fields: {', '.join(unknown)}")
+        self.session_config = document
+        return {"session_config": str(config_path.resolve()),
+                "fields": sorted(document)}
+
+    def _ensure_session_config(self):
+        if self.session_config or self.session_config_path is None:
+            return
+        path = self.session_config_path
+        try:
+            document = json.loads(Path(path).read_text())
+        except FileNotFoundError as error:
+            raise StateError(
+                "incompatible_data",
+                f"session config {path} was never written before the first request",
+            ) from error
+        except (OSError, json.JSONDecodeError) as error:
+            raise StateError("incompatible_data",
+                             f"cannot read session config {path}: {error}") from error
+        if not isinstance(document, dict):
+            raise StateError("incompatible_data", "session config must be an object")
+        self.session_config = document
+
+    def _session_value(self, payload, field, default=None):
+        value = payload.get(field)
+        if value in (None, ""):
+            value = self.session_config.get(field, default)
+        return value
+
     def register_request(self, payload):
-        for field in ("request_id", "session", "build", "snapshot",
-                      "output_dir", "snapshot_dir", "model",
-                      "handlers"):
-            if payload.get(field) in (None, ""):
-                raise StateError("bad_request", f"request registration needs {field}")
+        self._ensure_session_config()
+        merged = {
+            "request_id": payload.get("request_id"),
+            "snapshot": payload.get("snapshot"),
+            "output_dir": payload.get("output_dir"),
+            "snapshot_dir": payload.get("snapshot_dir"),
+            "checkpoint": payload.get("checkpoint"),
+        }
+        for field in ("session", "build", "model", "handlers", "llvm_cov",
+                      "source_dir", "sut_parties", "generator_parties",
+                      "unavailable_parties"):
+            merged[field] = self._session_value(payload, field)
+        for field in ("request_id", "snapshot", "output_dir", "snapshot_dir",
+                      "session", "build", "model", "handlers"):
+            if merged.get(field) in (None, ""):
+                raise StateError("bad_request",
+                                 f"request registration needs {field}; "
+                                 "provide it here or in the session config")
+        payload = merged
         request = Request(
             request_id=str(payload["request_id"]),
             session=str(payload["session"]),
@@ -440,8 +578,57 @@ class State:
             base = loaded.value
         request.txn = base.copy()
         request.txn.revision = self.graph_revision
+        self.active_request_id = request_id
         return {"request_id": request_id, "graph_revision": request.txn.revision,
                 "steps": len(request.txn.steps)}
+
+    def _active_request(self):
+        if self.active_request_id is None:
+            raise StateError("no_active_analysis", "call begin_analysis first")
+        return self.request(self.active_request_id)
+
+    def _request_handlers(self, request):
+        """The service keeps one handler mapping; every request reads it."""
+        loaded = self.latest.get("handlers")
+        if loaded is None:
+            raise StateError("not_loaded", "the handler mapping is not loaded",
+                             missing=["write_handlers"])
+        return loaded.value
+
+    @staticmethod
+    def _target_status(request):
+        target = request.analysis_target
+        return {"request_id": request.request_id, "target": target.copy() if target else None}
+
+    def get_analysis_target(self):
+        return self._target_status(self._active_request())
+
+    def select_analysis_target(self, handler_id, reason):
+        request = self._active_request()
+        if request.analysis_target is not None:
+            if request.analysis_target == {"handler_id": handler_id, "reason": reason}:
+                return self._target_status(request)
+            raise StateError("target_already_selected", "use switch_analysis_target to change the target")
+        return self._set_analysis_target(request, handler_id, reason)
+
+    def switch_analysis_target(self, handler_id, reason):
+        request = self._active_request()
+        if request.analysis_target is None:
+            raise StateError("analysis_target_required", "call select_analysis_target first")
+        if request.analysis_target["handler_id"] == handler_id:
+            raise StateError("bad_request", "switch_analysis_target requires a different handler")
+        return self._set_analysis_target(request, handler_id, reason)
+
+    def _set_analysis_target(self, request, handler_id, reason):
+        if request.proposal is not None:
+            raise StateError("proposal_submitted", "the submitted proposal locks the analysis target")
+        if not isinstance(reason, str) or not reason.strip():
+            raise StateError("bad_request", "an analysis target needs a non-empty reason")
+        handlers = self._request_handlers(request)
+        if not isinstance(handler_id, str) or handler_id not in handlers.by_id:
+            raise StateError("unknown_handler", f"unknown handler {handler_id!r} for this request")
+        request.analysis_target = {"handler_id": handler_id, "reason": reason}
+        return self._target_status(request)
 
     def submit_proposal(self, request_id, payload):
         if payload.get("mutations"):
@@ -451,14 +638,27 @@ class State:
             )
         request = self.request(request_id)
         graph = self.txn_graph(request_id)
-        handlers = self.dataset("handlers", request_id).value
+        origin = str(payload.get("origin") or "coverage")
+        goal = payload.get("goal") or {}
+        if not isinstance(goal, dict):
+            raise StateError("bad_request", "goal must be an object")
+        if origin == "coverage":
+            target = request.analysis_target
+            if target is None:
+                raise StateError("analysis_target_required", "call select_analysis_target before submitting")
+            if goal.get("handler_ids") != [target["handler_id"]]:
+                raise StateError("analysis_target_mismatch",
+                                 f"goal.handler_ids must be [{target['handler_id']!r}]")
+            handlers = self._request_handlers(request)
+        else:
+            handlers = self.dataset("handlers", request_id).value
         proposal = proposal_mod.build_proposal(
             graph,
-            origin=str(payload.get("origin") or "coverage"),
+            origin=origin,
             session=request.session,
             build=request.build,
             snapshot=f"{request.snapshot:06}",
-            goal=payload.get("goal") or {},
+            goal=goal,
             trace=payload.get("trace") or [],
             handlers=handlers,
             parties=payload.get("parties") or {},
@@ -467,11 +667,12 @@ class State:
         )
         proposal_mod.validate_proposal(proposal, graph, handlers, request.identity())
         path = proposal_mod.freeze(request.output_dir / "proposal.json", proposal)
-        request.proposal = proposal
-        request.proposal_digest = sha256_file(path)
+        digest = sha256_file(path)
         checkpoint = graph.checkpoint(request.request_id)
         checkpoint_path = request.output_dir / "graph-checkpoint.json"
         proposal_mod.freeze(checkpoint_path, checkpoint)
+        request.proposal = proposal
+        request.proposal_digest = digest
         return {"request_id": request_id,
                 "graph_revision": graph.revision,
                 "proposal_sha256": request.proposal_digest,
@@ -485,17 +686,17 @@ class State:
         path = request.output_dir / "proposal.json"
         if not path.is_file() or sha256_file(path) != proposal_sha256:
             raise StateError("mismatch", "frozen proposal bytes do not match")
-        if request.committed:
-            return {"request_id": request_id,
-                    "graph_revision": self.graph_revision, "committed": True}
-        graph.revision = self.graph_revision + 1
-        self.graph_revision = graph.revision
-        self.committed = graph
-        self.committed_checkpoint = graph.checkpoint(request_id)
-        self.committed_proposal = request.proposal
-        self.committed_request_id = request_id
-        request.committed = True
-        self._persist_commit()
+        if not request.committed:
+            graph.revision = self.graph_revision + 1
+            self.graph_revision = graph.revision
+            self.committed = graph
+            self.committed_checkpoint = graph.checkpoint(request_id)
+            self.committed_proposal = request.proposal
+            self.committed_request_id = request_id
+            request.committed = True
+            self._persist_commit()
+        if self.active_request_id == request_id:
+            self.active_request_id = None
         return {"request_id": request_id,
                 "graph_revision": self.graph_revision, "committed": True}
 
@@ -510,6 +711,8 @@ class State:
         request.aborted = True
         request.txn = None
         request.proposal = None
+        if self.active_request_id == request_id:
+            self.active_request_id = None
         return {"request_id": request_id, "aborted": True}
 
     def loaded_state(self):

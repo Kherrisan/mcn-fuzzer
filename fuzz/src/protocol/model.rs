@@ -129,7 +129,9 @@ pub(crate) struct State {
 }
 
 /// Local computation attached to one send step.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[derive(
+    Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, Hash, schemars::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub struct Processing {
     #[serde(default)]
@@ -141,7 +143,7 @@ pub struct Processing {
 }
 
 /// One read/write/rule entry inside a processing hook.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Hash, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessingOperation {
     #[serde(default)]
@@ -156,6 +158,8 @@ pub struct ProcessingOperation {
 pub(crate) struct Party {
     pub(crate) name: String,
     pub(crate) description: String,
+    #[serde(default)]
+    pub(crate) alias: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -483,6 +487,25 @@ impl IndexedModel {
         self.parties.keys().cloned().collect()
     }
 
+    pub fn party_aliases(&self) -> BTreeMap<String, Vec<String>> {
+        let mut aliases: BTreeMap<String, BTreeSet<String>> = self
+            .parties
+            .iter()
+            .map(|(name, party)| (name.clone(), party.alias.iter().cloned().collect()))
+            .collect();
+        for (name, party) in &self.parties {
+            for alias in &party.alias {
+                if let Some(reverse) = aliases.get_mut(alias) {
+                    reverse.insert(name.clone());
+                }
+            }
+        }
+        aliases
+            .into_iter()
+            .map(|(name, values)| (name, values.into_iter().collect()))
+            .collect()
+    }
+
     /// Party name and description, in name order.
     pub fn described_parties(&self) -> Vec<(String, String)> {
         self.parties
@@ -573,6 +596,15 @@ pub fn load_model(path: &Path) -> Result<IndexedModel, ModelError> {
                 "duplicate party name {}",
                 party.name
             )));
+        }
+    }
+    for party in &file.parties {
+        for alias in &party.alias {
+            if alias.is_empty() || alias == &party.name || !parties.contains_key(alias) {
+                return Err(ModelError::new(format!(
+                    "party {} has invalid alias {alias}", party.name
+                )));
+            }
         }
     }
     let mut messages = BTreeMap::new();

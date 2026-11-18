@@ -7,6 +7,7 @@ mod agent;
 mod config;
 mod process;
 mod replay;
+pub mod request_eval;
 mod report;
 mod task;
 

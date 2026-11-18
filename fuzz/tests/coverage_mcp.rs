@@ -211,7 +211,7 @@ fn rust_client_drives_the_python_service_and_validates_the_proposal() {
             .tool(
                 "load_protocol",
                 json!({
-            "protocol_path": files["protocol"], "request_id": "req-1"}),
+            "protocol_path": files["protocol"]}),
             )
             .unwrap();
         client
@@ -221,22 +221,21 @@ fn rust_client_drives_the_python_service_and_validates_the_proposal() {
             .tool(
                 "load_cfg",
                 json!({
-            "cfg_dir": files["cfg"], "manifest_path": files["manifest"]}),
+            "cfg_dir": files["cfg"]}),
             )
             .unwrap();
         client
             .tool(
                 "load_callgraph",
                 json!({
-            "callgraph_dot": files["callgraph"], "manifest_path": files["manifest"]}),
+            "callgraph_dot": files["callgraph"]}),
             )
             .unwrap();
         client
             .tool(
                 "load_coverage_json",
                 json!({
-            "request_id": "req-1", "snapshot_dir": files["snapshot"],
-            "manifest_path": files["manifest"]}),
+            "request_id": "req-1", "snapshot_dir": files["snapshot"]}),
             )
             .unwrap();
         let overview = client
@@ -252,6 +251,12 @@ fn rust_client_drives_the_python_service_and_validates_the_proposal() {
             .as_str()
             .unwrap()
             .to_string();
+        client
+            .tool(
+                "select_analysis_target",
+                json!({"handler_id": handler, "reason": "reach foo"}),
+            )
+            .unwrap();
         let submitted = client
             .tool(
                 "submit_proposal",
@@ -274,6 +279,9 @@ fn rust_client_drives_the_python_service_and_validates_the_proposal() {
         assert_eq!(committed["graph_revision"], 1);
         client.call(json!({"op": "shutdown"})).unwrap();
     });
+    if result.is_err() {
+        let _ = child.kill();
+    }
     let _ = child.wait();
     let _ = fs::remove_dir_all(&dir);
     if let Err(panic) = result {

@@ -269,8 +269,10 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
             // message and auto-title the thread instead. Do not fail init on
             // the title; the init prompt waits for an idle agent below.
         }
-        if let Err(reason) =
-            self.send_checked(client, prompt, "the initialization prompt", launch.codex)
+        let what = "the initialization prompt";
+        if let Err(reason) = self
+            .wait_idle(client, what, launch.codex)
+            .and_then(|()| self.send_and_confirm(client, prompt, what, launch.codex))
         {
             return self.failure(reason, client);
         }
@@ -286,9 +288,6 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
                     return self.failure("unexpected command during initialization".into(), client)
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
-            }
-            if ready_path.is_file() {
-                break;
             }
             match client.get(&self.config.terminal) {
                 Ok(info) if matches!(info.state.as_str(), "finished" | "exited" | "dead") => {
@@ -310,16 +309,29 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
                         client,
                     );
                 }
-                _ => {}
+                Ok(info) => {
+                    let turn_finished = match info.status.as_deref() {
+                        Some(status) => matches!(agent_state(status).as_str(), "idle" | "done"),
+                        None => !launch.codex,
+                    };
+                    if turn_finished && ready_path.is_file() {
+                        break;
+                    }
+                }
             }
             if std::time::Instant::now() >= deadline {
-                let failure = AgentFailure::new(
+                let reason = if ready_path.is_file() {
+                    format!(
+                        "{} was published but the initialization turn did not finish before the deadline",
+                        ready_path.display()
+                    )
+                } else {
                     format!(
                         "{} was not published before the deadline",
                         ready_path.display()
-                    ),
-                    self.observe(client),
-                );
+                    )
+                };
+                let failure = AgentFailure::new(reason, self.observe(client));
                 // Keep the same terminal and handshake alive. Each stage owns
                 // its timeout count and decides when the campaign must fail.
                 if self
@@ -344,7 +356,13 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
             Ok(prepared) => prepared,
             Err(reason) => return self.artifact(request, Err(reason), client),
         };
-        if let Err(reason) = self.send_checked(client, prompt, "the request prompt", false) {
+        let what = "the request prompt";
+        if let Err(reason) = self.wait_idle(client, what, false) {
+            let mut failure = AgentFailure::new(reason, self.observe(client));
+            failure.prompt_wait_timed_out = failure.timeout;
+            return AgentOutcome::Failed(failure);
+        }
+        if let Err(reason) = self.send_and_confirm(client, prompt, what, false) {
             return self.failure(reason, client);
         }
         let result_path = request.output_dir().join("result.json");
@@ -387,7 +405,6 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
         }
     }
 
-    /// Send only after HC reports the agent idle, then confirm a turn started.
     /// Send into the Codex composer, retrying while the TUI is still painting.
     ///
     /// HC rejects `terminal.send` with "still starting: its output has not
@@ -412,17 +429,15 @@ impl<I: AgentInit, T: AgentTask> Worker<I, T> {
         }
     }
 
-    fn send_checked(
+    /// Confirm that the prompt started a turn after the initial readiness check.
+    fn send_and_confirm(
         &self,
         client: &mut HcClient,
         text: &str,
         what: &str,
         require_status: bool,
     ) -> Result<(), String> {
-        self.wait_idle(client, what, require_status)?;
-        let receipt = self
-            .send_when_settled(client, text)
-            .map_err(|error| error)?;
+        let receipt = self.send_when_settled(client, text)?;
         if receipt.started == Some(false) {
             // HC saw no turn within its short window, but the paste may still
             // be queued. Give the program fifteen seconds to start working
@@ -574,23 +589,19 @@ fn agent_activity(status: Option<&str>, require_status: bool) -> AgentActivity {
             AgentActivity::Ready
         };
     };
-    let text = text.trim();
-    if text.is_empty() {
-        return AgentActivity::Ready;
-    }
-    let state = match serde_json::from_str::<serde_json::Value>(text) {
-        Ok(value) => value
-            .get("state")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(text)
-            .to_string(),
-        Err(_) => text.to_string(),
-    };
-    match state.as_str() {
+    match agent_state(text).as_str() {
         "working" | "not_started" => AgentActivity::Busy,
         "blocked" => AgentActivity::Blocked,
         _ => AgentActivity::Ready,
     }
+}
+
+fn agent_state(status: &str) -> String {
+    let status = status.trim();
+    serde_json::from_str::<serde_json::Value>(status)
+        .ok()
+        .and_then(|value| value.get("state")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| status.to_owned())
 }
 
 fn codex_composer_ready(screen: &str) -> bool {
@@ -825,11 +836,24 @@ mod tests {
                 ));
             }
             if recover {
+                let status_path = socket.with_extension("status");
+                fs::write(&status_path, "working").unwrap();
                 fs::write(
                     directory.join("ready.json"),
                     r#"{"status":"ready","session":"timeout-session"}"#,
                 )
                 .unwrap();
+                assert!((0..3).any(|_| {
+                    match client.recv_timeout(Duration::from_secs(3)) {
+                        Some(AgentOutcome::InitTimedOut(failure)) => failure
+                            .reason
+                            .contains("the initialization turn did not finish"),
+                        outcome => {
+                            panic!("expected init to wait for turn completion, got {outcome:?}")
+                        }
+                    }
+                }));
+                fs::write(status_path, r#"{"app":"codex","state":"done"}"#).unwrap();
                 assert!(matches!(
                     client.recv_timeout(Duration::from_secs(3)),
                     Some(AgentOutcome::Ready((), _))
