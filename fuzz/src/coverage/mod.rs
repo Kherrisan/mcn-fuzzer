@@ -12,6 +12,7 @@ pub mod introspection;
 pub mod mcp;
 pub mod proposal;
 pub mod schedule;
+pub mod step_stats;
 mod sut_output;
 pub mod symbol_map;
 
@@ -791,6 +792,7 @@ impl CoverageSession {
             worker,
             case_id,
             Some(replay_log),
+            None,
         ) {
             self.backend.retire();
             return Err(error);

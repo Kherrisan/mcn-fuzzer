@@ -144,9 +144,10 @@ impl GeneratorClient {
         connect_timeout: Duration,
         worker_id: u64,
         case_id: u64,
+        progress_log: Option<&Path>,
     ) -> Result<(), Error> {
         self.submit_with_replay(
-            input, host, port, io_timeout, connect_timeout, worker_id, case_id, None,
+            input, host, port, io_timeout, connect_timeout, worker_id, case_id, None, progress_log,
         )
     }
 
@@ -160,6 +161,7 @@ impl GeneratorClient {
         worker_id: u64,
         case_id: u64,
         replay_log: Option<&ReplayLog>,
+        progress_log: Option<&Path>,
     ) -> Result<(), Error> {
         if self.dead {
             return Err(Error::unknown(
@@ -184,6 +186,7 @@ impl GeneratorClient {
             as_millis(io_timeout),
             as_millis(connect_timeout),
             replay_log,
+            progress_log,
         )?;
         if body.len() > MAX_MESSAGE {
             return Err(Error::illegal_argument(

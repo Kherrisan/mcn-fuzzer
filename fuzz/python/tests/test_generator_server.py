@@ -84,6 +84,55 @@ class RegistryTests(unittest.TestCase):
             run_isolated(cbor2.dumps(request))
             self.assertEqual(log.read_bytes(), previous)
 
+    def test_step_progress_jsonl_records_scheduler_and_successes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "generator.py"
+            script.write_text(
+                "from generator_server import step_handler\n"
+                "@step_handler('command')\n"
+                "def command(ctx, params):\n"
+                "    if ctx.step_name == 'second': raise RuntimeError('failed')\n"
+            )
+            progress = root / "progress.jsonl"
+            request = {
+                "op": "run", "client": 1, "id": 1,
+                "generator": str(script), "params": {},
+                "step_trace": [
+                    {"name": "first", "step": "command"},
+                    {"name": "second", "step": "command"},
+                    {"name": "third", "step": "command"},
+                ],
+                "host": "127.0.0.1", "port": 1, "timeout_ms": 1000,
+                "progress_log": str(progress),
+            }
+            result = cbor2.loads(run_isolated(cbor2.dumps(request)))
+            self.assertEqual(result["status"], "generator")
+            records = [json.loads(line) for line in progress.read_text().splitlines()]
+            self.assertEqual(records[0]["event"], "scheduler_start")
+            self.assertEqual(
+                [(r["event"], r["index"], r["step"]) for r in records[1:]],
+                [("step_ok", 0, "command")],
+            )
+
+    def test_progress_log_requires_absolute_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "generator.py"
+            script.write_text(
+                "from generator_server import step_handler\n"
+                "@step_handler('command')\n"
+                "def command(ctx, params): pass\n"
+            )
+            request = {
+                "op": "run", "client": 1, "id": 1,
+                "generator": str(script), "params": {},
+                "step_trace": [{"name": "first", "step": "command"}],
+                "host": "127.0.0.1", "port": 1, "timeout_ms": 1000,
+                "progress_log": "relative.jsonl",
+            }
+            result = cbor2.loads(run_isolated(cbor2.dumps(request)))
+            self.assertEqual(result["status"], "generator")
+            self.assertIn("progress_log", result["error"])
     def test_legacy_generate_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "legacy.py"

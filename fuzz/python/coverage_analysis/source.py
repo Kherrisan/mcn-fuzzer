@@ -54,12 +54,38 @@ def function_range(path, symbol, branches):
     candidates = [row for row in definitions if row[0] == name]
     if not candidates and symbol.startswith("_Z") and branches:
         candidates = list(definitions)
-    if branches:
-        first = min(row.line for row in branches)
-        last = max(row.end_line for row in branches)
-        candidates = [row for row in candidates if row[1] <= first <= last <= row[2]]
+    if candidates and branches:
+        candidates = _narrow(path, symbol, candidates, branches)
+    if not candidates:
+        raise SourceError(
+            f"{symbol!r} has no function definition in {path}; macro-generated or "
+            "fully inlined code has no syntax range, so read it by file and line")
     if len(candidates) != 1:
         raise SourceError(f"cannot uniquely locate function {symbol!r} in {path}: "
                           f"{len(candidates)} matching syntax ranges; check compiled source consistency")
     _, first, last = candidates[0]
     return first, last
+
+
+def _narrow(path, symbol, candidates, branches):
+    """Pick the definition that explains most branch records.
+
+    llvm-cov attributes macro-expansion and inline branches to the enclosing
+    function while recording the line where the macro or callee is declared.
+    Those lines can sit outside the function body (a macro above the
+    definition, an inline in a header), so requiring the full branch span to
+    be inside the body rejects valid functions.
+    """
+    lines = [row.line for row in branches]
+    scored = []
+    for candidate in candidates:
+        start, end = candidate[1], candidate[2]
+        inside = sum(1 for line in lines if start <= line <= end)
+        scored.append((inside, candidate))
+    best = max(score for score, _ in scored)
+    if best == 0:
+        raise SourceError(
+            f"no branch of {symbol!r} falls inside a definition in {path}; "
+            "the coverage and source trees disagree")
+    winners = [candidate for score, candidate in scored if score == best]
+    return winners

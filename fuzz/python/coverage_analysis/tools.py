@@ -606,6 +606,53 @@ def _line_range(start, end):
     return {"start": start, "end": end} if start <= end else None
 
 
+def _function_file(coverage, canonical, paths, root):
+    """Pick the file that really defines the function.
+
+    ``filenames[0]`` is not always the translation unit: coverage lists header
+    inlines first for many OpenSSL functions. Try each candidate file and keep
+    the one whose syntax range explains the branch records.
+    """
+    ordered = sorted(
+        paths,
+        key=lambda path: (path.lower().endswith((".h", ".hpp", ".hh", ".hxx")), path),
+    )
+    problems = []
+    fallback = None
+    with_records = []
+    without_records = []
+    for covered in ordered:
+        records = [record for record in coverage.branch_records(canonical)
+                   if record.file == covered]
+        if records:
+            with_records.append((covered, records))
+        else:
+            without_records.append((covered, []))
+    # Files with branch records disambiguate duplicate definitions; a function
+    # that the snapshot never entered has none, so try those afterwards.
+    for covered, records in with_records + without_records:
+        if records and fallback is None:
+            fallback = (covered, records)
+        try:
+            path = _source_path(root, covered)
+            first, last = source_mod.function_range(path, canonical, records)
+        except (OSError, source_mod.SourceError) as error:
+            problems.append(f"{covered}: {error}")
+            continue
+        return covered, records, path, first, last, "tree_sitter"
+    # Macros and fully inlined helpers have no function definition. Report the
+    # coverage span instead of failing, and label the basis so callers can tell
+    # the range is not a syntax definition.
+    if fallback is not None:
+        covered, records = fallback
+        path = _source_path(root, covered)
+        first = min(record.line for record in records)
+        last = max(max(record.line, record.end_line) for record in records)
+        return covered, records, path, first, last, "coverage_branches"
+    raise StateError("source_range_unavailable",
+                     "; ".join(problems[:3]) or f"no source file defines {canonical}")
+
+
 def _source_window(state, arguments, default_width):
     coverage = _coverage(state, arguments.get("request_id"))
     root = state.source_root or coverage.source_root
@@ -617,21 +664,27 @@ def _source_window(state, arguments, default_width):
         paths = coverage.functions[canonical].files
         if not paths:
             raise StateError("not_found", f"function {canonical} has no source file")
-        covered = _coverage_source(paths, requested, root) if requested else paths[0]
-        records = [record for record in coverage.branch_records(canonical)
-                   if record.file == covered]
+        if requested:
+            covered = _coverage_source(paths, requested, root)
+            records = [record for record in coverage.branch_records(canonical)
+                       if record.file == covered]
+            path = _source_path(root, covered)
+            try:
+                first, last = source_mod.function_range(path, canonical, records)
+            except (OSError, source_mod.SourceError) as error:
+                raise StateError("source_range_unavailable", str(error)) from error
+            basis = "tree_sitter"
+        else:
+            covered, records, path, first, last, basis = _function_file(
+                coverage, canonical, paths, root)
     elif requested:
         covered = _coverage_source(coverage.files, requested, root)
         records = coverage.files[covered]
     else:
         raise StateError("bad_request", "show_source_coverage needs function or file")
 
-    path = _source_path(root, covered)
-    if function:
-        try:
-            first, last = source_mod.function_range(path, canonical, records)
-        except (OSError, source_mod.SourceError) as error:
-            raise StateError("source_range_unavailable", str(error)) from error
+    if not function:
+        path = _source_path(root, covered)
 
     width = arguments.get("max_lines", arguments.get("radius", default_width))
     width = max(1, min(int(width), coverage_mod.MAX_SOURCE_LINES))
@@ -665,7 +718,7 @@ def _source_window(state, arguments, default_width):
     }
     if function:
         window.update(function=canonical, file=window["path"], stats=coverage.function_stats(canonical),
-                      range={"start": first, "end": last, "basis": "tree_sitter",
+                      range={"start": first, "end": last, "basis": basis,
                              "first_branch_line": min((row.line for row in records), default=None),
                              "last_branch_line": max((row.end_line for row in records), default=None)})
     return window
@@ -685,14 +738,8 @@ def _function_window(coverage, root, name, arguments):
     paths = coverage.functions[canonical].files
     if not paths:
         raise StateError("not_found", f"function {canonical} has no source file")
-    covered = paths[0]
-    records = [record for record in coverage.branch_records(canonical)
-               if record.file == covered]
-    path = _source_path(root, covered)
-    try:
-        first, last = source_mod.function_range(path, canonical, records)
-    except (OSError, source_mod.SourceError) as error:
-        raise StateError("source_range_unavailable", str(error)) from error
+    covered, records, path, first, last, basis = _function_file(
+        coverage, canonical, paths, root)
     width = int(arguments.get("radius") or coverage_mod.DEFAULT_SOURCE_LINES)
     width = max(10, min(width, coverage_mod.MAX_SOURCE_LINES))
     if arguments.get("whole"):
@@ -700,7 +747,7 @@ def _function_window(coverage, root, name, arguments):
     else:
         start = first
         end = min(max(last, start), start + width - 1)
-    return canonical, path, records, first, last, start, end
+    return canonical, path, records, first, last, start, end, basis
 
 
 def _source_bundle(state, arguments):
@@ -717,12 +764,12 @@ def _source_bundle(state, arguments):
     results = []
     spent = 0
     for name in names:
-        canonical, path, records, first, last, start, end = _function_window(
+        canonical, path, records, first, last, start, end, basis = _function_window(
             coverage, root, str(name), arguments)
         room = budget - spent
         if room < 1:
             results.append({"function": canonical, "file": str(path),
-                            "range": {"start": first, "end": last, "basis": "tree_sitter"},
+                            "range": {"start": first, "end": last, "basis": basis},
                             "skipped": True, "reason": "line budget exhausted"})
             continue
         end = min(end, start + room - 1)
@@ -731,7 +778,7 @@ def _source_bundle(state, arguments):
         entry = {
             "function": canonical,
             "file": window["path"],
-            "range": {"start": first, "end": last, "basis": "tree_sitter",
+            "range": {"start": first, "end": last, "basis": basis,
                       "first_branch_line": min((row.line for row in records), default=None),
                       "last_branch_line": max((row.end_line for row in records), default=None)},
             "stats": coverage.function_stats(canonical),

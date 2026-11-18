@@ -33,6 +33,26 @@ def _freeze(value):
     return value
 
 
+def _progress(fd, event, instance, index, status=None):
+    """Append one progress record for the step statistics reader."""
+    if fd is None:
+        return
+    record = {
+        "event": event,
+        "index": index,
+        "instance": instance["name"],
+        "step": instance["step"],
+    }
+    if status is not None:
+        record["status"] = status
+    line = (json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n").encode()
+    while line:
+        written = os.write(fd, line)
+        if written == 0:
+            raise OSError("writing step progress made no progress")
+        line = line[written:]
+
+
 def _step_marker(replay_log, event, instance, index, status=None):
     if replay_log is None:
         return
@@ -83,9 +103,12 @@ def build_dispatch(module):
 
     def generate(ctx, step_trace):
         params = _freeze(ctx.generator_params)
+        progress = ctx._progress_log
         try:
             if initializer is not None:
                 initializer(ctx, params)
+            if progress is not None:
+                _progress(progress, "scheduler_start", {"name": "", "step": ""}, 0)
             for index, instance in enumerate(step_trace):
                 ctx.step_instance = _freeze(instance)
                 _step_marker(ctx._replay_log, "step_start", instance, index)
@@ -98,6 +121,7 @@ def build_dispatch(module):
                     _step_marker(ctx._replay_log, "step_end", instance, index, "error")
                     raise
                 _step_marker(ctx._replay_log, "step_end", instance, index, "ok")
+                _progress(progress, "step_ok", instance, index)
         finally:
             ctx.step_instance = None
             ctx.close_all()

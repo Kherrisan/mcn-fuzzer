@@ -314,6 +314,7 @@ impl CoverageAnalysisStage {
                     .to_string(),
             )
         })?;
+        introspection.set_step_model(&model);
         let introspection_http = IntrospectionHttp::start(introspection.store(), listener)
             .map_err(|error| {
                 Error::unknown(format!("starting campaign introspection MCP: {error}"))

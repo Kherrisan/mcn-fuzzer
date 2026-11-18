@@ -71,6 +71,7 @@ def _run(table: dict[int, Session], request: dict, client: int, request_id: int)
     timeout_ms = request.get("timeout_ms", 1000)
     connect_ms = request.get("connect_timeout_ms", timeout_ms)
     replay_log = request.get("replay_log")
+    progress_log = request.get("progress_log")
     if not isinstance(path, str) or not isinstance(params, dict):
         raise InteractionError("generator", "run requires generator path and a params map")
     if step_trace is not None and not isinstance(step_trace, list):
@@ -104,7 +105,13 @@ def _run(table: dict[int, Session], request: dict, client: int, request_id: int)
     ctx.generator_params = _plain_params(params)
     ctx.global_context = ctx.generator_params
     replay_fd = None
+    progress_fd = None
     try:
+        if progress_log is not None:
+            if not isinstance(progress_log, str) or not os.path.isabs(progress_log):
+                raise InteractionError("generator", "progress_log must be an absolute path")
+            progress_fd = os.open(progress_log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+            ctx._progress_log = progress_fd
         if replay_log is not None:
             replay_fd = os.open(replay_log["stdout_path"], os.O_WRONLY | os.O_APPEND)
             ctx._replay_log = (replay_fd, replay_log)
@@ -112,6 +119,8 @@ def _run(table: dict[int, Session], request: dict, client: int, request_id: int)
     finally:
         if replay_fd is not None:
             os.close(replay_fd)
+        if progress_fd is not None:
+            os.close(progress_fd)
         ctx.close_extra()
     return _response(request_id, "ok", None, ctx.bytes_sent, ctx.bytes_recv)
 

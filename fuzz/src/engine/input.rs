@@ -324,7 +324,7 @@ impl GeneratorInput {
         connect_timeout_ms: u64,
     ) -> Result<Vec<u8>, Error> {
         self.run_request_with_replay(
-            client, id, worker_id, case_id, host, port, timeout_ms, connect_timeout_ms, None,
+            client, id, worker_id, case_id, host, port, timeout_ms, connect_timeout_ms, None, None,
         )
     }
 
@@ -339,6 +339,7 @@ impl GeneratorInput {
         timeout_ms: u64,
         connect_timeout_ms: u64,
         replay_log: Option<&ReplayLog>,
+        progress_log: Option<&Path>,
     ) -> Result<Vec<u8>, Error> {
         let request = RunRequest {
             op: "run",
@@ -355,6 +356,7 @@ impl GeneratorInput {
             timeout_ms,
             connect_timeout_ms,
             replay_log,
+            progress_log,
         };
         let mut encoded = Vec::new();
         ciborium::ser::into_writer(&request, &mut encoded)
@@ -388,6 +390,8 @@ struct RunRequest<'a> {
     connect_timeout_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     replay_log: Option<&'a ReplayLog>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    progress_log: Option<&'a std::path::Path>,
 }
 
 /// `ping` or `reset`.
@@ -656,7 +660,7 @@ mod tests {
             batch: "batch-1".to_string(),
         };
         let body = input
-            .run_request_with_replay(1, 2, 3, 4, "127.0.0.1", 21, 1000, 1000, Some(&replay))
+            .run_request_with_replay(1, 2, 3, 4, "127.0.0.1", 21, 1000, 1000, Some(&replay), None)
             .unwrap();
         let request: serde_json::Value = ciborium::de::from_reader(body.as_slice()).unwrap();
         assert_eq!(request["replay_log"]["case_id"], "corpus:7");

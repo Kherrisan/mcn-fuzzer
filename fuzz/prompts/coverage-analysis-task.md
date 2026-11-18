@@ -78,6 +78,31 @@ including the first hit. That is not a set of newly covered source lines.
 `resolve_bitmap_indices` locates a feedback change. `column` is always null.
 Use `show_source_coverage` when you need source-line counts.
 
+## Step and dependency execution
+
+Three read-only tools describe how the protocol steps actually ran. Counts are
+live and campaign-wide; coverage replay is excluded.
+
+- `list_step_stats` returns each model step with `present_cnt` (instances in
+  published generator traces), `exec_cnt` (instances in ordinary execs,
+  including instances never reached after an earlier failure), and `succ_cnt`
+  (handlers that returned normally). Filter with `parties` and `channels`;
+  values inside one filter are a union and different filters intersect.
+- `list_step_dependency_stats` returns directed model dependencies with the
+  same counts. A dependency matches when either endpoint satisfies the filters.
+- `get_step_dependency_stats` reads incoming and/or outgoing dependencies for
+  given steps, deduplicated, with `direction` labelled. Its `steps` array accepts
+  only model step names, never trace instance names: statistics are aggregated by
+  model step, so an instance name returns no rows.
+
+Use them to separate three cases before proposing a trace: a step that is never
+present in published generators, a step that is present and included in execs
+but never succeeds (`succ_cnt` stays 0), and a dependency whose endpoints
+succeed in the wrong order. `unobservable_runs` counts execs whose generator has
+no step handlers or reports its own internal step names, so their success state
+is unknown rather than failed; legacy params-only generators stay in that bucket
+by design and are not attributed to model steps.
+
 A proposal with no corpus contribution is not automatically an error. Distinguish:
 
 - not yet run: status is `proposing`, `queued`, or `synthesizing`, or `executions.started` is 0

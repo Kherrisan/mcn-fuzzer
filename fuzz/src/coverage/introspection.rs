@@ -203,6 +203,7 @@ pub struct IntrospectionStore {
     campaign: CampaignIdentity,
     proposals: RwLock<Vec<Arc<ProposalRecord>>>,
     symbols: SymbolLookup,
+    step_stats: RwLock<crate::coverage::step_stats::StepStats>,
 }
 
 pub struct RegistryWriter {
@@ -302,6 +303,49 @@ impl IntrospectionHandle {
 
     pub fn store(&self) -> Arc<IntrospectionStore> {
         self.with(RegistryWriter::store)
+    }
+
+    /// Register the protocol model once so zero-count entries are listable.
+    pub fn set_step_model(&self, model: &crate::protocol::IndexedModel) {
+        self.store().with_step_stats(|stats| stats.set_model(model));
+    }
+
+    /// Count a published generator's original trace.
+    pub fn step_present(&self, source: &str, trace: &crate::coverage::step_stats::TraceView) {
+        self.store().with_step_stats(|stats| {
+            stats.record_present(source, trace);
+        });
+    }
+
+    /// Count one ordinary exec. Only call after the run request was sent.
+    pub fn step_exec(&self, trace: &crate::coverage::step_stats::TraceView) {
+        self.store().with_step_stats(|stats| stats.record_exec(trace));
+    }
+
+    /// Count the successes reported by the generator progress file.
+    pub fn step_success(
+        &self,
+        trace: &crate::coverage::step_stats::TraceView,
+        succeeded: &std::collections::BTreeSet<usize>,
+        observable: bool,
+    ) {
+        self.store()
+            .with_step_stats(|stats| stats.record_successes(trace, succeeded, observable));
+    }
+
+    /// Snapshot the step counters so an evaluation replay can restore them.
+    pub fn step_stats_snapshot(&self) -> Option<crate::coverage::step_stats::StepStats> {
+        self.store()
+            .step_stats
+            .read()
+            .ok()
+            .map(|stats| stats.clone())
+    }
+
+    pub fn restore_step_stats(&self, stats: crate::coverage::step_stats::StepStats) {
+        if let Ok(mut slot) = self.store().step_stats.write() {
+            *slot = stats;
+        }
     }
 
     pub(crate) fn snapshot(&self) -> Result<Vec<ProposalSnapshot>, String> {
@@ -542,6 +586,7 @@ impl RegistryWriter {
             campaign,
             proposals: RwLock::new(Vec::new()),
             symbols,
+            step_stats: RwLock::new(crate::coverage::step_stats::StepStats::default()),
         });
         Self {
             by_id: BTreeMap::new(),
@@ -799,7 +844,183 @@ fn page_slice<T: Clone>(items: &[T], request: PageRequest) -> (Vec<T>, Option<us
     (items[request.offset..end].to_vec(), next)
 }
 
+/// A step matches when every requested filter matches. Each filter list is a
+/// union internally, and different filters intersect.
+fn matches_filters(
+    parties: &[String],
+    channel: &str,
+    wanted_parties: Option<&[String]>,
+    wanted_channels: Option<&[String]>,
+) -> bool {
+    if let Some(wanted) = wanted_parties {
+        if !wanted.is_empty() && !parties.iter().any(|party| wanted.contains(party)) {
+            return false;
+        }
+    }
+    if let Some(wanted) = wanted_channels {
+        if !wanted.is_empty() && !wanted.iter().any(|name| name == channel) {
+            return false;
+        }
+    }
+    true
+}
+
 impl IntrospectionStore {
+    fn with_step_stats(&self, body: impl FnOnce(&mut crate::coverage::step_stats::StepStats)) {
+        if let Ok(mut stats) = self.step_stats.write() {
+            body(&mut stats);
+        }
+    }
+
+    /// Step counters, filtered and paged. Zero-count model steps are included.
+    pub fn list_step_stats(
+        &self,
+        parties: Option<&[String]>,
+        channels: Option<&[String]>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<Value, String> {
+        let limit = page_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)?;
+        let stats = self
+            .step_stats
+            .read()
+            .map_err(|_| "step stats are poisoned".to_string())?;
+        let mut items: Vec<crate::coverage::step_stats::StepEntry> = stats
+            .steps()
+            .iter()
+            .filter(|row| matches_filters(&row.parties, &row.channel, parties, channels))
+            .cloned()
+            .collect();
+        items.sort_by(|left, right| left.step.cmp(&right.step));
+        let (page, next) = page_slice(&items, PageRequest { offset: offset.unwrap_or(0), limit });
+        Ok(self.response(serde_json::json!({
+            "total": items.len(),
+            "offset": offset.unwrap_or(0),
+            "limit": limit,
+            "items": page,
+            "next_offset": next,
+            "observable_runs": stats.observable_runs(),
+            "unobservable_runs": stats.unobservable_runs(),
+        })))
+    }
+
+    /// Dependency counters, filtered and paged by either endpoint.
+    pub fn list_step_dependency_stats(
+        &self,
+        parties: Option<&[String]>,
+        channels: Option<&[String]>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<Value, String> {
+        let limit = page_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)?;
+        let stats = self
+            .step_stats
+            .read()
+            .map_err(|_| "step stats are poisoned".to_string())?;
+        let by_step: BTreeMap<&str, &crate::coverage::step_stats::StepEntry> =
+            stats.steps().iter().map(|row| (row.step.as_str(), row)).collect();
+        let admit = |name: &str| {
+            by_step
+                .get(name)
+                .is_some_and(|row| matches_filters(&row.parties, &row.channel, parties, channels))
+        };
+        let mut items: Vec<crate::coverage::step_stats::DependencyEntry> = stats
+            .edges()
+            .iter()
+            .filter(|row| admit(&row.prior_step) || admit(&row.dependent_step))
+            .cloned()
+            .collect();
+        items.sort_by(|left, right| {
+            (&left.prior_step, &left.dependent_step, &left.condition)
+                .cmp(&(&right.prior_step, &right.dependent_step, &right.condition))
+        });
+        let (page, next) = page_slice(&items, PageRequest { offset: offset.unwrap_or(0), limit });
+        Ok(self.response(serde_json::json!({
+            "total": items.len(),
+            "offset": offset.unwrap_or(0),
+            "limit": limit,
+            "items": page,
+            "next_offset": next,
+        })))
+    }
+
+    /// Dependencies attached to the requested model steps, deduplicated.
+    pub fn get_step_dependency_stats(
+        &self,
+        steps: &[String],
+        direction: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<Value, String> {
+        if steps.is_empty() {
+            return Err("steps must name at least one model step".to_string());
+        }
+        let direction = match direction {
+            "incoming" | "outgoing" | "both" => direction,
+            other => return Err(format!("unknown direction {other:?}")),
+        };
+        let limit = page_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)?;
+        let stats = self
+            .step_stats
+            .read()
+            .map_err(|_| "step stats are poisoned".to_string())?;
+        let wanted: BTreeSet<&str> = steps.iter().map(String::as_str).collect();
+        let mut seen = BTreeSet::new();
+        let mut items = Vec::new();
+        for row in stats.edges() {
+            // A dependency points prior -> dependent, so an incoming edge ends
+            // at the queried step and an outgoing edge starts at it.
+            let incoming = wanted.contains(row.dependent_step.as_str());
+            let outgoing = wanted.contains(row.prior_step.as_str());
+            let matched = match direction {
+                "incoming" => incoming,
+                "outgoing" => outgoing,
+                _ => incoming || outgoing,
+            };
+            if !matched {
+                continue;
+            }
+            let key = (
+                row.prior_step.clone(),
+                row.dependent_step.clone(),
+                row.condition.clone(),
+                row.fields.clone(),
+            );
+            if !seen.insert(key) {
+                continue;
+            }
+            let mut value = serde_json::to_value(row).map_err(|error| error.to_string())?;
+            if let Some(object) = value.as_object_mut() {
+                object.insert("direction".into(), serde_json::json!(if incoming && outgoing {
+                    "both"
+                } else if incoming {
+                    "incoming"
+                } else {
+                    "outgoing"
+                }));
+            }
+            items.push(value);
+        }
+        items.sort_by(|left, right| {
+            let key = |value: &Value| {
+                (
+                    value["prior_step"].as_str().unwrap_or("").to_string(),
+                    value["dependent_step"].as_str().unwrap_or("").to_string(),
+                    value["condition"].as_str().unwrap_or("").to_string(),
+                )
+            };
+            key(left).cmp(&key(right))
+        });
+        let (page, next) = page_slice(&items, PageRequest { offset: offset.unwrap_or(0), limit });
+        Ok(self.response(serde_json::json!({
+            "total": items.len(),
+            "offset": offset.unwrap_or(0),
+            "limit": limit,
+            "items": page,
+            "next_offset": next,
+        })))
+    }
+
     pub fn list_proposals(
         &self,
         statuses: Option<&[ProposalStatus]>,
@@ -1114,6 +1335,26 @@ pub mod http {
         next_offset: Option<usize>,
     }
 
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    struct StepStatsPage {
+        total: usize,
+        offset: usize,
+        limit: usize,
+        items: Vec<crate::coverage::step_stats::StepEntry>,
+        next_offset: Option<usize>,
+        observable_runs: u64,
+        unobservable_runs: u64,
+    }
+
+    #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+    struct StepDependencyPage {
+        total: usize,
+        offset: usize,
+        limit: usize,
+        items: Vec<serde_json::Value>,
+        next_offset: Option<usize>,
+    }
+
     #[derive(Serialize, Deserialize, JsonSchema)]
     struct ProposalSummary {
         proposal_id: String,
@@ -1273,6 +1514,22 @@ pub mod http {
         indices: Vec<u32>,
     }
 
+    #[derive(Debug, Deserialize, JsonSchema)]
+    struct StepStatsRequest {
+        parties: Option<Vec<String>>,
+        channels: Option<Vec<String>>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    }
+
+    #[derive(Debug, Deserialize, JsonSchema)]
+    struct StepDependencyStatsRequest {
+        steps: Vec<String>,
+        direction: Option<String>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    }
+
     #[tool_router]
     impl IntrospectionServer {
         pub fn new(store: Arc<IntrospectionStore>) -> Self {
@@ -1309,6 +1566,54 @@ pub mod http {
                 request.index_offset,
                 request.index_limit,
                 request.summary_only,
+            )?;
+            Ok(rmcp::Json(typed(value)?))
+        }
+
+        #[tool(
+            description = "List model steps with live present_cnt (instances in published generator traces), exec_cnt (instances in ordinary execs, including instances not reached after an earlier failure), and succ_cnt (handlers that returned normally, read from the generator progress log). Zero-count model steps are included. parties and channels filter as unions internally and intersect across filters. Coverage replay is excluded. Read-only."
+        )]
+        fn list_step_stats(
+            &self,
+            Parameters(request): Parameters<StepStatsRequest>,
+        ) -> Result<rmcp::Json<Response<StepStatsPage>>, String> {
+            let value = self.store.list_step_stats(
+                request.parties.as_deref(),
+                request.channels.as_deref(),
+                request.offset,
+                request.limit,
+            )?;
+            Ok(rmcp::Json(typed(value)?))
+        }
+
+        #[tool(
+            description = "List directed model dependencies with the same present_cnt, exec_cnt, and succ_cnt rules as list_step_stats. A dependency matches when either endpoint satisfies the filters. A dependency succeeds when both endpoints completed and the prior instance finished first. Zero-count model dependencies are included. Read-only."
+        )]
+        fn list_step_dependency_stats(
+            &self,
+            Parameters(request): Parameters<StepStatsRequest>,
+        ) -> Result<rmcp::Json<Response<StepDependencyPage>>, String> {
+            let value = self.store.list_step_dependency_stats(
+                request.parties.as_deref(),
+                request.channels.as_deref(),
+                request.offset,
+                request.limit,
+            )?;
+            Ok(rmcp::Json(typed(value)?))
+        }
+
+        #[tool(
+            description = "Read incoming and/or outgoing dependencies for the given model steps, deduplicated and labelled direction. direction is incoming, outgoing, or both (default). Counts follow list_step_stats. Read-only."
+        )]
+        fn get_step_dependency_stats(
+            &self,
+            Parameters(request): Parameters<StepDependencyStatsRequest>,
+        ) -> Result<rmcp::Json<Response<StepDependencyPage>>, String> {
+            let value = self.store.get_step_dependency_stats(
+                &request.steps,
+                request.direction.as_deref().unwrap_or("both"),
+                request.offset,
+                request.limit,
             )?;
             Ok(rmcp::Json(typed(value)?))
         }
@@ -1941,6 +2246,93 @@ mod tests {
     }
 
     #[test]
+    fn step_stats_report_zero_counts_and_filter_by_party_and_channel() {
+        let handle = IntrospectionHandle::open(
+            CampaignIdentity { run_id: "test".into(), started_at_unix_ms: 1 },
+            None,
+        );
+        let model = crate::protocol::load_model(
+            Path::new("targets/lightftp/protocol.json"),
+        )
+        .expect("model");
+        handle.set_step_model(&model);
+        let store = handle.store();
+        let page = store.list_step_stats(None, None, None, Some(5)).expect("list");
+        let body = &page["data"];
+        assert_eq!(body["total"].as_u64().unwrap(), model.steps.len() as u64);
+        assert_eq!(body["items"][0]["present_cnt"], 0);
+        assert_eq!(body["items"][0]["succ_cnt"], 0);
+
+        let control = store
+            .list_step_stats(None, Some(&["control".to_string()]), None, Some(200))
+            .expect("filter");
+        assert!(control["data"]["total"].as_u64().unwrap() > 0);
+        for item in control["data"]["items"].as_array().unwrap() {
+            assert_eq!(item["channel"], "control");
+        }
+        let server = store
+            .list_step_stats(Some(&["Server-PI".to_string()]), None, None, Some(200))
+            .expect("party filter");
+        assert!(server["data"]["total"].as_u64().unwrap() > 0);
+    }
+
+    #[test]
+    fn dependency_stats_include_zero_counts_and_direction() {
+        let handle = IntrospectionHandle::open(
+            CampaignIdentity { run_id: "test".into(), started_at_unix_ms: 1 },
+            None,
+        );
+        let model = crate::protocol::load_model(
+            Path::new("targets/lightftp/protocol.json"),
+        )
+        .expect("model");
+        handle.set_step_model(&model);
+        let store = handle.store();
+        let page = store
+            .list_step_dependency_stats(None, None, None, Some(50))
+            .expect("list");
+        assert_eq!(page["data"]["total"].as_u64().unwrap(), model.dependencies.len() as u64);
+        assert_eq!(page["data"]["items"][0]["present_cnt"], 0);
+
+        // Use a real edge so the direction assertions cannot be vacuous: the
+        // edge's dependent step has an incoming edge and its prior step has an
+        // outgoing edge.
+        let edge = model.dependencies.first().expect("model has a dependency");
+        let sink = edge.dependent_step.clone();
+        let source = edge.prior_step.clone();
+        let incoming_rows = store
+            .get_step_dependency_stats(std::slice::from_ref(&sink), "incoming", None, Some(200))
+            .expect("incoming rows");
+        assert!(incoming_rows["data"]["total"].as_u64().unwrap() > 0);
+        for item in incoming_rows["data"]["items"].as_array().expect("items") {
+            assert_eq!(item["dependent_step"].as_str(), Some(sink.as_str()));
+            assert_eq!(item["direction"], "incoming");
+        }
+        let outgoing_rows = store
+            .get_step_dependency_stats(std::slice::from_ref(&source), "outgoing", None, Some(200))
+            .expect("outgoing rows");
+        assert!(outgoing_rows["data"]["total"].as_u64().unwrap() > 0);
+        for item in outgoing_rows["data"]["items"].as_array().expect("items") {
+            assert_eq!(item["prior_step"].as_str(), Some(source.as_str()));
+            assert_eq!(item["direction"], "outgoing");
+        }
+        let target = sink;
+        let both = store
+            .get_step_dependency_stats(std::slice::from_ref(&target), "both", None, Some(200))
+            .expect("both");
+        let incoming = store
+            .get_step_dependency_stats(std::slice::from_ref(&target), "incoming", None, Some(200))
+            .expect("incoming");
+        let outgoing = store
+            .get_step_dependency_stats(&[target], "outgoing", None, Some(200))
+            .expect("outgoing");
+        assert_eq!(
+            both["data"]["total"].as_u64().unwrap(),
+            incoming["data"]["total"].as_u64().unwrap() + outgoing["data"]["total"].as_u64().unwrap()
+        );
+    }
+
+    #[test]
     fn http_mcp_lists_tools_and_isolates_campaigns() {
         let left = IntrospectionHandle::open(
             CampaignIdentity {
@@ -1984,7 +2376,10 @@ mod tests {
         assert!(listed.contains("list_proposals"), "{listed}");
         assert!(listed.contains("get_proposal"), "{listed}");
         assert!(listed.contains("resolve_bitmap_indices"), "{listed}");
-        assert_eq!(listed.matches("outputSchema").count(), 3, "{listed}");
+        assert!(listed.contains("list_step_stats"), "{listed}");
+        assert!(listed.contains("list_step_dependency_stats"), "{listed}");
+        assert!(listed.contains("get_step_dependency_stats"), "{listed}");
+        assert_eq!(listed.matches("outputSchema").count(), 6, "{listed}");
         let left_rows = mcp_exchange(
             &left_addr,
             Some(&left_session),

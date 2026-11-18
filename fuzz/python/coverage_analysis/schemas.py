@@ -312,7 +312,7 @@ class LineRange(OutputModel):
 
 
 class FunctionRange(LineRange):
-    basis: Literal["tree_sitter"]
+    basis: Literal["tree_sitter", "coverage_branches"]
     first_branch_line: int | None = None
     last_branch_line: int | None = None
 

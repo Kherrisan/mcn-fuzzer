@@ -95,6 +95,63 @@ pub struct CaseExecutor {
     last_identity: Option<TraceIdentity>,
     introspection: Option<IntrospectionHandle>,
     tracked: Option<Arc<ProposalRecord>>,
+    progress_dir: PathBuf,
+}
+
+/// Per-exec step progress file and its aggregation on drop.
+///
+/// Dropping the guard always removes the file, so a retry cannot inherit stale
+/// records, and only a submitted run contributes exec counters. Successes come
+/// from the generator's JSONL; a missing scheduler-start record means the
+/// generator has no step handlers, so the run is counted as unobservable rather
+/// than failed.
+struct StepProgress {
+    path: PathBuf,
+    trace: crate::coverage::step_stats::TraceView,
+    handle: Option<IntrospectionHandle>,
+    submitted: bool,
+}
+
+impl StepProgress {
+    fn new(
+        directory: &Path,
+        handle: Option<IntrospectionHandle>,
+        input: &GeneratorInput,
+        worker: u64,
+        case: u64,
+    ) -> Self {
+        let _ = std::fs::create_dir_all(directory);
+        let path = directory.join(format!("{worker}-{case}.jsonl"));
+        let _ = std::fs::remove_file(&path);
+        Self {
+            path,
+            trace: crate::coverage::step_stats::TraceView::of(input),
+            handle,
+            submitted: false,
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn mark_submitted(&mut self) {
+        self.submitted = true;
+    }
+}
+
+impl Drop for StepProgress {
+    fn drop(&mut self) {
+        if self.submitted {
+            if let Some(handle) = &self.handle {
+                let (succeeded, observable) =
+                    crate::coverage::step_stats::read_progress(&self.path);
+                handle.step_exec(&self.trace);
+                handle.step_success(&self.trace, &succeeded, observable);
+            }
+        }
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 impl CaseExecutor {
@@ -165,6 +222,7 @@ impl CaseExecutor {
             workdir: campaign.target.workdir.clone(),
             binary: campaign.target.binary.clone(),
             event_path: log_root.join("events.jsonl"),
+            progress_dir: log_root.join("step-progress"),
             asan_log_dir,
             last_report: None,
             last_identity: None,
@@ -421,7 +479,16 @@ where
         _mgr: &mut EM,
         input: &GeneratorInput,
     ) -> Result<ExitKind, Error> {
-        let kind = self.drive_case(state, input)?;
+        let worker = crate::runtime::worker_id()?.nonce;
+        let case = *state.executions();
+        let mut progress = StepProgress::new(
+            &self.progress_dir,
+            self.introspection.clone(),
+            input,
+            worker,
+            case,
+        );
+        let kind = self.drive_case(state, input, &mut progress)?;
         self.observe_asan_log();
         let valid = self.last_report.as_ref().is_some_and(|report| report.valid);
         state
@@ -432,11 +499,16 @@ where
 }
 
 impl CaseExecutor {
-    fn drive_case<S>(&mut self, state: &mut S, input: &GeneratorInput) -> Result<ExitKind, Error>
+    fn drive_case<S>(
+        &mut self,
+        state: &mut S,
+        input: &GeneratorInput,
+        progress: &mut StepProgress,
+    ) -> Result<ExitKind, Error>
     where
         S: HasExecutions,
     {
-        let result = self.drive_case_body(state, input);
+        let result = self.drive_case_body(state, input, progress);
         if let Err(error) = &result {
             self.fail_tracked(&error.to_string());
         }
@@ -447,6 +519,7 @@ impl CaseExecutor {
         &mut self,
         state: &mut S,
         input: &GeneratorInput,
+        progress: &mut StepProgress,
     ) -> Result<ExitKind, Error>
     where
         S: HasExecutions,
@@ -506,11 +579,13 @@ impl CaseExecutor {
             self.connect_timeout,
             worker_id,
             case_id,
+            Some(progress.path()),
         ) {
             self.backend.retire();
             handoff.disarm();
             return Err(self.fail_open_case(false, error));
         }
+        progress.mark_submitted();
 
         let startup_deadline = Instant::now() + self.startup_timeout;
         let mut grace_deadline = None;

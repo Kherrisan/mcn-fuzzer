@@ -64,6 +64,8 @@ struct InitialState {
     coverage: Value,
     introspection: Vec<ProposalSnapshot>,
     #[serde(default)]
+    step_stats: Option<crate::coverage::step_stats::StepStats>,
+    #[serde(default)]
     gaps: Vec<String>,
 }
 
@@ -88,6 +90,8 @@ pub(crate) fn capture(
             }
             None => Value::Null,
         };
+        let step_stats = introspection
+            .and_then(IntrospectionHandle::step_stats_snapshot);
         let introspection = introspection
             .map(IntrospectionHandle::snapshot)
             .transpose()?
@@ -97,6 +101,7 @@ pub(crate) fn capture(
             &InitialState {
                 coverage,
                 introspection,
+                step_stats,
                 gaps,
             },
         )
@@ -206,6 +211,7 @@ fn legacy_state(campaign: &Campaign, cutoff: u64, request: &str) -> Result<Initi
     }
     Ok(InitialState {
         coverage, introspection,
+        step_stats: None,
         gaps: vec!["Legacy run: execution feedback, artifact ownership and some intermediate proposal states were not recorded at dispatch".into()],
     })
 }
@@ -418,6 +424,11 @@ pub fn run(options: &Options) -> Result<(), String> {
     );
     write_json(&out.join("mcp-initial-state.json"), &state)?;
     registry.restore(state.introspection)?;
+    if let Some(stats) = state.step_stats.clone() {
+        registry.restore_step_stats(stats);
+    } else if let Ok(model) = crate::protocol::load_model(&campaign.generator_synthesis.model) {
+        registry.set_step_model(&model);
+    }
     let loaded = &state.coverage["loaded"];
     if loaded["protocol"]["loaded"] == true || state.coverage["checkpoint"].is_object() {
         let mut arguments = json!({"protocol_path": campaign.generator_synthesis.model});

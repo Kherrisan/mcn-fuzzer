@@ -738,9 +738,17 @@ impl GeneratorSynthesisStage {
             generator_py: ready.input.generator.clone(),
             params_json,
         };
-        handle
+        let outcome = handle
             .publish(request, artifacts, proposal)
-            .map_err(Error::illegal_state)
+            .map_err(Error::illegal_state);
+        if outcome.is_ok() {
+            // Present counts describe the published generator's original trace,
+            // deduplicated by generator path so a repeated publish cannot
+            // double count.
+            let trace = crate::coverage::step_stats::TraceView::of(&ready.input);
+            handle.step_present(&ready.input.generator.display().to_string(), &trace);
+        }
+        outcome
     }
 
     fn finish_request(&mut self, pause: bool) {

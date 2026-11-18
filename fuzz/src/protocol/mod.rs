@@ -8,7 +8,7 @@ mod model;
 
 pub use model::{
     load_model, Binding, IndexedModel, ModelError, PartyRole, Processing, ProcessingOperation,
-    StepRecord,
+    StepAction, StepRecord,
 };
 
 /// Ordered model steps used for display and evaluation fixtures.

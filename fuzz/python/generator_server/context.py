@@ -78,6 +78,8 @@ class Ctx:
         self.states: dict[tuple[str, str], object] = {}
         self.generator_params: dict = {}
         self.step_instance = None
+        # File descriptor for the per-exec step progress JSONL, set by the server.
+        self._progress_log = None
         self._replay_log = None
 
     def get_global(self, name: str, default=None):
