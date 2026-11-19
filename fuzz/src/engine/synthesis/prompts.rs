@@ -33,7 +33,6 @@ pub(super) struct CampaignContext {
     pythonpath: PathBuf,
     generator_skill: PathBuf,
     generator_validator: PathBuf,
-    proposal_tool: PathBuf,
     extra_files: Vec<PathBuf>,
     target: TargetContext,
     budgets: Budgets,
@@ -86,9 +85,6 @@ impl CampaignContext {
                 .join("skills/protocol-modules/SKILL.md"),
             generator_validator: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("skills/protocol-modules/scripts/validate_generator.py"),
-            proposal_tool: absolute(&campaign.campaign.pythonpath)?
-                .join("coverage_analysis")
-                .join("server.py"),
             extra_files,
             target: TargetContext {
                 host: campaign.target.host.clone(),
@@ -209,8 +205,7 @@ impl SynthesisPromptContext {
         .map_err(|error| libafl::Error::serialize(format!("render initialization prompt: {error}")))
     }
 
-    /// One generation prompt. A coverage proposal is copied into `output_dir`;
-    /// autonomous mode asks the agent to write and validate its own proposal.
+    /// Render the synthesis task for the supplied proposal.
     pub fn generation_prompt(
         &self,
         output_dir: &Path,
@@ -218,7 +213,6 @@ impl SynthesisPromptContext {
         session: &str,
         mode: &str,
         proposal: Option<&Path>,
-        autonomous: bool,
     ) -> Result<String, libafl::Error> {
         let output_dir = absolute(output_dir)?;
         let roles = self
@@ -247,7 +241,6 @@ impl SynthesisPromptContext {
             "added_steps": [],
         })
         .to_string();
-        let draft_path = output_dir.join("proposal.draft.json");
         render_generation(serde_json::json!({
             "campaign": self.campaign,
             "execution": execution_text(self.mode),
@@ -256,10 +249,7 @@ impl SynthesisPromptContext {
             "session": session,
             "protocol_name": self.model.protocol_name,
             "mode": mode,
-            "autonomous": autonomous,
             "proposal": proposal_path,
-            "proposal_draft": draft_path,
-            "proposal_tool": self.campaign.proposal_tool,
             "roles": roles,
             "generator_parties": self
                 .model
@@ -410,7 +400,7 @@ extra_files = [{quoted}]
             .initialization_prompt("s", false, &dir.join("init"))
             .unwrap();
         let generation = context
-            .generation_prompt(&dir.join("request"), "r", "s", "", None, false)
+            .generation_prompt(&dir.join("request"), "r", "s", "", None)
             .unwrap();
         for prompt in [&init, &generation] {
             assert!(prompt.contains(&dir.join("real.conf").display().to_string()));
@@ -491,7 +481,7 @@ extra_files = [{quoted}]
             .initialization_prompt("s", false, &dir.join("init"))
             .unwrap();
         let generation = context
-            .generation_prompt(&dir.join("request"), "r", "s", "", None, false)
+            .generation_prompt(&dir.join("request"), "r", "s", "", None)
             .unwrap();
         assert!(init.contains("none provided"));
         assert!(generation.contains("none provided"));

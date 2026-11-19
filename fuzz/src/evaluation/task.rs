@@ -238,7 +238,6 @@ pub fn prepare_instance(
             &logical_session,
             "",
             Some(&instance.join("prepared/proposal.json")),
-            false,
         )
         .map_err(|error| error.to_string())?;
     fs::write(instance.join("prepared/prompts/init.md"), init)
@@ -336,7 +335,7 @@ fn evaluation_proposal(
     session: &str,
 ) -> Result<Proposal, String> {
     let mut proposal = instantiate(model, &trace.steps)?;
-    proposal.origin = "autonomous".to_string();
+    proposal.origin = "coverage".to_string();
     proposal.session = session.to_string();
     proposal.goal.reason = "fixed evaluation trace".to_string();
     for item in &mut proposal.trace {
@@ -491,6 +490,11 @@ pub fn execution_digest(dir: &Path) -> Result<String, String> {
             return Err(format!("validated artifact {} is missing", name));
         }
         hash_file(&mut hasher, &path)?;
+    }
+    // Older validated bundles had no published copy of params.json.
+    let params = dir.join("published/params.json");
+    if params.is_file() {
+        hash_file(&mut hasher, &params)?;
     }
     Ok(format!("{:x}", hasher.finalize()))
 }

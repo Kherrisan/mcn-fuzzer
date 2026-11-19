@@ -394,7 +394,9 @@ pub fn run(options: &Options) -> Result<(), String> {
         state.coverage =
             legacy_state(&campaign, source.started_at_ms, &options.request_id)?.coverage;
     }
-    let autonomous = field(&source.prompt, "PROPOSAL_DRAFT").is_some();
+    if matches!(options.stage, Stage::Synthesis) && field(&source.prompt, "PROPOSAL_DRAFT").is_some() {
+        return Err("cannot replay an autonomous synthesis request".into());
+    }
     let previous_workspace = field(&source.prompt, "WORKSPACE")
         .map(Path::new)
         .unwrap_or(root);
@@ -495,26 +497,18 @@ pub fn run(options: &Options) -> Result<(), String> {
             &source.prompt,
         )?)
     } else {
-        if !autonomous {
-            fs::copy(original.join("proposal.json"), out.join("proposal.json")).map_err(error)?;
-            let id = ProposalId::coverage(&options.request_id);
-            if registry.with(|writer| writer.get(&id)).is_none() {
-                let dir = request_dir(&coverage_root, &options.request_id)?;
-                let proposal = Proposal::read(&dir.join("proposal.json")).map_err(error)?;
-                registry.register_coverage(
-                    &options.request_id,
-                    &proposal.session,
-                    &proposal.snapshot,
-                )?;
-                registry.accept(&id, std::sync::Arc::new(proposal))?;
-                registry.synthesis_started(&options.request_id)?;
-            }
-        } else if registry
-            .with(|writer| writer.get(&ProposalId::synthesis(&options.request_id)))
-            .is_none()
-        {
-            let session = field(&source.prompt, "SESSION").unwrap_or("eval");
-            registry.register_autonomous(&options.request_id, session)?;
+        fs::copy(original.join("proposal.json"), out.join("proposal.json")).map_err(error)?;
+        let id = ProposalId::coverage(&options.request_id);
+        if registry.with(|writer| writer.get(&id)).is_none() {
+            let dir = request_dir(&coverage_root, &options.request_id)?;
+            let proposal = Proposal::read(&dir.join("proposal.json")).map_err(error)?;
+            registry.register_coverage(
+                &options.request_id,
+                &proposal.session,
+                &proposal.snapshot,
+            )?;
+            registry.accept(&id, std::sync::Arc::new(proposal))?;
+            registry.synthesis_started(&options.request_id)?;
         }
         None
     };
@@ -630,7 +624,6 @@ pub fn run(options: &Options) -> Result<(), String> {
                 &out,
                 &options.request_id,
                 field(&source.prompt, "SESSION").unwrap_or("eval"),
-                autonomous,
             )
             .map(|_| "ok".into())
         }
@@ -778,7 +771,7 @@ mod tests {
         );
         copy.restore(serde_json::from_slice(&snapshot).unwrap())
             .unwrap();
-        let restored = copy.store().get_proposal(&id, None, None).unwrap();
+        let restored = copy.store().get_proposal_stats(&id, None, None).unwrap();
         assert_eq!(restored["data"]["stats"]["executions"]["started"], 1);
         assert_eq!(restored["data"]["status"], "proposing");
     }

@@ -23,11 +23,24 @@ const INTERESTING: &[i64] = &[
     -128, -1, 0, 1, 16, 32, 64, 100, 127, 128, 255, 256, 512, 1000, 1024, 4096, 32767, 65535, 65536,
 ];
 
+/// Which declared field group the mutator may pick from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FieldPool {
+    /// Any declared field (ordinary corpus scheduling).
+    #[default]
+    Any,
+    /// Proposal-declared fields only (first half of a new generator budget).
+    Analyzed,
+    /// Synthesis-discovered fields only (second half).
+    Adhoc,
+}
+
 /// Stacks parameter mutations the same way the previous generator mutator did.
 #[derive(Debug)]
 pub struct GeneratorMutator {
     name: Cow<'static, str>,
     operations: Vec<Value>,
+    pool: FieldPool,
 }
 
 impl Default for GeneratorMutator {
@@ -37,12 +50,18 @@ impl Default for GeneratorMutator {
 }
 
 impl GeneratorMutator {
+    /// Restrict field selection for the next mutation.
+    pub fn set_field_pool(&mut self, pool: FieldPool) {
+        self.pool = pool;
+    }
+
     /// Create the mutator.
     #[must_use]
     pub fn new() -> Self {
         Self {
             name: Cow::Borrowed("GeneratorMutator"),
             operations: Vec::new(),
+            pool: FieldPool::Any,
         }
     }
 
@@ -68,7 +87,12 @@ where
         input: &mut GeneratorInput,
     ) -> Result<MutationResult, Error> {
         self.operations.clear();
-        let result = mutate_generator_recorded(state.rand_mut(), input, &mut self.operations);
+        let result = mutate_generator_recorded(
+            state.rand_mut(),
+            input,
+            &mut self.operations,
+            self.pool,
+        );
         state
             .metadata_or_insert_with(BitmapProgress::default)
             .set_mutation_pending(result == MutationResult::Mutated);
@@ -89,13 +113,14 @@ where
 
 /// Stack 2..=64 field/step edits. Traces take precedence over params.
 pub fn mutate_generator<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
-    mutate_generator_recorded(rand, input, &mut Vec::new())
+    mutate_generator_recorded(rand, input, &mut Vec::new(), FieldPool::Any)
 }
 
 fn mutate_generator_recorded<R: Rand>(
     rand: &mut R,
     input: &mut GeneratorInput,
     operations: &mut Vec<Value>,
+    pool: FieldPool,
 ) -> MutationResult {
     if input.trace.steps.is_empty() && input.params.is_empty() {
         return MutationResult::Skipped;
@@ -103,7 +128,7 @@ fn mutate_generator_recorded<R: Rand>(
     let steps = 1u64 << (1 + rand.below_or_zero(6) as u64);
     let mut mutated = MutationResult::Skipped;
     for _ in 0..steps {
-        if mutate_once(rand, input, operations) == MutationResult::Mutated {
+        if mutate_once(rand, input, operations, pool) == MutationResult::Mutated {
             mutated = MutationResult::Mutated;
         }
     }
@@ -114,12 +139,13 @@ fn mutate_once<R: Rand>(
     rand: &mut R,
     input: &mut GeneratorInput,
     operations: &mut Vec<Value>,
+    pool: FieldPool,
 ) -> MutationResult {
     if input.trace.steps.is_empty() {
         return MutationResult::Skipped;
     }
     if rand.below_or_zero(100) < 70
-        && mutate_field_recorded(rand, input, operations) == MutationResult::Mutated
+        && mutate_field_recorded(rand, input, operations, pool) == MutationResult::Mutated
     {
         return MutationResult::Mutated;
     }
@@ -128,29 +154,73 @@ fn mutate_once<R: Rand>(
 
 #[cfg(test)]
 fn mutate_field<R: Rand>(rand: &mut R, input: &mut GeneratorInput) -> MutationResult {
-    mutate_field_recorded(rand, input, &mut Vec::new())
+    mutate_field_recorded(rand, input, &mut Vec::new(), FieldPool::Any)
+}
+
+/// Resolve a field's origin through the instance's model step.
+fn field_origin(
+    input: &GeneratorInput,
+    instance: &str,
+    field: &str,
+) -> crate::engine::input::FieldOrigin {
+    let Some(step) = input
+        .trace
+        .steps
+        .iter()
+        .find(|step| step.name == instance)
+        .map(|step| step.step.as_str())
+    else {
+        return crate::engine::input::FieldOrigin::Analyzed;
+    };
+    input
+        .field_origin
+        .get(step)
+        .and_then(|fields| fields.get(field))
+        .copied()
+        .unwrap_or(crate::engine::input::FieldOrigin::Analyzed)
+}
+
+fn field_pool_candidates(
+    input: &GeneratorInput,
+    pool: FieldPool,
+) -> Vec<(String, String)> {
+    let mut candidates = Vec::new();
+    for (instance, fields) in &input.params {
+        for field in fields.keys() {
+            let origin = field_origin(input, instance, field);
+            let allowed = match pool {
+                FieldPool::Any => true,
+                FieldPool::Analyzed => origin == crate::engine::input::FieldOrigin::Analyzed,
+                FieldPool::Adhoc => origin == crate::engine::input::FieldOrigin::Adhoc,
+            };
+            if allowed {
+                candidates.push((instance.clone(), field.clone()));
+            }
+        }
+    }
+    candidates
 }
 
 fn mutate_field_recorded<R: Rand>(
     rand: &mut R,
     input: &mut GeneratorInput,
     operations: &mut Vec<Value>,
+    pool: FieldPool,
 ) -> MutationResult {
-    let candidates = input
-        .params
-        .iter()
-        .filter(|(_, fields)| !fields.is_empty())
-        .map(|(instance, _)| instance.clone())
-        .collect::<Vec<_>>();
+    let mut candidates = field_pool_candidates(input, pool);
+    if candidates.is_empty() && pool != FieldPool::Any {
+        // A generator may declare only one group. Fall back to every field
+        // rather than silently skipping mutation.
+        candidates = field_pool_candidates(input, FieldPool::Any);
+    }
     if candidates.is_empty() {
         return MutationResult::Skipped;
     }
-    let instance = candidates[rand.below_or_zero(candidates.len())].clone();
+    let (instance, field) = candidates[rand.below_or_zero(candidates.len())].clone();
+    let origin = field_origin(input, &instance, &field);
     let Some(fields) = input.params.get(&instance) else {
         return MutationResult::Skipped;
     };
-    let keys = fields.keys().cloned().collect::<Vec<_>>();
-    let field = keys[rand.below_or_zero(keys.len())].clone();
     let before = fields.get(&field).cloned();
     if rand.below_or_zero(5) == 0 {
         if let Some(fields) = input.params.get_mut(&instance) {
@@ -169,7 +239,8 @@ fn mutate_field_recorded<R: Rand>(
                 step.omitted_fields.push(field.clone());
             }
         }
-        operations.push(json!({"type": "field", "operation": "omit", "instance": instance, "field": field, "before": before}));
+        operations.push(json!({"type": "field", "operation": "omit", "instance": instance,
+                               "field": field, "origin": origin, "before": before}));
         return MutationResult::Mutated;
     }
     let Some(value) = input
@@ -181,7 +252,8 @@ fn mutate_field_recorded<R: Rand>(
     };
     let result = mutate_value(rand, value);
     if result == MutationResult::Mutated && before.as_ref() != Some(value) {
-        operations.push(json!({"type": "field", "operation": "change", "instance": instance, "field": field, "before": before, "after": value}));
+        operations.push(json!({"type": "field", "operation": "change", "instance": instance,
+                               "field": field, "origin": origin, "before": before, "after": value}));
     }
     result
 }
@@ -565,6 +637,144 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     #[test]
+    fn duplicated_instances_inherit_field_origin_and_deletion_drops_it() {
+        let step = crate::engine::input::StepInstance {
+            name: "login".into(),
+            step: "Send USER".into(),
+            action: "send".into(),
+            condition: String::new(),
+            message: None,
+            processing: None,
+            channel: "control".into(),
+            sender: Some("client".into()),
+            receiver: Some("server".into()),
+            party: None,
+            omitted_fields: vec![],
+            inputs: BTreeMap::new(),
+            broken_dependencies: vec![],
+        };
+        let mut input = GeneratorInput::with_trace(
+            PathBuf::from("/tmp/generator.py"),
+            vec![step],
+            BTreeMap::from([(
+                "login".to_string(),
+                BTreeMap::from([("username".to_string(), ParamValue::Str("u".into()))]),
+            )]),
+        );
+        input.field_origin.insert(
+            "Send USER".into(),
+            BTreeMap::from([(
+                "username".to_string(),
+                crate::engine::input::FieldOrigin::Adhoc,
+            )]),
+        );
+        let mut rand = StdRand::with_seed(3);
+        // Force duplication by calling the block copier directly.
+        duplicate_block(&mut rand, &mut input, 0);
+        let copied = input
+            .trace
+            .steps
+            .iter()
+            .map(|step| step.name.clone())
+            .find(|name| name != "login")
+            .expect("copy");
+        // The copied instance resolves its origin through the same model step.
+        assert_eq!(
+            field_origin(&input, &copied, "username"),
+            crate::engine::input::FieldOrigin::Adhoc
+        );
+        input.params.remove(&copied);
+        assert_eq!(
+            field_origin(&input, "login", "username"),
+            crate::engine::input::FieldOrigin::Adhoc
+        );
+    }
+
+    #[test]
+    fn field_pool_restricts_selection_and_operations_record_origin() {
+        let step = crate::engine::input::StepInstance {
+            name: "login".into(),
+            step: "Send USER".into(),
+            action: "send".into(),
+            condition: String::new(),
+            message: None,
+            processing: None,
+            channel: "control".into(),
+            sender: Some("client".into()),
+            receiver: Some("server".into()),
+            party: None,
+            omitted_fields: vec![],
+            inputs: BTreeMap::new(),
+            broken_dependencies: vec![],
+        };
+        let params = BTreeMap::from([(
+            "login".to_string(),
+            BTreeMap::from([
+                ("analyzed_int".to_string(), ParamValue::Int(1)),
+                ("adhoc_text".to_string(), ParamValue::Str("x".into())),
+            ]),
+        )]);
+        let mut input = GeneratorInput::with_trace(
+            PathBuf::from("/tmp/generator.py"),
+            vec![step],
+            params,
+        );
+        input.field_origin.insert(
+            "Send USER".into(),
+            BTreeMap::from([
+                (
+                    "analyzed_int".to_string(),
+                    crate::engine::input::FieldOrigin::Analyzed,
+                ),
+                (
+                    "adhoc_text".to_string(),
+                    crate::engine::input::FieldOrigin::Adhoc,
+                ),
+            ]),
+        );
+
+        let mut rand = StdRand::with_seed(7);
+        let mut operations = Vec::new();
+        for _ in 0..20 {
+            let mut copy = input.clone();
+            let result = mutate_field_recorded(
+                &mut rand,
+                &mut copy,
+                &mut operations,
+                FieldPool::Adhoc,
+            );
+            if result == MutationResult::Mutated {
+                let field = operations
+                    .last()
+                    .and_then(|operation| operation.get("field"))
+                    .and_then(serde_json::Value::as_str)
+                    .expect("field");
+                assert_eq!(field, "adhoc_text");
+                assert_eq!(operations.last().unwrap()["origin"], "adhoc");
+            }
+        }
+        operations.clear();
+        for _ in 0..20 {
+            let mut copy = input.clone();
+            let result = mutate_field_recorded(
+                &mut rand,
+                &mut copy,
+                &mut operations,
+                FieldPool::Analyzed,
+            );
+            if result == MutationResult::Mutated {
+                let field = operations
+                    .last()
+                    .and_then(|operation| operation.get("field"))
+                    .and_then(serde_json::Value::as_str)
+                    .expect("field");
+                assert_eq!(field, "analyzed_int");
+                assert_eq!(operations.last().unwrap()["origin"], "analyzed");
+            }
+        }
+    }
+
+    #[test]
     fn duplicate_block_remaps_internal_input_to_copied_instance() {
         let step =
             |name: &str, inputs: BTreeMap<String, String>| crate::engine::input::StepInstance {
@@ -711,7 +921,7 @@ mod tests {
         let mut operations = Vec::new();
         let mut rand = StdRand::with_seed(4);
         assert_eq!(
-            mutate_field_recorded(&mut rand, &mut input, &mut operations),
+            mutate_field_recorded(&mut rand, &mut input, &mut operations, FieldPool::Any),
             MutationResult::Mutated
         );
         assert_eq!(operations[0]["type"], "field");

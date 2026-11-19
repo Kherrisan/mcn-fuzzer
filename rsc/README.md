@@ -61,14 +61,15 @@ are rejected; inspection prints environment names only. Native authentication is
 
 Codex must support `--no-daemon` and resolve to a native executable. HC terminal and native
 session names match. Initialization and native session lookup are serialized, then parsers
-run concurrently. Pi supports shell reading/writing and the five namespaced MCP tools.
+run concurrently. Pi supports shell reading/writing and the namespaced MCP tools.
 Fix reuses the original author's native session; the reviewer has an independent session.
 
 ## Files, tools and resume
 
-Exactly five tools are exposed: `read_source_batches`, `query_model`, `submit_parse_result`,
-`submit_model_result`, and `submit_review_result`. Agents can search source files with shell
-`rg`. Submissions pass a JSON file path; the service validates and atomically saves the official
+The MCP tools are `read_source_batches`, `query_model`, `submit_parsed_model`,
+`submit_merged_model`, `submit_model_patch`, `validate_model`, and `submit_review`. Agents can
+search source files with shell `rg`. Submissions pass a JSON file path. The service validates and
+atomically saves the official
 file before advancing. Names and source locators replace object IDs. There are no artifact
 hashes, schema versions, revisions, submission counters or workflow SQLite database.
 

@@ -72,7 +72,8 @@ Use names for objects and references. Dependencies have neither names nor object
 Each item has evidence=[{batch_id,block_id}] pointing to real source ranges. Source locators
 are retained. Every checkpoint contains items and unresolved; unresolved entries have
 {description,object_names}. Do not put scheduling metadata into model objects.
-Write complete JSON to a file under the assignment work_directory, then submit its path.
+Write JSON under the assignment work_directory, then submit its path. In Parse, Merge and Fix,
+run validate_model(path=...) before submitting, resolve the reported errors and submit the file.
 Only the service writes official files. Never edit source, candidate, parser or review snapshots.
 A validation error is actionable feedback: correct your work file and submit it again in this
 turn. Retry uncertain completed submissions with identical content. Do not poll or start agents.
@@ -83,7 +84,7 @@ PHASES = {
     "parse": """Extract all assigned source ranges into a coherent complete checkpoint. Names
 must be unique per kind within this file (state names are unique per party); unify repeated
 definitions and accumulate evidence.
-Preserve partial progress with submit_parse_result(path=...): each file contains ALL accumulated
+Preserve partial progress with submit_parsed_model(path=...): each file contains ALL accumulated
 items, unresolved issues, complete=false, and completed_batches=[fully processed batch names].
 Continue the remaining batches in the same turn. Final checkpoint sets complete=true and
 completed_batches to every assigned batch. You may omit those two fields for a final checkpoint.
@@ -95,7 +96,7 @@ disambiguate distinct concepts sharing a name, and rewrite all references consis
 Unify states by owning party and concept; update state.<name> references in that party's
 processing when renaming a state, and update state owners when renaming parties.
 Preserve every valid source-backed constraint, dependency and evidence citation. Consult source
-text when deciding whether concepts match. Submit the complete candidate using submit_model_result.
+text when deciding whether concepts match. Submit the complete candidate using submit_merged_model.
 The original parser files remain immutable; there are no replacement/deletion tables.""",
     "fix": """You own this model's fixes because you authored its original parser or merged
 candidate. Read the frozen input candidate and ALL findings. Correct every correctable error,
@@ -106,7 +107,12 @@ already represented by the model. Check both successful and failing paths, defau
 negotiated alternatives, as well as analogous channels, before submitting. Self-audit the
 complete affected scenario so a local fix does not leave the same omission on a sibling path.
 Use source text to resolve questions. Do not hide a correctable error as an unresolved issue.
-Write the complete corrected candidate with items and unresolved and call submit_model_result.
+Write a patch and call submit_model_patch. Use the assignment candidate_path as `base`.
+Include only changed records in `changes`: add uses kind/value/evidence, replace also
+matches an old item, and remove uses kind/match. Match uses name (also party_name for
+states), or the full original dependency value. Replacing a record needs its updated
+evidence. Omit the optional unresolved array to retain it, or provide the complete
+replacement array. Do not repeat unaffected records.
 An independent reviewer will examine the result again. Do not submit review findings yourself.""",
     "review": """You are an independent semantic reviewer. Read the frozen candidate and EVERY
 assigned source range in full; use shell files or the read tools. Check coverage, names,
@@ -121,19 +127,26 @@ Compare these requirements with the candidate's actual objects and dependencies.
 discovered omissions together, including every affected equivalent path supported by source.
 On re-review, check whether fixes address the underlying rule across those paths, rather
 than only the particular example named in the previous finding.
-Check previous findings and fixes. Never edit the candidate. Submit a complete review JSON:
-{reviewed_batches:[all assigned batch names],findings:[{category,description,batch_ids,global}]}.
-To save partial review progress, submit all accumulated findings and reviewed_batches with
-complete=false. Keep reviewing the remaining ranges; a partial checkpoint is not approval.
-The final review covers all assigned ranges and omits complete or sets it to true.
+Read review_scope_path first. It identifies old and new snapshots, changed and affected
+objects, and the reason for widening the assignment. Check previous findings and fixes.
+Never edit the candidate. Submit a complete review JSON:
+{reviewed_batches:[all assigned batch names],findings:[{category,description,batch_ids,global}],
+resolutions:[{finding,status,note?}]}.
+For each key in the assignment's finding_refs, check the current candidate against its
+source and submit exactly one resolution. Use "resolved" when fixed and "open" otherwise.
+Use note to explain any remaining work. Report only new issues in findings.
+To save partial progress, submit reviewed ranges, accumulated findings and any resolutions
+whose evidence ranges you have reviewed, with complete=false. The final review covers all
+assigned ranges and findings and omits complete or sets it to true.
 Use correctable for omissions, incorrect facts, references or other repairable errors.
 Use source_ambiguity only for ambiguity in the source itself, and external_reference only for
 needed facts in an unavailable external reference. Include exact supporting batch names in
 batch_ids; explain the ambiguity or missing external reference in description.
-Set global=true when names, definitions or broad behavior affect multiple source ranges.
-Classify each candidate unresolved issue explicitly, using its exact description. Empty findings
-means no remaining semantic issue. A correctable error cannot be accepted for publication.
-Do not end your turn until submit_review_result is accepted; tool errors are feedback to repair
+Only set global=true if the impact cannot be bounded with specific source batches and
+model references. A finding that spans several known batches can still be localized.
+Classify each candidate unresolved issue explicitly, using its exact description. Publication
+requires every assigned finding to be resolved and no new correctable finding.
+Do not end your turn until submit_review is accepted; tool errors are feedback to repair
 and retry, never a reason to give only a prose final answer.""",
 }
 

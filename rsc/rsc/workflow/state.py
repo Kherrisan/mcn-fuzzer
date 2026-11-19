@@ -11,14 +11,17 @@ from .evidence import validate_evidence
 from .metrics import result_metrics
 from .model import validate_record
 from .paging import records_page, resolve_budget, seal_response
+from .patch import apply_patch
+from .review_scope import build_scope
 from .sources import prepare, token_count, validate_batches
-from .store import Store, StoreError, atomic_json, dumps, read_json
+from .store import Store, StoreError, atomic_json, read_json
 from .tools import (
     CHECKPOINT,
     CONTRACTS,
     PARSE_CHECKPOINT,
     PHASE_TOOLS,
     REVIEW,
+    SubmissionError,
     validate_arguments,
     validate_shape,
 )
@@ -38,6 +41,19 @@ PARSE_SETTINGS = (
     "parse_context_tokens",
     "parse_fixed_tokens",
 )
+
+
+def track_findings(tracked, findings, round_):
+    pending = [entry["finding"] for entry in tracked.values() if entry["status"] == "open"]
+    for finding in findings:
+        if finding not in pending:
+            tracked[f"F{len(tracked) + 1}"] = {
+                "finding": finding,
+                "status": "open",
+                "opened_round": round_,
+            }
+            pending.append(finding)
+    return pending
 
 
 class Workflow:
@@ -148,7 +164,11 @@ class Workflow:
                     if name not in PHASE_TOOLS[a["phase"]]:
                         raise WorkflowError(f"tool {name} is forbidden for {a['phase']}")
                     validate_arguments(name, arguments)
-                    if name.startswith("submit_"):
+                    if name == "validate_model":
+                        result = self.prevalidate(a, arguments["path"])
+                        if not result["valid"]:
+                            error = result["errors"][0]["message"]
+                    elif name.startswith("submit_"):
                         result = self.submit(a, arguments["path"])
                     else:
                         if a["status"] == "submitted":
@@ -218,16 +238,50 @@ class Workflow:
 
     def validate_checkpoint(self, payload, *, parser=None):
         validate_shape(PARSE_CHECKPOINT if parser else CHECKPOINT, payload)
-        named = set()
-        for item in payload["items"]:
-            validate_record(item["kind"], item["value"])
-            self.validate_evidence(item["evidence"])
-            if (key := record_identity(item["kind"], item["value"])) is not None:
-                if key in named:
-                    raise WorkflowError(f"duplicate kind/name in checkpoint: {key}")
+        named, errors = set(), []
+        for index, item in enumerate(payload["items"]):
+            value = item["value"]
+            label = value.get("name") or item["kind"]
+            for field, code, check, args in (
+                ("value", "record", validate_record, (item["kind"], value)),
+                ("evidence", "evidence", self.validate_evidence, (item["evidence"],)),
+            ):
+                try:
+                    check(*args)
+                except ValueError as exc:
+                    errors.append(
+                        {
+                            "path": f"items[{index}].{field}",
+                            "code": code,
+                            "message": str(exc),
+                            "objects": [label],
+                        }
+                    )
+            if not isinstance(value.get("name"), str) or (
+                item["kind"] == "states" and not isinstance(value.get("party_name"), str)
+            ):
+                continue
+            key = record_identity(item["kind"], value)
+            if key in named:
+                errors.append(
+                    {
+                        "path": f"items[{index}].value.name",
+                        "code": "duplicate",
+                        "message": f"duplicate kind/name in checkpoint: {key}",
+                        "objects": [label],
+                    }
+                )
+            elif key is not None:
                 named.add(key)
-        for issue in payload["unresolved"]:
-            validate_record("unresolved", issue)
+        for index, issue in enumerate(payload["unresolved"]):
+            try:
+                validate_record("unresolved", issue)
+            except ValueError as exc:
+                errors.append(
+                    {"path": f"unresolved[{index}]", "code": "record", "message": str(exc)}
+                )
+        if errors:
+            raise SubmissionError(errors)
         if parser:
             complete = payload.get("complete", True)
             completed = payload.get("completed_batches", parser["batches"] if complete else None)
@@ -243,8 +297,11 @@ class Workflow:
     def validate_review(self, payload, a):
         validate_shape(REVIEW, payload)
         covered = payload["reviewed_batches"]
-        if (len(set(covered)) != len(covered) or not set(covered) <= set(a["batches"])
-                or (payload.get("complete", True) and set(covered) != set(a["batches"]))):
+        if (
+            len(set(covered)) != len(covered)
+            or not set(covered) <= set(a["batches"])
+            or (payload.get("complete", True) and set(covered) != set(a["batches"]))
+        ):
             raise WorkflowError(
                 "reviewed_batches must cover every assigned source range exactly once"
             )
@@ -255,6 +312,18 @@ class Workflow:
                 or not set(finding["batch_ids"]) <= known
             ):
                 raise WorkflowError("finding refers to unknown or duplicate source batches")
+        assigned = a.get("finding_refs", {})
+        resolved = set()
+        for resolution in payload.get("resolutions", []):
+            ref = resolution["finding"]
+            if ref not in assigned or ref in resolved:
+                raise WorkflowError(f"unknown or duplicate finding reference: {ref}")
+            if not set(assigned[ref]["batch_ids"]) <= set(covered):
+                raise WorkflowError(f"finding {ref} requires review of its source batches")
+            resolved.add(ref)
+        missing = sorted(assigned.keys() - resolved)
+        if payload.get("complete", True) and missing:
+            raise WorkflowError("missing finding resolutions: " + ", ".join(missing))
         return payload
 
     def work_path(self, a, path):
@@ -280,29 +349,68 @@ class Workflow:
             else [],
         }
 
-    def submit(self, a, path):
+    def prevalidate(self, a, path):
+        try:
+            self.prepare_submission(a, path)
+        except SubmissionError as exc:
+            return {"valid": False, "errors": exc.errors}
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            return {
+                "valid": False,
+                "errors": [{"path": "$", "code": "submission", "message": str(exc)}],
+            }
+        return {"valid": True, "errors": []}
+
+    def prepare_submission(self, a, path):
         payload = read_json(self.work_path(a, path))
         if a["phase"] == "review":
             payload = self.validate_review(payload, a)
         else:
+            if a["phase"] == "fix":
+                base = a["candidate_path"]
+                payload = apply_patch(self.checkpoint(base), payload, base)
             payload = self.validate_checkpoint(payload, parser=a if a["phase"] == "parse" else None)
             whole_model = a["phase"] in {"merge", "fix"} or (
-                a["phase"] == "parse" and payload["complete"]
+                a["phase"] == "parse"
+                and payload["complete"]
                 and sum(x["phase"] == "parse" for x in self.store.assignments()) == 1
             )
             if whole_model:
-                errors = self.candidate_errors({k: payload[k] for k in ("items", "unresolved")})
+                candidate = {k: payload[k] for k in ("items", "unresolved")}
+                diagnostics = []
+                errors = validate_protocol(
+                    self.publication_model(candidate), self.documents, diagnostics=diagnostics
+                )
                 if errors:
-                    raise WorkflowError(
+                    details = []
+                    for issue in diagnostics:
+                        owner, *related = issue["records"]
+                        kind, index = owner.split(":")
+                        path = ".".join(map(str, issue["path"]))
+                        details.append(
+                            {
+                                "path": f"{kind}[{index}].{path}",
+                                "code": issue["type"],
+                                "message": issue["description"],
+                                "objects": [owner, *related],
+                            }
+                        )
+                    reported = {d["message"] for d in details}
+                    details.extend(
+                        {"path": "$", "code": "model", "message": err}
+                        for err in errors
+                        if err not in reported
+                    )
+                    raise SubmissionError(
+                        details,
                         "candidate validation failed; correct this work file and resubmit "
-                        "in the same turn: " + "; ".join(errors)
+                        "in the same turn",
                     )
         official = self.root / a["output_path"]
         if official.exists() and a.get("accepted_file"):
             previous = read_json(official)
             if previous == payload:
-                self.advance()
-                return self.progress(a, payload)
+                return payload, True
             if a["phase"] not in {"parse", "review"} or previous.get("complete", True):
                 raise WorkflowError("different content for completed submission")
             progress_key = "reviewed_batches" if a["phase"] == "review" else "completed_batches"
@@ -322,6 +430,14 @@ class Workflow:
                 raise WorkflowError("progress checkpoint must preserve accumulated source evidence")
         if a["status"] == "submitted":
             raise WorkflowError("assignment already submitted")
+        return payload, False
+
+    def submit(self, a, path):
+        payload, accepted = self.prepare_submission(a, path)
+        if accepted:
+            self.advance()
+            return self.progress(a, payload)
+        official = self.root / a["output_path"]
         self.received(a)
         # Install complete output before recording acceptance or advancing scheduling.
         # A crash before acceptance requires a harmless resubmission of the work file.
@@ -444,64 +560,83 @@ class Workflow:
                 elif phase in {"merge", "fix"}:
                     self.check_candidate(self.checkpoint(current[0]["output_path"]), round_)
                 elif phase == "review":
-                    review = read_json(self.root / current[0]["output_path"])
-                    retained = [
-                        f
-                        for f in data.get("accepted_ambiguities", [])
-                        if not set(f["batch_ids"]) <= set(current[0]["batches"])
-                    ]
-                    findings = [*retained, *review["findings"]]
-                    self.store.settings_update(
-                        accepted_ambiguities=[f for f in findings if f["category"] != "correctable"]
-                    )
-                    candidate = self.checkpoint(current[0]["candidate_path"])
-                    errors = [f for f in findings if f["category"] == "correctable"]
-                    allowed = {f["description"] for f in findings if f["category"] != "correctable"}
-                    errors += [
-                        {
-                            "category": "correctable",
-                            "description": "Unresolved issue needs reviewer classification: "
-                            + issue["description"],
-                            "batch_ids": current[0]["batches"],
-                            "global": True,
-                        }
-                        for issue in candidate["unresolved"]
-                        if issue["description"] not in allowed
-                    ]
-                    if errors:
-                        self.request_fix([*findings, *[e for e in errors if e not in findings]])
-                    else:
-                        # Findings retain source evidence in the immutable review file.
-                        unresolved = [*candidate["unresolved"]]
-                        for finding in findings:
-                            citations = []
-                            for batch in self.batches:
-                                if batch["batch_id"] in finding["batch_ids"]:
-                                    citations.extend(
-                                        f"{batch['doc_id']}/{part['block_id']}"
-                                        for part in batch["segments"]
-                                    )
-                            issue = {
-                                "description": finding["description"]
-                                + " [source: "
-                                + ", ".join(dict.fromkeys(citations))
-                                + "]",
-                                "object_names": [],
-                            }
-                            unresolved = [
-                                x for x in unresolved if x["description"] != finding["description"]
-                            ]
-                            if issue not in unresolved:
-                                unresolved.append(issue)
-                        self.store.settings_update(
-                            unresolved=unresolved,
-                            semantic_review=True,
-                            reviewed_candidate=current[0]["candidate_path"],
-                        )
-                        self.phase("published", errors=[], finished_at=time.time())
+                    self.finish_review(current[0], data)
                 if (phase, round_) == (self.data["phase"], self.data["round"]):
                     break
             self.store.write_credentials()
+
+    def finish_review(self, assignment, data):
+        review = read_json(self.root / assignment["output_path"])
+        round_ = assignment["round"]
+        retained = [
+            f
+            for f in data.get("accepted_ambiguities", [])
+            if not set(f["batch_ids"]) <= set(assignment["batches"])
+        ]
+        classifications = [
+            *retained,
+            *(f for f in review["findings"] if f["category"] != "correctable"),
+        ]
+        tracked = data.get("tracked_findings", {})
+        for resolution in review.get("resolutions", []):
+            entry = tracked[resolution["finding"]]
+            entry.update(status=resolution["status"], reviewed_round=round_)
+            if "note" in resolution:
+                entry["note"] = resolution["note"]
+            else:
+                entry.pop("note", None)
+
+        candidate = self.checkpoint(assignment["candidate_path"])
+        allowed = {f["description"] for f in classifications}
+        new_errors = [f for f in review["findings"] if f["category"] == "correctable"]
+        new_errors.extend(
+            {
+                "category": "correctable",
+                "description": "Unresolved issue needs reviewer classification: "
+                + issue["description"],
+                "batch_ids": assignment["batches"],
+                "global": True,
+            }
+            for issue in candidate["unresolved"]
+            if issue["description"] not in allowed
+        )
+        pending = track_findings(tracked, new_errors, round_)
+
+        with self.store.transaction():
+            self.store.settings_update(
+                accepted_ambiguities=classifications, tracked_findings=tracked
+            )
+            if pending:
+                self.request_fix([*classifications, *pending])
+            else:
+                self.publish_review(assignment, candidate, classifications)
+
+    def publish_review(self, assignment, candidate, classifications):
+        # Findings retain source evidence in the immutable review file.
+        unresolved = [*candidate["unresolved"]]
+        for finding in classifications:
+            citations = [
+                f"{batch['doc_id']}/{part['block_id']}"
+                for batch in self.batches
+                if batch["batch_id"] in finding["batch_ids"]
+                for part in batch["segments"]
+            ]
+            issue = {
+                "description": finding["description"]
+                + " [source: "
+                + ", ".join(dict.fromkeys(citations))
+                + "]",
+                "object_names": [],
+            }
+            unresolved = [x for x in unresolved if x["description"] != finding["description"]]
+            if issue not in unresolved:
+                unresolved.append(issue)
+        self.store.settings_update(
+            unresolved=unresolved,
+            semantic_review=True,
+            reviewed_candidate=assignment["candidate_path"],
+        )
+        self.phase("published", findings=[], errors=[], finished_at=time.time())
 
     def preprocess(self):
         data = self.data
@@ -561,91 +696,53 @@ class Workflow:
             return
         candidate_path = f"reviews/round-{round_}/candidate.json"
         atomic_json(self.root / candidate_path, candidate, readonly=True)
-        batches = self.review_scope(candidate, round_)
+        before_path = f"reviews/round-{round_}/input.json" if round_ else None
+        before = (
+            self.checkpoint(before_path)
+            if before_path and (self.root / before_path).exists()
+            else None
+        )
+        data = self.data
+        tracked = data.get("tracked_findings", {})
+        previous_findings = list(data.get("findings", []))
+        if "tracked_findings" not in data and previous_findings:
+            # A run resumed after a legacy Fix can start tracking at its next review.
+            track_findings(
+                tracked,
+                (f for f in previous_findings if f["category"] == "correctable"),
+                round_ - 1,
+            )
+        finding_refs = {
+            ref: entry["finding"] for ref, entry in tracked.items() if entry["status"] == "open"
+        }
+        for finding in finding_refs.values():
+            if finding not in previous_findings:
+                previous_findings.append(finding)
+        scope = build_scope(
+            before,
+            candidate,
+            [b["batch_id"] for b in self.batches],
+            previous_findings,
+            before_path=before_path,
+            after_path=candidate_path,
+        )
+        scope_path = f"reviews/round-{round_}/review_scope.json"
+        atomic_json(self.root / scope_path, scope, readonly=True)
         with self.store.transaction():
+            self.store.settings_update(tracked_findings=tracked)
             self.assign(
                 "reviewer-1",
                 "reviewer",
                 "review",
                 round_,
                 f"reviews/round-{round_}/review.json",
-                batches=batches,
+                batches=scope["batches"],
                 candidate_path=candidate_path,
-                previous_findings=self.data.get("findings", []),
+                review_scope_path=scope_path,
+                previous_findings=previous_findings,
+                finding_refs=finding_refs,
             )
             self.phase("review", errors=[])
-
-    def review_scope(self, candidate, round_):
-        """Follow changed definitions into their referencing steps and dependency chains."""
-        all_batches = [b["batch_id"] for b in self.batches]
-        findings = self.data.get("findings", [])
-        if not round_ or any(f.get("global") for f in findings if f["category"] == "correctable"):
-            return all_batches
-        previous = self.root / f"reviews/round-{round_ - 1}/candidate.json"
-        if not previous.exists():
-            return all_batches
-        old = read_json(previous)
-
-        def index(checkpoint):
-            return {
-                record_identity(i["kind"], i["value"]): i
-                for i in checkpoint["items"]
-                if i["kind"] != "step_dependencies"
-            }
-
-        before, after = index(old), index(candidate)
-        removed, added = before.keys() - after.keys(), after.keys() - before.keys()
-        if {k for k, _ in removed} & {k for k, _ in added}:
-            return all_batches  # A rename can affect unconstrained prose as well as references.
-        changed = {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)}
-        if any(
-            k[0] in {"parties", "channels", "states"}
-            and before.get(k, {}).get("value") != after.get(k, {}).get("value")
-            or k[0] == "steps"
-            and before.get(k, {}).get("value", {}).get("processing")
-            != after.get(k, {}).get("value", {}).get("processing")
-            for k in changed
-        ):
-            return all_batches
-        affected = {b for f in findings if f["category"] == "correctable" for b in f["batch_ids"]}
-        rows = [*old["items"], *candidate["items"]]
-        dependencies = [r for r in rows if r["kind"] == "step_dependencies"]
-        changed_dependencies = [
-            i
-            for left, right in ((old, candidate), (candidate, old))
-            for i in left["items"]
-            if i["kind"] == "step_dependencies" and i not in right["items"]
-        ]
-        for item in changed_dependencies:
-            changed.update(
-                ("steps", item["value"][side]) for side in ("prior_step", "dependent_step")
-            )
-            affected.update(e["batch_id"] for e in item["evidence"])
-        growing = True
-        while growing:
-            previous_names = set(changed)
-            for item in rows:
-                value = item["value"]
-                if item["kind"] == "steps" and ("messages", value.get("message_name")) in changed:
-                    changed.add(("steps", value["name"]))
-            for item in dependencies:
-                value = item["value"]
-                if any(
-                    ("steps", value[side]) in changed for side in ("prior_step", "dependent_step")
-                ):
-                    changed.add(("steps", value["dependent_step"]))
-                    affected.update(e["batch_id"] for e in item["evidence"])
-            growing = changed != previous_names
-        for key in changed:
-            for index_ in (before, after):
-                if key in index_:
-                    affected.update(e["batch_id"] for e in index_[key]["evidence"])
-        # A changed unresolved issue with no reviewer source association requires full review.
-        old_issues = {dumps(i) for i in old["unresolved"]}
-        new_issues = {dumps(i) for i in candidate["unresolved"]}
-        if old_issues != new_issues:
-            return all_batches
-        return [b for b in all_batches if b in affected] or all_batches
 
     def request_fix(self, findings):
         data = self.data

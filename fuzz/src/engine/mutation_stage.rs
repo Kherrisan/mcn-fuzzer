@@ -47,6 +47,48 @@ const CANDIDATE_MAX_MUTATIONS: usize = 2048;
 /// A candidate is the only source of structurally new traces, so it gets a
 /// budget that scales with how many values the generator exposes instead of the
 /// ordinary corpus schedule.
+/// Split the first mutation budget between analyzed and synthesis-discovered
+/// fields.
+///
+/// When both groups have fields the budget halves, with the odd evaluation
+/// going to the analyzed group. A generator that declares only one group keeps
+/// the whole budget for it.
+fn budget_split(input: &GeneratorInput) -> (usize, usize) {
+    let total = candidate_budget(input);
+    let mut analyzed = 0usize;
+    let mut adhoc = 0usize;
+    for (instance, fields) in &input.params {
+        for field in fields.keys() {
+            let step = input
+                .trace
+                .steps
+                .iter()
+                .find(|step| &step.name == instance)
+                .map(|step| step.step.as_str())
+                .unwrap_or("");
+            let origin = input
+                .field_origin
+                .get(step)
+                .and_then(|row| row.get(field))
+                .copied()
+                .unwrap_or(crate::engine::input::FieldOrigin::Analyzed);
+            match origin {
+                crate::engine::input::FieldOrigin::Analyzed => analyzed += 1,
+                crate::engine::input::FieldOrigin::Adhoc => adhoc += 1,
+            }
+        }
+    }
+    match (analyzed > 0, adhoc > 0) {
+        (true, true) => {
+            let first = total.div_ceil(2);
+            (first, total - first)
+        }
+        (true, false) => (total, 0),
+        (false, true) => (0, total),
+        (false, false) => (total, 0),
+    }
+}
+
 fn candidate_budget(input: &GeneratorInput) -> usize {
     let fields = input
         .params
@@ -212,6 +254,11 @@ impl GeneratorMutationStage {
             "synthesis input {} gets {budget} mutation evaluations",
             candidate.request
         );
+        let (analyzed_budget, adhoc_budget) = budget_split(&candidate.input);
+        log::info!(
+            "synthesis input {} schedules {analyzed_budget} analyzed and {adhoc_budget} adhoc field evaluations",
+            candidate.request
+        );
         self.run_mutations(
             fuzzer,
             executor,
@@ -221,6 +268,7 @@ impl GeneratorMutationStage {
             Some(&candidate.origin),
             baseline_id,
             budget,
+            Some((analyzed_budget, adhoc_budget)),
         )
     }
 
@@ -234,6 +282,7 @@ impl GeneratorMutationStage {
         origin: Option<&TraceOrigin>,
         parent_id: Option<CorpusId>,
         budget: usize,
+        split: Option<(usize, usize)>,
     ) -> Result<(), Error>
     where
         S: HasRand + HasCorpus<GeneratorInput> + HasMetadata,
@@ -248,6 +297,17 @@ impl GeneratorMutationStage {
         let mut evaluations = 0usize;
         while evaluations < budget && attempts < attempt_limit {
             attempts += 1;
+            // New generators walk the analyzed group first, then the adhoc
+            // group; ordinary corpus inputs may use both from the start.
+            self.mutator.set_field_pool(match split {
+                Some((analyzed, _adhoc)) if analyzed > 0 && evaluations < analyzed => {
+                    crate::engine::mutator::FieldPool::Analyzed
+                }
+                Some((analyzed, adhoc)) if adhoc > 0 && evaluations >= analyzed => {
+                    crate::engine::mutator::FieldPool::Adhoc
+                }
+                _ => crate::engine::mutator::FieldPool::Any,
+            });
             let mut mutated = input.clone();
             if self.mutator.mutate(state, &mut mutated)? == MutationResult::Skipped
                 || mutated == *input
@@ -434,6 +494,7 @@ where
             origin.as_ref(),
             parent_id,
             budget,
+            None,
         )
     }
 }
@@ -470,7 +531,24 @@ mod tests {
         if !values.is_empty() {
             params.insert("instance".to_string(), values);
         }
-        GeneratorInput::new(PathBuf::from("/tmp/generator.py"), params)
+        // Origins are keyed by model step, so the fixture needs a step instance
+        // that maps the instance name to its model step.
+        let step = crate::engine::input::StepInstance {
+            name: "instance".into(),
+            step: "Login".into(),
+            action: "send".into(),
+            condition: String::new(),
+            message: None,
+            processing: None,
+            channel: "control".into(),
+            sender: Some("client".into()),
+            receiver: Some("server".into()),
+            party: None,
+            omitted_fields: vec![],
+            inputs: BTreeMap::new(),
+            broken_dependencies: vec![],
+        };
+        GeneratorInput::with_trace(PathBuf::from("/tmp/generator.py"), vec![step], params)
     }
 
     #[test]
@@ -483,6 +561,79 @@ mod tests {
         assert_eq!(candidate_budget(&input_with_fields(24)), 1536);
         assert_eq!(candidate_budget(&input_with_fields(32)), 2048);
         assert_eq!(candidate_budget(&input_with_fields(200)), 2048);
+    }
+
+    #[test]
+    fn budget_splits_evenly_and_gives_the_odd_evaluation_to_analyzed() {
+        let mut input = input_with_fields(3);
+        input.field_origin.insert(
+            "Login".into(),
+            BTreeMap::from([
+                ("field_0".to_string(), crate::engine::input::FieldOrigin::Analyzed),
+                ("field_1".to_string(), crate::engine::input::FieldOrigin::Adhoc),
+                ("field_2".to_string(), crate::engine::input::FieldOrigin::Adhoc),
+            ]),
+        );
+        let total = candidate_budget(&input);
+        let (analyzed, adhoc) = budget_split(&input);
+        assert_eq!(analyzed + adhoc, total);
+        assert_eq!(analyzed, total.div_ceil(2));
+        assert_eq!(adhoc, total / 2);
+    }
+
+    #[test]
+    fn a_single_group_keeps_the_whole_budget() {
+        let analyzed_only = input_with_fields(2);
+        let (analyzed, adhoc) = budget_split(&analyzed_only);
+        assert_eq!(adhoc, 0);
+        assert_eq!(analyzed, candidate_budget(&analyzed_only));
+
+        let mut adhoc_only = input_with_fields(2);
+        adhoc_only.field_origin.insert(
+            "Login".into(),
+            BTreeMap::from([
+                ("field_0".to_string(), crate::engine::input::FieldOrigin::Adhoc),
+                ("field_1".to_string(), crate::engine::input::FieldOrigin::Adhoc),
+            ]),
+        );
+        let (analyzed, adhoc) = budget_split(&adhoc_only);
+        assert_eq!(analyzed, 0);
+        assert_eq!(adhoc, candidate_budget(&adhoc_only));
+    }
+
+    #[test]
+    fn corpus_reload_keeps_field_origins() {
+        let dir = std::env::temp_dir().join(format!("mcn-origins-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut input = input_with_fields(1);
+        input.field_origin.insert(
+            "Login".into(),
+            BTreeMap::from([("field_0".to_string(), crate::engine::input::FieldOrigin::Adhoc)]),
+        );
+        let mut corpus: OnDiskCorpus<GeneratorInput> = OnDiskCorpus::new(&dir).unwrap();
+        corpus.add(Testcase::new(input)).unwrap();
+        drop(corpus);
+        // Read the persisted entry the same way a later campaign start would.
+        let path = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.is_file()
+                    && !path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with('.'))
+            })
+            .expect("corpus entry");
+        let reloaded: GeneratorInput =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            reloaded.field_origin["Login"]["field_0"],
+            crate::engine::input::FieldOrigin::Adhoc
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

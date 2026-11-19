@@ -265,7 +265,7 @@ struct ListProposalsRequest {
     limit: Option<usize>,
 }
 
-struct GetProposalRequest {
+struct GetProposalStatsRequest {
     proposal_id: ProposalId,
     index_offset: Option<usize>,
     index_limit: Option<usize>,
@@ -293,7 +293,8 @@ struct QueryResponse<T> {
 | 工具 | 返回 |
 | --- | --- |
 | `list_proposals` | 分页的身份、当前状态、目标摘要、generator 路径、变异/执行次数、corpus 数量和 novelty index 数量 |
-| `get_proposal` | 身份、当前状态、完整 proposal、synthesis request ID、产物路径、统计摘要及分页的 `feedback_novelty_indices` |
+| `get_proposal_stats` | 身份、当前状态、完整 proposal、synthesis request ID、产物路径、统计摘要及分页的 `feedback_novelty_indices` |
+| `get_proposal_generator_stats` | 按 proposal 查询已发布 generator 的 step 和依赖执行统计，两张表独立分页。 |
 | `resolve_bitmap_indices` | 按输入顺序返回每个 index 的文件、行号、可选列号、函数及解析状态 |
 
 内部 corpus ID 集合不直接返回，只返回数量。无需 `index_kind` 参数。

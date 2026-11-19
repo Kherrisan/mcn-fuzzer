@@ -111,7 +111,7 @@ def test_serial_initialization_fair_dispatch_and_no_claim_tool(run):
     sends = [i for i, c in enumerate(calls) if c[0] == "send" and not c[2].startswith("/rename")]
     assert launches[0] < renames[0] < launches[1] < renames[1] < sends[0] < sends[1]
     assert all(a["status"] == "sent" for a in run.store.assignments())
-    assert "submit_parse_result" in calls[sends[0]][2]
+    assert "submit_parsed_model" in calls[sends[0]][2]
     assert "claim_assignment" not in calls[sends[0]][2]
     assert s.step()
     assert len(
@@ -151,7 +151,7 @@ def test_fix_restores_original_parser_native_session(tmp_path):
     s.step()
     assert s.state["sessions"]["parser-1"]["id"] == original_thread
     sent = [c for c in s.hc_call.calls if c[0] == "send" and not c[2].startswith("/rename")]
-    assert len(sent) == 3 and "submit_model_result" in sent[-1][2]
+    assert len(sent) == 3 and "submit_model_patch" in sent[-1][2]
     assert "reviewer-1" not in s.state["terminals"]
 
 

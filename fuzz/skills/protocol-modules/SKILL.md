@@ -75,7 +75,7 @@ below are relative to this SKILL.md, independent of the agent's working director
   shut down event loops and join threads within the case budget. Do not leave a
   daemon thread or an unbounded `serve_forever()` running. Twisted's global
   reactor is not restartable; prefer message codecs or a case-local integration.
-- Only generator.py and params.schema.json are published into the request's
+- generator.py, params.schema.json and params.json are published into the request's
   `published/` directory. generator.py may import shared helper modules
   from `WORKSPACE/lib`, including protocol-specific codecs and crypto helpers; that campaign-scoped directory remains a runtime
   dependency. Inline task-specific mock implementations, handlers, and SDK glue
@@ -136,13 +136,19 @@ Python. The generation prompt supplies its absolute path and a fully rendered
 command with OUTPUT_DIR, the request id and PYTHONPATH. Execute that
 command directly; do not recreate its syntax, schema or parameter checks.
 
-1. Finish generator.py, params.schema.json and params.json.
+0. Audit each model step's handler and record in that step's `reason` any field
+   beyond the proposal, each rejected candidate with its reason, or why there was
+   no candidate. Zero candidates is valid, but it must be stated.
+1. Finish generator.py, params.schema.json, params.json and mutable_fields.json.
 2. Write the success completion object to OUTPUT_DIR/result.draft.json.
 3. Run the supplied validator command with `--result` pointing to that draft,
    `--check-imports` and the campaign `--pythonpath`. It prints a JSON report and
    exits 0 on success, 1 on validation failure. Fix reported errors and rerun.
 4. Only after success, atomically rename result.draft.json to result.json. The
-   validator neither publishes nor modifies artifacts. A failed synthesis may
+   validator neither publishes nor modifies artifacts. Its syntax, schema,
+   parameter and import checks say nothing about whether a declared field changes
+   the encoded message; verify override, and omission when `omit` is true,
+   separately and record how in the field entry. A failed synthesis may
    publish its error completion directly without successful-generator checks.
 
 Read [validation.md](references/validation.md) for the exact supported checks and

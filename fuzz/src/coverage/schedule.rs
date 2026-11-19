@@ -810,7 +810,6 @@ impl CoverageAnalysisStage {
         Ok(())
     }
 
-    /// Also polled during seedless bootstrap so analysis failures stop the campaign.
     pub(crate) fn poll_agent(&mut self) -> Result<(), Error> {
         if !self.enabled {
             return Ok(());

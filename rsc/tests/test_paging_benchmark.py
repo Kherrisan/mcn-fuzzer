@@ -92,7 +92,7 @@ def test_whole_model_merge_budget_counts_all_files_and_output_reserve(tmp_path, 
             identity = workflow.authenticate(
                 (workflow.root / f"{assignment['worker']}.token").read_text().strip()
             )
-            workflow.call(identity, "submit_parse_result", {"path": str(path)})
+            workflow.call(identity, "submit_parsed_model", {"path": str(path)})
 
         report = read_json(workflow.root / "merge-budget.json")
         assert report == {

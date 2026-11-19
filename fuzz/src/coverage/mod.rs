@@ -846,6 +846,7 @@ impl CoverageSession {
                 break;
             }
             if now >= startup_deadline && grace_deadline.is_none() {
+                self.generator.log_startup_timeout(worker, case_id, sut.is_none(), generator.is_none());
                 grace_deadline = Some(now + policy.peer_grace);
             }
             if grace_deadline.is_some_and(|end| both || now >= end)

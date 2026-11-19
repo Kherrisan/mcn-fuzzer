@@ -109,6 +109,7 @@ struct StepProgress {
     path: PathBuf,
     trace: crate::coverage::step_stats::TraceView,
     handle: Option<IntrospectionHandle>,
+    owner: Option<Arc<ProposalRecord>>,
     submitted: bool,
 }
 
@@ -127,6 +128,7 @@ impl StepProgress {
             path,
             trace: crate::coverage::step_stats::TraceView::of(input),
             handle,
+            owner: None,
             submitted: false,
         }
     }
@@ -146,8 +148,7 @@ impl Drop for StepProgress {
             if let Some(handle) = &self.handle {
                 let (succeeded, observable) =
                     crate::coverage::step_stats::read_progress(&self.path);
-                handle.step_exec(&self.trace);
-                handle.step_success(&self.trace, &succeeded, observable);
+                handle.step_finished(self.owner.as_deref(), &self.trace, &succeeded, observable);
             }
         }
         let _ = std::fs::remove_file(&self.path);
@@ -545,6 +546,7 @@ impl CaseExecutor {
         let started = Instant::now();
         self.last_report = None;
         self.open_tracked(&input.generator);
+        progress.owner = self.tracked.clone();
         #[cfg(feature = "stats")]
         let setup_at = Instant::now();
         self.run_cleanup()?;
@@ -657,6 +659,7 @@ impl CaseExecutor {
                 break;
             }
             if now >= startup_deadline && grace_deadline.is_none() {
+                self.generator.log_startup_timeout(worker_id, case_id, sut.is_none(), generator.is_none());
                 if !startup_warned {
                     log::warn!(
                         "startup timeout after {} ms; waiting {} ms of peer grace",

@@ -21,6 +21,7 @@ use serde_json::{json, Value};
 use crate::{
     coverage::{
         proposal::Proposal,
+        step_stats::{StepStats, TraceView},
         symbol_map::{load_index_map, Frame},
     },
     runtime::report::CaseReport,
@@ -168,6 +169,7 @@ struct ProposalData {
     synthesis_request_id: Option<String>,
     artifacts: Option<GeneratorArtifacts>,
     stats: ProposalStats,
+    generator_stats: Option<StepStats>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -179,13 +181,15 @@ pub(crate) struct ProposalSnapshot {
     pub(crate) artifacts: Option<GeneratorArtifacts>,
     #[serde(default)]
     stats: ProposalStats,
+    #[serde(default)]
+    generator_stats: Option<StepStats>,
 }
 
 impl ProposalSnapshot {
     pub(crate) fn legacy(identity: ProposalIdentity, status: ProposalStatus,
                          proposal: Proposal) -> Self {
         Self { identity, status, proposal: Some(proposal), synthesis_request_id: None,
-               artifacts: None, stats: ProposalStats::default() }
+               artifacts: None, generator_stats: None, stats: ProposalStats::default() }
     }
 }
 
@@ -311,26 +315,29 @@ impl IntrospectionHandle {
     }
 
     /// Count a published generator's original trace.
-    pub fn step_present(&self, source: &str, trace: &crate::coverage::step_stats::TraceView) {
+    pub fn step_present(&self, generator: &Path, trace: &TraceView) {
+        let owner = self.owner(&canonicalize_generator(generator));
+        let source = generator.to_string_lossy();
         self.store().with_step_stats(|stats| {
-            stats.record_present(source, trace);
+            stats.record_present(&source, trace);
+            if let Some(record) = owner {
+                record.with_generator_stats(|local| { local.record_present(&source, trace); });
+            }
         });
     }
 
-    /// Count one ordinary exec. Only call after the run request was sent.
-    pub fn step_exec(&self, trace: &crate::coverage::step_stats::TraceView) {
-        self.store().with_step_stats(|stats| stats.record_exec(trace));
-    }
-
-    /// Count the successes reported by the generator progress file.
-    pub fn step_success(
-        &self,
-        trace: &crate::coverage::step_stats::TraceView,
-        succeeded: &std::collections::BTreeSet<usize>,
-        observable: bool,
-    ) {
-        self.store()
-            .with_step_stats(|stats| stats.record_successes(trace, succeeded, observable));
+    pub fn step_finished(&self, owner: Option<&ProposalRecord>, trace: &TraceView,
+                         succeeded: &BTreeSet<usize>, observable: bool) {
+        self.store().with_step_stats(|stats| {
+            stats.record_exec(trace);
+            let observable = stats.record_successes(trace, succeeded, observable);
+            if let Some(record) = owner {
+                record.with_generator_stats(|local| {
+                    local.record_exec(trace);
+                    local.record_observed_successes(trace, succeeded, observable);
+                });
+            }
+        });
     }
 
     /// Snapshot the step counters so an evaluation replay can restore them.
@@ -360,6 +367,7 @@ impl IntrospectionHandle {
                     synthesis_request_id: data.synthesis_request_id.clone(),
                     artifacts: data.artifacts.clone(),
                     stats: data.stats.clone(),
+                    generator_stats: data.generator_stats.clone(),
                 })
             }).collect()
         })
@@ -375,6 +383,7 @@ impl IntrospectionHandle {
                     synthesis_request_id: snapshot.synthesis_request_id,
                     artifacts: snapshot.artifacts,
                     stats: snapshot.stats,
+                    generator_stats: snapshot.generator_stats,
                 };
             }
             Ok(())
@@ -398,23 +407,6 @@ impl IntrospectionHandle {
             })?;
             Ok(())
         })
-    }
-
-    pub fn register_autonomous(&self, request_id: &str, session: &str) -> Result<(), String> {
-        self.with_mut(|writer| {
-            writer.register(ProposalIdentity {
-                id: ProposalId::synthesis(request_id),
-                origin: ProposalOrigin::AutonomousSynthesis,
-                analysis_request_id: None,
-                session: session.to_string(),
-                snapshot: None,
-                created_at_unix_ms: now_ms(),
-            })
-        })?;
-        let record = self
-            .with(|writer| writer.get(&ProposalId::synthesis(request_id)))
-            .ok_or_else(|| format!("proposal synthesis:{request_id} is not registered"))?;
-        record.synthesis_started(request_id.to_string())
     }
 
     pub fn accept(&self, id: &ProposalId, proposal: Arc<Proposal>) -> Result<(), String> {
@@ -615,6 +607,7 @@ impl RegistryWriter {
                 synthesis_request_id: None,
                 artifacts: None,
                 stats: ProposalStats::default(),
+                generator_stats: Some(StepStats::default()),
             }),
         });
         self.by_id
@@ -682,6 +675,14 @@ impl ProposalRecord {
         self.data
             .read()
             .map_err(|_| "introspection record lock poisoned".to_string())
+    }
+
+    fn with_generator_stats(&self, update: impl FnOnce(&mut StepStats)) {
+        if let Ok(mut data) = self.write_data() {
+            if let Some(stats) = &mut data.generator_stats {
+                update(stats);
+            }
+        }
     }
 
     pub fn accept_proposal(&self, proposal: Arc<Proposal>) -> Result<(), String> {
@@ -1063,7 +1064,7 @@ impl IntrospectionStore {
         })))
     }
 
-    pub fn get_proposal(
+    pub fn get_proposal_stats(
         &self,
         id: &ProposalId,
         index_offset: Option<usize>,
@@ -1081,17 +1082,42 @@ impl IntrospectionStore {
     ) -> Result<Value, String> {
         let limit = page_limit(index_limit, DEFAULT_INDEX_LIMIT, MAX_INDEX_LIMIT)?;
         let offset = index_offset.unwrap_or(0);
+        Ok(self.response(self.proposal_record(id)?.detail(offset, limit, summary_only)?))
+    }
+
+    fn proposal_record(&self, id: &ProposalId) -> Result<Arc<ProposalRecord>, String> {
         let records = self
             .proposals
             .read()
             .map_err(|_| "introspection list lock poisoned".to_string())?;
-        let record = records
+        records
             .iter()
             .find(|record| &record.identity.id == id)
             .cloned()
-            .ok_or_else(|| format!("unknown proposal {id}"))?;
-        drop(records);
-        Ok(self.response(record.detail(offset, limit, summary_only)?))
+            .ok_or_else(|| format!("unknown proposal {id}"))
+    }
+
+    fn get_proposal_generator_stats(&self, id: &ProposalId, step_offset: usize,
+                                    dependency_offset: usize, limit: Option<usize>) -> Result<Value, String> {
+        let limit = page_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT)?;
+        let record = self.proposal_record(id)?;
+        let model = self.step_stats.read().map_err(|_| "step stats are poisoned")?;
+        let data = record.read_data()?;
+        let local = data.generator_stats.as_ref();
+        let (steps, edges) = local.map(|stats| stats.generator_rows(&model)).unwrap_or_default();
+        fn page<T: Clone + Serialize>(items: &[T], offset: usize, limit: usize) -> Value {
+            let (rows, next) = page_slice(items, PageRequest { offset, limit });
+            json!({"total": items.len(), "offset": offset, "limit": limit, "items": rows, "next_offset": next})
+        }
+        Ok(self.response(json!({
+            "proposal_id": id, "status": data.status,
+            "generator_py": data.artifacts.as_ref().map(|item| &item.generator_py),
+            "stats_available": local.is_some(),
+            "observable_runs": local.map(StepStats::observable_runs),
+            "unobservable_runs": local.map(StepStats::unobservable_runs),
+            "steps": page(&steps, step_offset, limit),
+            "step_dependencies": page(&edges, dependency_offset, limit),
+        })))
     }
 
     pub fn resolve_indices(&self, indices: &[u32]) -> Result<Value, String> {
@@ -1501,12 +1527,32 @@ pub mod http {
     }
 
     #[derive(Debug, Deserialize, JsonSchema)]
-    struct GetProposalRequest {
+    struct GetProposalStatsRequest {
         proposal_id: String,
         index_offset: Option<usize>,
         index_limit: Option<usize>,
         #[serde(default)]
         summary_only: bool,
+    }
+
+    #[derive(Debug, Deserialize, JsonSchema)]
+    struct GeneratorStatsRequest {
+        proposal_id: String,
+        step_offset: Option<usize>,
+        dependency_offset: Option<usize>,
+        limit: Option<usize>,
+    }
+
+    #[derive(Serialize, Deserialize, JsonSchema)]
+    struct GeneratorStatsResponse {
+        proposal_id: String,
+        status: ProposalStatus,
+        generator_py: Option<String>,
+        stats_available: bool,
+        observable_runs: Option<u64>,
+        unobservable_runs: Option<u64>,
+        steps: Page<crate::coverage::step_stats::StepEntry>,
+        step_dependencies: Page<crate::coverage::step_stats::DependencyEntry>,
     }
 
     #[derive(Debug, Deserialize, JsonSchema)]
@@ -1557,9 +1603,9 @@ pub mod http {
         #[tool(
             description = "Read a proposal's artifact paths, live stats, and frozen body. Set summary_only to return its goal in place of the body. feedback_novelty_indices is paged in ascending order. Novelty includes first hits and hit-count bucket increases, so an index is not always a new source line. Read-only."
         )]
-        fn get_proposal(
+        fn get_proposal_stats(
             &self,
-            Parameters(request): Parameters<GetProposalRequest>,
+            Parameters(request): Parameters<GetProposalStatsRequest>,
         ) -> Result<rmcp::Json<Response<ProposalDetail>>, String> {
             let value = self.store.get_proposal_view(
                 &ProposalId(request.proposal_id),
@@ -1567,6 +1613,14 @@ pub mod http {
                 request.index_limit,
                 request.summary_only,
             )?;
+            Ok(rmcp::Json(typed(value)?))
+        }
+
+        #[tool(description = "Read step and dependency counts for one proposal's published generator, including its mutated inputs. Counts follow list_step_stats. Each table is independently paged. stats_available is false for historical snapshots without generator counters.")]
+        fn get_proposal_generator_stats(&self, Parameters(request): Parameters<GeneratorStatsRequest>)
+            -> Result<rmcp::Json<Response<GeneratorStatsResponse>>, String> {
+            let value = self.store.get_proposal_generator_stats(&ProposalId(request.proposal_id),
+                request.step_offset.unwrap_or(0), request.dependency_offset.unwrap_or(0), request.limit)?;
             Ok(rmcp::Json(typed(value)?))
         }
 
@@ -1957,7 +2011,7 @@ mod tests {
         }
         right.join().unwrap();
         let detail = store
-            .get_proposal(&ProposalId::coverage("a"), None, Some(1000))
+            .get_proposal_stats(&ProposalId::coverage("a"), None, Some(1000))
             .unwrap();
         assert_eq!(detail["data"]["stats"]["contribution"]["corpus_cases"], 100);
     }
@@ -1982,7 +2036,7 @@ mod tests {
         );
         assert!(store.resolve_indices(&[]).is_err());
         assert!(store
-            .get_proposal(&ProposalId::coverage("missing"), None, None)
+            .get_proposal_stats(&ProposalId::coverage("missing"), None, None)
             .is_err());
     }
 
@@ -2058,33 +2112,35 @@ mod tests {
             .accept(&ProposalId::coverage("late"), proposal("late"))
             .is_err());
         handle.register_coverage("open", "s", "000002").unwrap();
-        handle.register_autonomous("auto", "s").unwrap();
+        handle.register_coverage("done", "s", "000003").unwrap();
+        handle.accept(&ProposalId::coverage("done"), proposal("done")).unwrap();
+        handle.synthesis_started("done").unwrap();
         handle
             .publish(
-                "auto",
+                "done",
                 GeneratorArtifacts {
-                    generator_py: PathBuf::from("/tmp/auto/generator.py"),
-                    params_json: PathBuf::from("/tmp/auto/params.schema.json"),
+                    generator_py: PathBuf::from("/tmp/done/generator.py"),
+                    params_json: PathBuf::from("/tmp/done/params.schema.json"),
                 },
-                Some(proposal("auto")),
+                None,
             )
             .unwrap();
         handle.cancel_incomplete();
         let store = handle.store();
         let open = store
-            .get_proposal(&ProposalId::coverage("open"), None, None)
+            .get_proposal_stats(&ProposalId::coverage("open"), None, None)
             .unwrap();
         assert_eq!(open["data"]["status"], "cancelled");
         let late = store
-            .get_proposal(&ProposalId::coverage("late"), None, None)
+            .get_proposal_stats(&ProposalId::coverage("late"), None, None)
             .unwrap();
         assert_eq!(late["data"]["status"], "failed");
-        let auto = store
-            .get_proposal(&ProposalId::synthesis("auto"), None, None)
+        let done = store
+            .get_proposal_stats(&ProposalId::coverage("done"), None, None)
             .unwrap();
-        assert_eq!(auto["data"]["status"], "synthesized");
-        assert_eq!(auto["data"]["synthesis_request_id"], "auto");
-        assert_eq!(auto["data"]["proposal"]["origin"], "coverage");
+        assert_eq!(done["data"]["status"], "synthesized");
+        assert_eq!(done["data"]["synthesis_request_id"], "done");
+        assert_eq!(done["data"]["proposal"]["origin"], "coverage");
     }
 
     #[test]
@@ -2176,7 +2232,7 @@ mod tests {
         record.execution_finished(&report(true));
         let store = handle.store();
         let detail = store
-            .get_proposal(&ProposalId::coverage("req"), None, Some(2))
+            .get_proposal_stats(&ProposalId::coverage("req"), None, Some(2))
             .unwrap();
         let summary = store
             .get_proposal_view(&ProposalId::coverage("req"), None, Some(2), true)
@@ -2243,6 +2299,65 @@ mod tests {
         let data = record.read_data().unwrap();
         assert_eq!(data.stats.mutations.attempts, 0);
         assert_eq!(data.stats.contribution.corpus_cases.len(), 0);
+    }
+
+    #[test]
+    fn generator_stats_isolate_owners_and_restore_history() {
+        let identity = CampaignIdentity { run_id: "scoped".into(), started_at_unix_ms: 1 };
+        let handle = IntrospectionHandle::open(identity.clone(), None);
+        let model = crate::protocol::load_model(Path::new("targets/lightftp/protocol.json")).unwrap();
+        handle.set_step_model(&model);
+        let edge = &model.dependencies[0];
+        let trace = TraceView {
+            steps: vec![(0, "first".into(), edge.prior_step.clone()),
+                        (1, "repeat".into(), edge.prior_step.clone()),
+                        (2, "last".into(), edge.dependent_step.clone())],
+            dependencies: vec![(1, 2, edge.condition.clone(),
+                edge.field_relations.iter().map(|r| r.dependent_field.clone()).collect())],
+        };
+        for (request, completed) in [("a", true), ("b", false)] {
+            handle.register_coverage(request, "s", "1").unwrap();
+            let path = PathBuf::from(format!("/tmp/scoped-{request}.py"));
+            handle.publish(request, GeneratorArtifacts {
+                generator_py: path.clone(), params_json: path.with_extension("json"),
+            }, None).unwrap();
+            handle.step_present(&path, &trace);
+            handle.step_present(&path, &trace);
+            let record = handle.owner(&path).unwrap();
+            let successes = if completed { BTreeSet::from([0, 1, 2]) } else { BTreeSet::from([0]) };
+            handle.step_finished(Some(&record), &trace, &successes, true);
+            if completed {
+                let truncated = TraceView { steps: trace.steps[..1].to_vec(), dependencies: vec![] };
+                handle.step_finished(Some(&record), &truncated, &BTreeSet::new(), false);
+            }
+        }
+        let mut snapshots = serde_json::to_value(handle.snapshot().unwrap()).unwrap();
+        let restored = IntrospectionHandle::open(identity.clone(), None);
+        restored.restore_step_stats(handle.step_stats_snapshot().unwrap());
+        restored.restore(serde_json::from_value(snapshots.clone()).unwrap()).unwrap();
+        for store in [handle.store(), restored.store()] {
+            for (request, expected) in [("a", 1), ("b", 0)] {
+                let full = store.get_proposal_generator_stats(&ProposalId::coverage(request), 0, 0, None).unwrap();
+                let data = &full["data"];
+                let dep = &data["step_dependencies"]["items"][0];
+                assert_eq!(dep["present_cnt"], 1);
+                assert_eq!(dep["exec_cnt"], 1);
+                assert_eq!(dep["succ_cnt"], expected);
+                assert_eq!(data["unobservable_runs"], expected);
+                let rows = data["steps"]["items"].as_array().unwrap();
+                assert_eq!(rows.iter().map(|r| r["present_cnt"].as_u64().unwrap()).sum::<u64>(), 3);
+                assert_eq!(rows.iter().map(|r| r["exec_cnt"].as_u64().unwrap()).sum::<u64>(), 3 + expected);
+                let page = store.get_proposal_generator_stats(&ProposalId::coverage(request), 1, 2, Some(1)).unwrap();
+                assert_eq!(page["data"]["steps"]["items"][0], rows[1]);
+                assert_eq!(page["data"]["step_dependencies"]["items"], json!([]));
+            }
+        }
+        snapshots[0].as_object_mut().unwrap().remove("generator_stats");
+        let legacy = IntrospectionHandle::open(identity, None);
+        legacy.restore(serde_json::from_value(snapshots).unwrap()).unwrap();
+        let result = legacy.store().get_proposal_generator_stats(&ProposalId::coverage("a"), 0, 0, None).unwrap();
+        assert_eq!(result["data"]["stats_available"], false);
+        assert!(result["data"]["observable_runs"].is_null());
     }
 
     #[test]
@@ -2374,12 +2489,20 @@ mod tests {
             r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
         );
         assert!(listed.contains("list_proposals"), "{listed}");
-        assert!(listed.contains("get_proposal"), "{listed}");
+        assert!(listed.contains(r#""name":"get_proposal_stats""#), "{listed}");
+        assert!(listed.contains(r#""name":"get_proposal_generator_stats""#), "{listed}");
+        assert!(!listed.contains(r#""name":"get_proposal""#), "{listed}");
         assert!(listed.contains("resolve_bitmap_indices"), "{listed}");
         assert!(listed.contains("list_step_stats"), "{listed}");
         assert!(listed.contains("list_step_dependency_stats"), "{listed}");
         assert!(listed.contains("get_step_dependency_stats"), "{listed}");
-        assert_eq!(listed.matches("outputSchema").count(), 6, "{listed}");
+        assert_eq!(listed.matches("outputSchema").count(), 7, "{listed}");
+        let response = mcp_json(&mcp_exchange(&left_addr, Some(&left_session),
+            r#"{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"get_proposal_generator_stats","arguments":{"proposal_id":"coverage:alpha"}}}"#));
+        let data = &response["result"]["structuredContent"]["data"];
+        assert_eq!(data["stats_available"], true);
+        assert!(data["generator_py"].is_null());
+        assert_eq!(data["steps"]["total"], 0);
         let left_rows = mcp_exchange(
             &left_addr,
             Some(&left_session),
@@ -2400,7 +2523,7 @@ mod tests {
         );
         for summary_only in [true, false] {
             let request = json!({"jsonrpc":"2.0", "id":10, "method":"tools/call", "params":{
-                "name":"get_proposal", "arguments":{"proposal_id":"coverage:alpha", "summary_only":summary_only}
+                "name":"get_proposal_stats", "arguments":{"proposal_id":"coverage:alpha", "summary_only":summary_only}
             }}).to_string();
             let response = mcp_json(&mcp_exchange(&left_addr, Some(&left_session), &request));
             let data = &response["result"]["structuredContent"]["data"];
@@ -2433,7 +2556,7 @@ mod tests {
         let still = mcp_exchange(
             &right_addr,
             Some(&right_session),
-            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_proposal","arguments":{"proposal_id":"coverage:beta"}}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_proposal_stats","arguments":{"proposal_id":"coverage:beta"}}}"#,
         );
         assert!(still.contains("coverage:beta"), "{still}");
         assert!(still.contains("structuredContent"), "{still}");

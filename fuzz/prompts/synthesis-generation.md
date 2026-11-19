@@ -6,13 +6,16 @@ target trace described by the proposal below. {{ execution.summary }}
 WORKSPACE={{ campaign.workspace }}
 OUTPUT_DIR={{ output_dir }}
 REQUEST={{ request_id }}
-{% if autonomous %}PROPOSAL_DRAFT={{ proposal_draft }}
-{% else %}PROPOSAL={{ proposal }}
-{% endif %}{% if mode %}MODE={{ mode }}
+PROPOSAL={{ proposal }}
+{% if mode %}MODE={{ mode }}
 {% endif %}PYTHON={{ campaign.python }}
 GENERATOR_PARTIES={{ generator_parties | join(", ") }}
 
-On success, write generator.py, params.schema.json, params.json (initial field defaults), then atomically publish result.json in OUTPUT_DIR.
+On success, write generator.py, params.schema.json, and params.json (initial
+field defaults), then audit the parameter surface of every step handler and write
+mutable_fields.json with one entry per model step and a `reason` for each. That
+audit is required even when it finds no field beyond the proposal. Finish by
+atomically publishing result.json in OUTPUT_DIR.
 Trace steps use action send, recv, listen, connect, or close. The coverage
 proposal has already been projected to the generator perspective: a send step
 has `receiver` (the SUT destination) and no `sender`; a recv step has `sender`
@@ -23,7 +26,10 @@ the SUT message. Repeated step instances are repeated occurrences. Rust
 inserts, drops, duplicates, reorders, and mutates instances; the generator must
 not infer or apply those operations. A step instance's `mutable_fields` declares fields the
 generator may fill, including fields the model does not list. Keep each
-instance's field values separate. Do not drop a step to make the script validate.
+instance's field values separate. The field manifest is keyed by model step name,
+not by instance name: one handler serves every instance of that step, and Rust
+creates, renames, duplicates, and drops instances after you publish. Do not try to
+predict instance names or counts; declare capabilities once per model step. Do not drop a step to make the script validate.
 Read the proposal at {{ proposal }} before implementing. Use its ordered step
 instances, party and channel instances, dependencies,
 mutable_fields, per-step reasons and constraints. The proposal is the downstream description: it has already been stripped of
@@ -98,35 +104,16 @@ operation cannot be carried out; never fabricate a reply or claim runtime succes
 
 # Proposal workflow
 
-{% if autonomous %}
-No coverage proposal was supplied. Select the smallest coherent trace that
-exercises a real SUT interaction, using model step names and the campaign's
-party binding. Do not request a receipt or call a Rust selector.
-
-1. Write {{ proposal_draft }} as JSON with these fields:
-   {"origin":"autonomous","session":"{{ session }}",
-    "build":"","snapshot":"","goal":{"handler_ids":[],"reason":"autonomous goal"},
-    "parties":{"client_1":"client"},
-    "channels":{"control_1":{"channel":"control","endpoints":["client_1","server_1"]}},
-    "trace":[{"name":"login_first","step":"exact step name","channel":"control_1",
-              "sender":"client_1","receiver":"server_1","reason":"why","constraints":[]}],
-    "dependencies":[]}
-   Party and channel keys are instance names. Each maps to a model party or
-   channel name. Channel endpoints are party instance names. Each trace item
-   names one step instance and points `step` at the model step name. Repeat a
-   model step by adding another instance with its own name. Instance names
-   must not contain `:[]`. Use the exact session above.
-2. Run this exact command to fill action, condition, and message and validate:
-   "{{ campaign.python }}" "{{ proposal_tool }}" proposal \
-     --protocol "{{ campaign.model }}" \
-     --draft "{{ proposal_draft }}" --output "{{ output_dir }}/proposal.json"
-   Fix reported errors and rerun. Then implement the generator from that
-   proposal. Do not edit proposal.json after validation.
-{% else %}
 The fuzzer copied the accepted coverage proposal to {{ proposal }}. It is
-frozen: do not edit it or regenerate it. Implement its trace exactly and keep
-each step's constraints in mind when building and checking the interaction.
-{% endif %}
+frozen: do not edit it or regenerate it. Two things must be finished:
+
+1. baseline: implement every handler so the requested trace can run;
+2. audit: for each model step, inspect the helper functions that handler calls
+   and list the values it actually encodes. Decide which of them can be driven
+   from `params` beyond the proposal's `mutable_fields`. Record the outcome in
+   that step's `reason`, even when there is nothing to add.
+
+Keep each step's constraints in mind when building and checking the interaction.
 
 ## Use the provided deployment facts
 
@@ -309,6 +296,19 @@ share helpers and case-local connection state via ctx; create resources inside
 the worker and clean them up in handlers. Do not perform another trace step's
 message exchange as an implicit substitute for its handler.
 
+After a handler runs correctly, audit it before moving on:
+
+- list the values the handler, and the helpers it calls, actually write into the
+  message: fixed constants, values derived from earlier state, and values read
+  from this instance's params;
+- for anything the proposal does not declare, decide whether an override entry
+  already exists (`params.<field>`), whether one can be added cheaply, and what
+  omission would mean (fall back to the baseline vs. leave the field out);
+- judge once per model step, not per instance: the same handler serves every
+  instance of that step, including copies Rust creates later;
+- put the conclusion in the step's `reason`: what you inspected, which candidates
+  you rejected and why, or why there was no candidate.
+
 Implement every handler in generator.py; put reusable helpers in
 WORKSPACE/lib, including protocol-specific codecs, record framing, crypto,
 and message construction. The example above only
@@ -340,7 +340,7 @@ contact the SUT during import. Import SDKs with possible thread/service side
 effects inside the initializer or handlers. Create case resources there; the
 runtime closes ctx-managed resources after dispatch. No resources or state should need to survive worker exit.
 
-Only generator.py and params.schema.json are published into the request's
+generator.py, params.json and params.schema.json are published into the request's
 published directory. generator.py may import shared helpers under
 WORKSPACE/lib, including protocol-specific helpers; that campaign-scoped directory remains a runtime dependency for
 replay. Keep task-specific mock implementations, handlers, and SDK glue in
@@ -459,6 +459,48 @@ wire content back to fixed valid values.
   `boolean` to `type="boolean"`, `list` to `type="array"`, and `map` to
   `type="object"`. The validator
   implements only a basic subset; Rust does not enforce it for mutated values.
+- mutable_fields.json: required on every successful delivery. Root object with
+  `session`, `request_id`, and `steps`. Each entry has `step` (exact model step
+  name), `reason` (required), and `fields`.
+
+  | key | meaning |
+  | --- | --- |
+  | `step` | exact model step name from the proposal trace |
+  | `reason` | what you audited and concluded for that step, in 1–3 sentences |
+  | `fields` | every field that step's instances may carry |
+
+  Each field has:
+
+  | key | meaning |
+  | --- | --- |
+  | `field` | member name inside the instance params object |
+  | `origin` | `analyzed` for a proposal field, `adhoc` for one you added |
+  | `kind` | `string`, `bytes`, `integer`, `boolean`, `list`, or `map` |
+  | `encoding` | `hex` or `base64` for bytes fields, otherwise omitted |
+  | `default` | `baseline`, `fixed`, `derived`, or `prior_state` |
+  | `override_rule` | `encoded`, `fixed`, `derived`, or `rejected` |
+  | `omit` | whether the encoder can leave the field out entirely |
+  | `sample` | one value of the declared kind that the encoder accepts |
+  | `verified` | true after the checks below |
+  | `verification` | one sentence saying how you checked it |
+
+  `reason` must state the helper or entry you inspected, whether any candidate
+  existed beyond the proposal, and for each rejected candidate its name and why
+  (fixed constant, derived from prior state, no override path, too invasive to
+  expose). When there is no candidate, say so explicitly.
+
+  `verified` has two independent parts: override, where a changed value changes
+  the encoded message (required for every declared field); and omission, where
+  the field disappears from the message (required only when `omit` is true). Run
+  the encoder with the baseline value and with `sample` and compare the bytes
+  your handler sends; when a step only sends to the peer you can do this with a
+  local listening socket, otherwise explain the check you performed.
+
+  List every analyzed field the proposal declares for that step, plus every
+  adhoc field you expose. Do not add a field to params.json that the manifest
+  omits. params.json stays keyed by step instance name because that is what the
+  runtime passes to handlers; the manifest is keyed by model step, and Rust maps
+  the declared fields onto every instance of that step.
 - result.json: final completion signal. It is read immediately when it appears.
   Echo the exact IDs below; added_steps must be an array of strings, even if empty.
 
@@ -480,8 +522,12 @@ Failure result (replace error with a specific, actionable explanation):
 # Check and publish
 
 Check step-to-code correspondence, role ownership, prerequisite conditions/field
-reuse, endpoint feasibility, bounded I/O, and cleanup. Use the fixed validator
-documented by the skill instead of writing ad hoc syntax/schema/parameter checks.
+reuse, endpoint feasibility, bounded I/O, cleanup, and that every model step in
+the manifest has a `reason`. Use the fixed validator documented by the skill
+instead of writing ad hoc syntax/schema/parameter checks. The validator checks
+syntax, schema, parameters, and imports; it does not prove that a declared field
+reaches the wire. That is what the audit recorded in `reason` and `verified`
+covers.
 Complete the three artifacts and write the success JSON to result.draft.json,
 then run this exact command with the campaign Python:
 

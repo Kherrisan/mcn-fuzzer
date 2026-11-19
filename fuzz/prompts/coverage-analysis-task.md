@@ -61,13 +61,14 @@ enabled when choosing the primary target.
 ## Registered proposals
 
 The campaign-introspection MCP service is read-only. Start this request by
-calling `list_proposals`. Then call `get_proposal` with `summary_only: true` for the execution feedback
+calling `list_proposals`. Then call `get_proposal_stats` with `summary_only: true` for the execution feedback
 you need. Request the full proposal when you need to compare its trace.
-Read `generator.py` and the params file only when `get_proposal` returns those
+Read `generator.py` and the params file only when `get_proposal_stats` returns those
 paths, and use the file tools on bounded ranges. Use `SUT_STDOUT_LOG` and
 `SUT_STDERR_LOG` the same way. Do not scan the analysis directory for historical
 `proposal.json` or `result.json` files, and do not modify an older proposal,
 generator, or params file.
+Use `get_proposal_generator_stats` with the proposal ID for live step and dependency counts specific to its published generator.
 
 Introspection counts are live and can lag this frozen snapshot. Decide coverage
 from the loaded snapshot and the replay logs. Use introspection for proposal

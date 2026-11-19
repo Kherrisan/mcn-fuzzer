@@ -203,7 +203,7 @@ impl StepStats {
     /// `observable` is false for generators without step handlers or when the
     /// progress file was missing, so their runs are reported separately instead
     /// of being treated as failures.
-    pub fn record_successes(&mut self, trace: &TraceView, succeeded: &BTreeSet<usize>, observable: bool) {
+    pub fn record_successes(&mut self, trace: &TraceView, succeeded: &BTreeSet<usize>, observable: bool) -> bool {
         // A legacy generator reports its own internal step names instead of
         // model steps. Those runs cannot be attributed to the model, so they are
         // counted as unobservable rather than as failures or successes.
@@ -211,13 +211,16 @@ impl StepStats {
             .steps
             .iter()
             .any(|(_, _, step)| self.model.iter().any(|row| &row.step == step));
-        if observable && matches_model {
+        let observable = observable && matches_model;
+        self.record_observed_successes(trace, succeeded, observable);
+        observable
+    }
+
+    pub(super) fn record_observed_successes(&mut self, trace: &TraceView, succeeded: &BTreeSet<usize>, observable: bool) {
+        if observable {
             self.observable_runs += 1;
         } else {
             self.unobservable_runs += 1;
-            return;
-        }
-        if succeeded.is_empty() && !observable {
             return;
         }
         for (index, _, step) in &trace.steps {
@@ -257,6 +260,20 @@ impl StepStats {
             row_count(&mut row.present_cnt, &mut row.exec_cnt, &mut row.succ_cnt, slot);
         }
         self.dependencies.entry(key).or_default()[slot] += 1;
+    }
+
+    /// Project sparse generator counters onto the shared protocol model.
+    pub(super) fn generator_rows(&self, model: &Self) -> (Vec<StepEntry>, Vec<DependencyEntry>) {
+        let steps = model.steps().iter().filter_map(|row| {
+            let &[present_cnt, exec_cnt, succ_cnt] = self.steps.get(&row.step)?;
+            Some(StepEntry { present_cnt, exec_cnt, succ_cnt, ..row.clone() })
+        }).collect();
+        let edges = model.edges().iter().filter_map(|row| {
+            let key = dependency_key(&row.prior_step, &row.dependent_step, &row.condition, &row.fields);
+            let &[present_cnt, exec_cnt, succ_cnt] = self.dependencies.get(&key)?;
+            Some(DependencyEntry { present_cnt, exec_cnt, succ_cnt, ..row.clone() })
+        }).collect();
+        (steps, edges)
     }
 
     pub fn steps(&self) -> &[StepEntry] {

@@ -233,14 +233,16 @@ Every later successful request writes four files in its own OUTPUT_DIR:
 | generator.py | Complete importable module with a synchronous `@step_handler("model step name")` function accepting `(ctx, params)` for each selected step name, and optionally one `@global_init` function with the same signature. Runtime dispatches the trace and exposes the current instance as `ctx.step_instance` and its name as `ctx.step_name`. |
 | params.schema.json | Root object schema whose properties are per-instance objects describing that instance's mutable fields; Rust mutates final values and does not revalidate it. |
 | params.json | Initial per-instance mutable-field defaults, keyed by step instance name (strings, signed 64-bit integers, booleans, or nested lists). Rust mutates them and passes the nested map read-only to generator handlers. |
+| mutable_fields.json | Per-model-step field declaration with a required `reason` recording the field audit. Written for every successful request, including when no field beyond the proposal is added. The request prompt defines the format and workflow. |
 | result.json | Completion signal with the exact request_id, status="ok", and added_steps as an array of strings. Publish last by atomic rename. |
 
 Each generation task provides exact success/failure JSON examples. On failure,
 publish matching IDs, a non-ok status, and a specific error in result.json.
 A conversational answer alone is not a completion signal.
 
-Only generator.py and params.schema.json are copied to the published generator
-directory. generator.py may import shared helpers under WORKSPACE/lib,
+generator.py, params.schema.json, params.json, and mutable_fields.json are
+published together into the request's published directory. generator.py may
+import shared helpers under WORKSPACE/lib,
 including protocol-specific codec, record, and crypto helpers;
 that directory is campaign-scoped and remains a runtime dependency for replay.
 The script must not depend on the proposal, params.json, another request's

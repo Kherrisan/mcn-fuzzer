@@ -303,7 +303,7 @@ fn prompts_share_a_template_and_name_the_sut_owner() {
             assert!(!context.model().protocol_name.is_empty());
             assert!(trace.steps.iter().all(|step| !step.name.is_empty()));
             let generation = context
-                .generation_prompt(&dir.join("request"), "req", "sess", "", None, false)
+                .generation_prompt(&dir.join("request"), "req", "sess", "", None)
                 .unwrap();
             let skill = context.generator_skill();
             assert!(skill.is_absolute());
@@ -499,7 +499,15 @@ fn validator_rejects_bad_artifacts_and_accepts_the_production_subset() {
         br#"{"request_id":"r","protocol_id":"p","trace_id":"t","status":"ok","added_steps":[]}"#,
     )
     .unwrap();
-    let error = crate::engine::synthesis::validate_generator_artifacts(&dir, "r").unwrap_err();
+    let validate = || crate::engine::synthesis::accept_artifacts(&dir, "r", |_, params, _manifest, generator| {
+        Ok(crate::engine::synthesis::ValidatedGenerator {
+            input: crate::engine::input::GeneratorInput::new(generator, params),
+            origin: crate::engine::synthesis::TraceOrigin {
+                request_id: "r".into(), session: String::new(), step_names: vec![], added_steps: vec![],
+            },
+        })
+    });
+    let error = validate().unwrap_err();
     assert!(error.contains("$ref"), "{error}");
     fs::write(
         dir.join("params.schema.json"),
@@ -507,7 +515,7 @@ fn validator_rejects_bad_artifacts_and_accepts_the_production_subset() {
     )
     .unwrap();
     fs::write(dir.join("result.json"), br#"{"request_id":"other","protocol_id":"p","trace_id":"t","status":"ok","added_steps":[]}"#).unwrap();
-    let error = crate::engine::synthesis::validate_generator_artifacts(&dir, "r").unwrap_err();
+    let error = validate().unwrap_err();
     assert!(error.contains("does not match"), "{error}");
     fs::write(
         dir.join("result.json"),
@@ -515,9 +523,9 @@ fn validator_rejects_bad_artifacts_and_accepts_the_production_subset() {
     )
     .unwrap();
     fs::write(dir.join("params.json"), br#"{"greet":{"scenario":1}}"#).unwrap();
-    assert!(crate::engine::synthesis::validate_generator_artifacts(&dir, "r").is_err());
+    assert!(validate().is_err());
     fs::write(dir.join("params.json"), br#"{"greet":{"scenario":"login-quit"}}"#).unwrap();
-    let validated = crate::engine::synthesis::validate_generator_artifacts(&dir, "r").unwrap();
+    let validated = validate().unwrap();
     assert!(validated.input.generator.ends_with("generator.py"));
     assert_eq!(validated.origin.request_id, "r");
     let _ = fs::remove_dir_all(&dir);

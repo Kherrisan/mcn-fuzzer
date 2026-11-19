@@ -91,13 +91,14 @@ The coverage-analysis service answers protocol and handler queries. Useful calls
 Do not parse `protocol.json` with scripts or file tools and do not enumerate
 the tool catalogue; use these calls and keep results bounded.
 
-The campaign-introspection service is read-only and separate. Its tools are
-`list_proposals`, `get_proposal`, and `resolve_bitmap_indices`. Counts are live
+The campaign-introspection service is read-only and separate. For proposal history, use
+`list_proposals`, `get_proposal_stats`, and `resolve_bitmap_indices`. Counts are live
 campaign statistics, not a frozen coverage snapshot. `list_proposals` pages
-registered proposals. `get_proposal` returns one proposal, its generator paths,
+registered proposals. `get_proposal_stats` returns one proposal, its generator paths,
 and paged feedback indexes. `resolve_bitmap_indices` maps those indexes to a
 source file, line, and function. `column` is always null. A resolved location
 is the feedback site, not new source-line coverage.
+Use `get_proposal_generator_stats` with the proposal ID for live step and dependency counts specific to its published generator.
 
 Call `get_loaded_state`, load the protocol model if needed, then call
 `get_protocol_steps` and `list_proposals` before building the mapping. `list_proposals` may be empty;

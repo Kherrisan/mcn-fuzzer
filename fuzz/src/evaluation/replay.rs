@@ -56,29 +56,34 @@ pub fn validate_task(task: &mut Task) -> Result<(), (String, String)> {
             _ => {}
         }
     }
-    let validated =
-        crate::engine::synthesis::validate_generator_artifacts(&dir, &task.request_id)
-            .map_err(classify_validation)?;
-    let proposal =
-        crate::coverage::proposal::Proposal::read(&task.prepared().join("proposal.json"))
-            .map_err(|error| ("invalid_artifact".to_string(), error))?;
-    let input = crate::engine::synthesis::build_generator_input(
-        &proposal,
-        validated.input.generator.clone(),
-        validated.input.params.clone(),
-    )
-    .map_err(|error| ("invalid_artifact".to_string(), error))?;
+    let proposal = crate::coverage::proposal::Proposal::read(&task.prepared().join("proposal.json"))
+        .map_err(|error| ("invalid_artifact".to_string(), error))?;
+    let validated = crate::engine::synthesis::accept_artifacts(&dir, &task.request_id, |_, params, manifest, generator| {
+        let origins = match manifest {
+            Some(manifest) => {
+                manifest.check(&proposal, &params, &task.request_id)?;
+                manifest.origins()
+            }
+            None => std::collections::BTreeMap::new(),
+        };
+        let mut input = crate::engine::synthesis::build_generator_input(&proposal, generator, params)?;
+        input.field_origin = origins;
+        Ok(crate::engine::synthesis::ValidatedGenerator {
+            input, origin: TraceOrigin {
+                request_id: task.request_id.clone(), session: proposal.session.clone(),
+                step_names: proposal.trace.iter().map(|step| step.name.clone()).collect(),
+                added_steps: Vec::new(),
+            },
+        })
+    }).map_err(classify_validation)?;
+    let input = validated.input;
     let stored = json!({
         "generator": input.generator,
         "step_trace": input.trace.steps,
         "dependencies": input.trace.dependencies,
         "params": params_json(&input.params)?,
-        "origin": TraceOrigin {
-            request_id: task.request_id.clone(),
-            session: proposal.session,
-            step_names: proposal.trace.iter().map(|step| step.name.clone()).collect(),
-            added_steps: Vec::<String>::new(),
-        },
+        "field_origin": input.field_origin,
+        "origin": validated.origin,
     });
     fs::write(
         dir.join("input.json"),

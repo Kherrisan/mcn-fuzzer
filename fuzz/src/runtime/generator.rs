@@ -193,13 +193,17 @@ impl GeneratorClient {
                 "generator request exceeds 1 MiB".to_string(),
             ));
         }
+        let pending = self.send_body(&body).inspect_err(|error| {
+            log::warn!("generator run send failed: request_id={request} worker_id={worker_id} case_id={case_id} error={error}");
+        })?;
+        log::debug!("generator run submitted: request_id={request} worker_id={worker_id} case_id={case_id} server_pid={}", self.server_pid());
         self.inflight = Some(Inflight {
             id: ResponseId {
                 request,
                 worker: worker_id,
                 case: case_id,
             },
-            pending: self.send_body(&body)?,
+            pending,
             saw_started: false,
         });
         Ok(())
@@ -238,6 +242,9 @@ impl GeneratorClient {
             case: wire.case_id,
         };
         let open = self.inflight.as_ref().map(|item| item.id);
+        if let Some(error) = &wire.error {
+            log::warn!("generator IPC error reply: open={open:?} received={got:?} error={error:?}");
+        }
         match response_disposition(open, got, false, &[]) {
             ResponseDisposition::Accept => {}
             ResponseDisposition::Drain | ResponseDisposition::Reject => {
@@ -266,6 +273,7 @@ impl GeneratorClient {
                     )));
                 }
                 flight.saw_started = true;
+                log::debug!("generator Started received: request_id={} worker_id={} case_id={} worker_pid={pid}", got.request, got.worker, got.case);
                 Ok(Some(GeneratorUpdate::Started { pid: pid as i32 }))
             }
             Some("result") => {
@@ -505,6 +513,16 @@ impl GeneratorClient {
         Ok(())
     }
 
+    /// Capture IPC context before timeout cleanup retires the server or drains the request.
+    pub(crate) fn log_startup_timeout(&self, worker: u64, case: u64, missing_sut: bool, missing_generator: bool) {
+        log::warn!(
+            "startup timeout: worker_id={worker} case_id={case} request_id={:?} server_pid={} missing_sut_pid={missing_sut} missing_generator_pid={missing_generator} generator_log={}",
+            self.inflight.as_ref().map(|flight| flight.id.request),
+            self.server_pid(),
+            self.log_path.display(),
+        );
+    }
+
     /// Process id of the resident `generator_server`. The template is a child of this pid.
     pub fn server_pid(&self) -> u32 {
         self.child.id()
@@ -538,6 +556,8 @@ impl Drop for GeneratorClient {
 #[derive(Deserialize)]
 struct WireMessage {
     id: u64,
+    #[serde(default)]
+    error: Option<String>,
     #[serde(default)]
     kind: Option<String>,
     #[serde(default)]

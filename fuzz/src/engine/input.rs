@@ -70,6 +70,20 @@ pub type InstanceFields = BTreeMap<String, ParamValue>;
 /// Per-instance mutable values: step instance name to its fields.
 pub type InstanceParams = BTreeMap<String, InstanceFields>;
 
+/// Where a mutable field came from.
+///
+/// `Analyzed` fields are the ones a coverage proposal declared; `Adhoc` fields
+/// were found while the synthesis agent implemented the generator. Inputs
+/// without this map (legacy generators, seeds, old corpus entries) treat every
+/// parameter as analyzed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum FieldOrigin {
+    #[default]
+    Analyzed,
+    Adhoc,
+}
+
 /// zlib bytes waiting to be written beside a saved input. Not part of the seed.
 #[derive(Clone, Debug)]
 pub struct PendingCapture {
@@ -224,6 +238,11 @@ pub struct GeneratorInput {
     /// Each value alone decides how mutation treats it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: InstanceParams,
+    /// Field provenance keyed by model step, so a copied or renamed instance
+    /// keeps its capabilities and corpus reload preserves the mutation phases.
+    /// Missing entries are treated as analyzed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub field_origin: BTreeMap<String, BTreeMap<String, FieldOrigin>>,
     /// Runtime capture export. Skipped by JSON, hashing, equality, and mutation.
     #[serde(skip)]
     pending: Option<PendingCapture>,
@@ -237,6 +256,8 @@ struct GeneratorFile {
     trace: TraceInstance,
     #[serde(default)]
     params: InstanceParams,
+    #[serde(default)]
+    field_origin: BTreeMap<String, BTreeMap<String, FieldOrigin>>,
 }
 
 impl GeneratorInput {
@@ -246,6 +267,7 @@ impl GeneratorInput {
             generator,
             trace: TraceInstance::default(),
             params,
+            field_origin: BTreeMap::new(),
             pending: None,
         }
     }
@@ -263,6 +285,7 @@ impl GeneratorInput {
                 ..TraceInstance::default()
             },
             params,
+            field_origin: BTreeMap::new(),
             pending: None,
         }
     }
@@ -516,6 +539,7 @@ impl Input for GeneratorInput {
             generator,
             trace: parsed.trace,
             params: parsed.params,
+            field_origin: parsed.field_origin,
             pending: None,
         })
     }

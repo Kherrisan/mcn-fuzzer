@@ -86,31 +86,38 @@ fn write_request(
     fs::write(dir.join("result.json"), result.to_string()).unwrap();
 }
 
-fn request(dir: PathBuf, id: &str, autonomous: bool) -> GeneratorRequest {
+fn request(dir: PathBuf, id: &str) -> GeneratorRequest {
     GeneratorRequest {
         id: id.to_string(),
         output_dir: dir,
         session: "s".into(),
-        autonomous,
     }
 }
 
 #[test]
-fn autonomous_request_accepts_its_own_proposal_without_a_receipt() {
+fn coverage_request_publishes_artifact_bundle() {
     let (model, _binding, dir) = fixture();
-    write_request(&dir, &model, "s", "r1", "autonomous");
-    let request = request(dir.clone(), "r1", true);
+    write_request(&dir, &model, "s", "r1", "coverage");
+    let request = request(dir.clone(), "r1");
+    let draft = dir.join("proposal.json");
+    let valid = fs::read(&draft).unwrap();
+    let mut invalid: serde_json::Value = serde_json::from_slice(&valid).unwrap();
+    invalid["origin"] = json!("autonomous");
+    fs::write(&draft, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    assert!(request.accept().unwrap_err().contains("coverage proposal"));
+    assert!(!dir.join("published").exists());
+    fs::write(draft, valid).unwrap();
     let validated = request.accept().unwrap();
     assert_eq!(validated.origin.step_names, vec!["hello".to_string()]);
     assert_eq!(validated.origin.request_id, "r1");
     assert!(dir.join("published/generator.py").is_file());
-    assert!(!dir.join("receipt.json").exists());
+    assert!(dir.join("published/params.json").is_file());
 }
 
 #[test]
 fn dependency_state_keys_become_instance_inputs() {
     let (model, _binding, dir) = fixture();
-    write_request(&dir, &model, "s", "r1", "autonomous");
+    write_request(&dir, &model, "s", "r1", "coverage");
     let path = dir.join("proposal.json");
     let mut proposal: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -121,7 +128,7 @@ fn dependency_state_keys_become_instance_inputs() {
         "prior": "hello", "dependent": "hello_2", "kind": "data", "fields": ["token"]
     }]);
     fs::write(&path, serde_json::to_vec(&proposal).unwrap()).unwrap();
-    let validated = request(dir, "r1", true).accept().unwrap();
+    let validated = request(dir, "r1").accept().unwrap();
     assert_eq!(
         validated.input.trace.steps[1].inputs["token"],
         "hello.token"
@@ -132,7 +139,7 @@ fn dependency_state_keys_become_instance_inputs() {
 #[test]
 fn accepted_input_carries_step_trace_and_mutable_field_defaults() {
     let (model, _binding, dir) = fixture();
-    write_request(&dir, &model, "s", "r1", "autonomous");
+    write_request(&dir, &model, "s", "r1", "coverage");
     let mut proposal: crate::coverage::proposal::Proposal =
         serde_json::from_slice(&fs::read(dir.join("proposal.json")).unwrap()).unwrap();
     proposal.trace[0]
@@ -161,7 +168,7 @@ fn accepted_input_carries_step_trace_and_mutable_field_defaults() {
         r#"{"hello":{"username":"ubuntu"}}"#,
     )
     .unwrap();
-    let request = request(dir.clone(), "r1", true);
+    let request = request(dir.clone(), "r1");
     let validated = request.accept().unwrap();
     assert_eq!(validated.input.trace.steps.len(), 1);
     assert_eq!(
@@ -171,10 +178,87 @@ fn accepted_input_carries_step_trace_and_mutable_field_defaults() {
 }
 
 #[test]
+fn manifest_publishes_adhoc_fields_and_failed_validation_leaves_no_output() {
+    let (model, _binding, dir) = fixture();
+    write_request(&dir, &model, "s", "r1", "coverage");
+    let mut proposal: crate::coverage::proposal::Proposal =
+        serde_json::from_slice(&fs::read(dir.join("proposal.json")).unwrap()).unwrap();
+    proposal.trace[0]
+        .mutable_fields
+        .push(crate::coverage::proposal::MutableField {
+            field: "username".into(),
+            kind: crate::engine::input::FieldKind::String,
+            encoding: None,
+            default: None,
+            suggestion: None,
+            evidence: None,
+            source: "proposal".into(),
+        });
+    fs::write(
+        dir.join("proposal.json"),
+        serde_json::to_vec_pretty(&proposal).unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("params.schema.json"),
+        r#"{"type":"object","additionalProperties":false,"properties":{"hello":{"type":"object","additionalProperties":false,"properties":{"username":{"type":"string"},"greeting":{"type":"string"}}}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("params.json"),
+        r#"{"hello":{"username":"ubuntu","greeting":"HELO"}}"#,
+    )
+    .unwrap();
+    let manifest = json!({
+        "session": "s",
+        "request_id": "r1",
+        "steps": [{"step": "hello",
+                   "reason": "handler reads username; greeting added and verified",
+                   "fields": [
+            {"field": "username", "origin": "analyzed", "kind": "string",
+             "default": "baseline", "override_rule": "encoded", "omit": true},
+            {"field": "greeting", "origin": "adhoc", "kind": "string",
+             "default": "fixed", "override_rule": "encoded", "omit": true,
+             "sample": "HELO", "verified": true, "verification": "local socket"}
+        ]}]
+    });
+    fs::write(dir.join("mutable_fields.json"), manifest.to_string()).unwrap();
+
+    let validated = request(dir.clone(), "r1").accept().unwrap();
+    assert_eq!(
+        validated.input.field_origin["hello"]["greeting"],
+        crate::engine::input::FieldOrigin::Adhoc
+    );
+    assert!(dir.join("published/mutable_fields.json").is_file());
+
+    // A manifest that leaves an adhoc field unverified must not publish.
+    let dir2 = dir.join("second");
+    fs::create_dir_all(&dir2).unwrap();
+    write_request(&dir2, &model, "s", "r2", "coverage");
+    for file in ["proposal.json", "params.schema.json", "params.json"] {
+        fs::copy(dir.join(file), dir2.join(file)).unwrap();
+    }
+    let mut bad = manifest.clone();
+    bad["request_id"] = json!("r2");
+    bad["steps"][0]["fields"][1]["verified"] = json!(false);
+    fs::write(dir2.join("mutable_fields.json"), bad.to_string()).unwrap();
+    let error = request(dir2.clone(), "r2").accept().unwrap_err();
+    assert!(error.contains("capability check"), "{error}");
+    assert!(!dir2.join("published").exists());
+    let leftovers: Vec<_> = fs::read_dir(&dir2)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with(".publishing-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+#[test]
 fn coverage_request_rejects_a_different_request() {
     let (model, _binding, dir) = fixture();
     write_request(&dir, &model, "s", "analysis-1", "coverage");
-    let request = request(dir.clone(), "synth-1", false);
+    let request = request(dir.clone(), "synth-1");
     let error = request.accept().unwrap_err();
     assert!(error.contains("request_id"), "{error}");
 }
@@ -188,7 +272,7 @@ fn coverage_proposal_keeps_its_analysis_request_identity() {
         json!({"request_id": "analysis-1", "status": "ok", "added_steps": []}).to_string(),
     )
     .unwrap();
-    let request = request(dir.clone(), "analysis-1", false);
+    let request = request(dir.clone(), "analysis-1");
     let validated = request.accept().unwrap();
     assert_eq!(validated.origin.request_id, "analysis-1");
     assert_eq!(validated.origin.step_names, vec!["hello".to_string()]);
@@ -245,49 +329,4 @@ fn init_timeout_count_is_per_stage_and_only_the_third_is_fatal() {
     }
     second.consume_init_timeout(init_timeout()).unwrap();
     assert_eq!(second.init_timeouts, 1);
-}
-
-#[test]
-fn bootstrap_propagates_analysis_failure_while_waiting_for_synthesis() {
-    let (_, _, dir) = fixture();
-    let mut stage = timeout_stage();
-    stage.enabled = true;
-    stage.output = dir.clone();
-    let error = stage
-        .wait_initialized(&mut || {
-            Err(libafl::Error::unknown(
-                "coverage analysis initialization timed out 3 times",
-            ))
-        })
-        .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("coverage analysis initialization timed out 3 times"));
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn bootstrap_times_out_on_the_third_notification_without_sending_init_again() {
-    let (_, _, dir) = fixture();
-    let mut stage = timeout_stage();
-    stage.enabled = true;
-    stage.output = dir.clone();
-    let (commands, requests) = std::sync::mpsc::channel();
-    let (outcomes, receiver) = std::sync::mpsc::channel();
-    stage.worker = Some(crate::agents::AgentClient::from_channels(
-        commands, receiver,
-    ));
-    for _ in 0..3 {
-        outcomes
-            .send(super::Outcome::InitTimedOut(init_timeout()))
-            .unwrap();
-    }
-    let error = stage.wait_initialized(&mut || Ok(())).unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("synthesis initialization timed out 3 times"));
-    assert_eq!(stage.init_timeouts, 3);
-    assert!(requests.try_recv().is_err(), "must not send another init");
-    stage.shutdown();
-    fs::remove_dir_all(dir).unwrap();
 }

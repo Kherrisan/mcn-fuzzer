@@ -12,7 +12,7 @@ from rsc.artifacts import read_json
 from rsc.schemas import resolve_schemas_dir, validate_instance, validator
 
 from .contract import COLLECTIONS, DEFINITIONS, protocol_schema
-from .references import reference_errors
+from .references import reference_issues
 
 
 def issue(description, objects=()):
@@ -77,7 +77,9 @@ def prune_invalid(
     return model, issues
 
 
-def validate_protocol(model: dict, documents: dict[str, dict], schemas_dir=None) -> list[str]:
+def validate_protocol(
+    model: dict, documents: dict[str, dict], schemas_dir=None, *, diagnostics=None
+) -> list[str]:
     errors = validate_instance(Draft202012Validator(protocol_schema(schemas_dir)), model)
     if errors:
         return errors
@@ -109,7 +111,10 @@ def validate_protocol(model: dict, documents: dict[str, dict], schemas_dir=None)
             for kind in COLLECTIONS
             for index, value in enumerate(model.get(kind, []))
         }
-        errors.extend(reference_errors(records))
+        for issue in reference_issues(records):
+            errors.append(issue["description"])
+            if diagnostics is not None:
+                diagnostics.append(issue)
     if model["meta"]["complete"] and model["unresolved"]:
         errors.append("complete model cannot contain unresolved issues")
     if not any(model.get(key) for key in COLLECTIONS):

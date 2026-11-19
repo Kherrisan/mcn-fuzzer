@@ -32,17 +32,19 @@ fixed + input + max(input, 40000) + 20000 <= 0.75 * context
 cover every accepted parser file. `merge-budget.json` records the decision. Over-budget
 runs fail explicitly, preserve parser results, and do not start a merger or publish.
 
-## Five MCP tools
+## MCP tools
 
 | Tool | Purpose |
 | --- | --- |
 | `read_source_batches(batch_ids, max_tokens)` | Read complete source ranges; follow `remaining`. |
 | `query_model(view, kind, name, references, cursor, max_tokens)` | Read complete or indexed input records; follow `next_cursor`. Names are scoped by `input_file`. |
-| `submit_parse_result(path)` | Save the parser's whole accumulated checkpoint. |
-| `submit_model_result(path)` | Save a complete merged or fixed candidate. |
-| `submit_review_result(path)` | Save independent review findings and declared source coverage. |
+| `submit_parsed_model(path)` | Save the parser's whole accumulated checkpoint. |
+| `submit_merged_model(path)` | Save a complete merged candidate. |
+| `submit_model_patch(path)` | Apply a Fix patch to the frozen candidate and save the full result. |
+| `validate_model(path)` | Validate the current Parse, Merge, or Fix submission without accepting it. |
+| `submit_review(path)` | Save independent review findings and declared source coverage. |
 
-A stable five-tool catalog supports native clients that cache schemas. Calls still enforce
+A stable seven-tool catalog supports native clients that cache schemas. Calls still enforce
 assignment, role and phase. Coordinator operations use a separate private credential and
 are not agent tools. Default/maximum read budgets are 24000/30000 tokens. Responses keep
 complete records and source batches; an oversized record produces an explicit budget error.
@@ -89,8 +91,8 @@ Schema, evidence, names, references, endpoint roles and field relations are chec
 semantic review. Deterministic errors in a complete single-parser, Merge or Fix submission
 are returned immediately for correction in the same turn, without consuming feedback rounds.
 Semantic findings become Fix assignments. The single parser,
-or the merger for multi-parser runs, owns Fix and resumes its native session. Fix always
-submits a complete candidate; it cannot close reviewer findings itself.
+or the merger for multi-parser runs, owns Fix and resumes its native session. Fix submits a
+model patch. The reviewer decides which findings to close.
 
 The independent reviewer reads the frozen candidate and every assigned source range. Shell
 reads and MCP reads are both valid. Review coverage is a declaration, not a tool receipt or
@@ -104,12 +106,13 @@ proof that an agent understood the text. Review files have this shape:
     "description": "Explain the source-backed issue and correction needed",
     "batch_ids": ["batch-00001"],
     "global": false
-  }]
+  }],
+  "resolutions": []
 }
 ```
 
 To checkpoint an unfinished review, add `"complete": false` and list the ranges
-reviewed so far together with all accumulated findings. The same review file is
+reviewed so far together with all accumulated findings and resolutions. The same review file is
 replaced atomically; reviewed coverage cannot shrink. Partial reviews survive
 restart and never authorize publication. Final submission covers all assigned
 ranges and omits `complete` or sets it to `true`.
@@ -117,12 +120,20 @@ ranges and omits `complete` or sets it to `true`.
 Categories are `correctable`, `source_ambiguity` and `external_reference`. Correctable errors
 prevent publication. Genuine source ambiguity or unavailable external references can produce
 `meta.complete:false`; unresolved descriptions retain document/block citations, and immutable
-review files retain structured batch evidence. Empty findings allow complete publication
-only when the candidate has no unclassified unresolved issues.
+review files retain structured batch evidence. RSC assigns each correctable finding a reference
+such as `F1` in the run state. The next reviewer receives open references in `finding_refs`
+and submits one resolution per reference, for example
+`{"finding": "F1", "status": "resolved"}`. Use `status: "open"` for a finding that still
+needs work, with an optional `note`. Report new problems in `findings`. Publication requires
+all tracked findings to be resolved and all candidate unresolved issues to be classified.
 
-Initial review covers the entire source. After Fix, local changes include their evidence,
-original finding ranges and reverse references through steps and dependencies. Role/channel
-definition changes, renames and global findings require full review. Unaffected ambiguity
+Initial review covers the entire source. After Fix, local reviews cover open finding ranges and
+evidence from both snapshots. Scope follows changed processing operations and their affected
+state or message fields. Unchanged input producers provide context, while changed outputs
+propagate through their consumers. The scope file lists each affected object once with its
+reasons. The reviewer receives
+`review_scope_path` pointing to the immutable scope document. Party/channel definition changes
+and findings with unbounded impact require full review. Unaffected ambiguity
 classifications outside a scoped review remain accepted. Uncertain associations conservatively
 fall back to full review. Every accepted Fix undergoes validation and a new independent review.
 The default limit is five feedback rounds; exhaustion with correctable errors fails without
@@ -156,7 +167,7 @@ agents and the service run as the same OS user, so file modes and MCP credential
 prevent an agent's shell from replacing official files or reading another role's token.
 The audit checks file consistency and declared ownership, not cryptographic authorship.
 Enforcing isolation against a malicious same-user agent requires a separate OS identity or
-sandbox outside this workflow; the five-tool API alone does not supply that isolation.
+sandbox outside this workflow; the seven-tool API alone does not supply that isolation.
 
 One service and one supervisor own task-local locks. HC launch intent is saved before launch,
 so recovery looks up the existing named terminal before starting another. Startup and native

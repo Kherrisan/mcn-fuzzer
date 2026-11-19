@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from typing import Any, Optional
 
 import cbor2
@@ -232,6 +233,24 @@ def _identity(request: dict) -> tuple[int, int, int]:
     return request_id, int(worker_id), int(case_id)
 
 
+def _startup_log(stage, request=None, *, pid=None, error=None):
+    # The worker id identifies the fuzzer worker; pid identifies its forked peer.
+    request = request or {}
+    line = (
+        f"generator_startup ts_ms={time.time_ns() // 1_000_000} stage={stage}"
+        f" server_pid={os.getpid()} request_id={request.get('id')}"
+        f" worker_id={request.get('worker_id')} case_id={request.get('case_id')}"
+    )
+    if pid is not None:
+        line += f" worker_pid={pid}"
+    if error is not None:
+        line += f" error={error!r}"
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except OSError:
+        pass
+
+
 def _started_body(request: dict, pid: int) -> bytes:
     request_id, worker_id, case_id = _identity(request)
     return cbor2.dumps(
@@ -289,6 +308,7 @@ def serve(service_name: str) -> None:
         iox2.AllocationStrategy.PowerOfTwo
     )
     server = server_builder.create()
+    _startup_log("server_ready")
     wait = iox2.Duration.from_micros(200)
     worker: Optional[tuple[int, dict, object]] = None
     while True:
@@ -304,20 +324,25 @@ def serve(service_name: str) -> None:
         if active is None:
             try:
                 node.wait(wait)
-            except iox2.NodeWaitFailure:
+            except iox2.NodeWaitFailure as exc:
+                _startup_log("node_wait_failed", error=exc)
                 return
             continue
         raw = _as_bytes(active.payload())
         try:
             request = cbor2.loads(raw) if len(raw) <= MAX_MESSAGE else None
-        except Exception:
+        except Exception as exc:
+            _startup_log("decode_failed", error=exc)
             request = None
         if not isinstance(request, dict):
+            _startup_log("invalid_request", error=f"payload bytes={len(raw)}")
             _reply(active, _response(0, "generator", "request must be a map", 0, 0))
             continue
         op = request.get("op")
         if op == "run":
+            _startup_log("run_received", request)
             if worker is not None:
+                _startup_log("worker_busy", request, pid=worker[0], error=f"active request={_identity(worker[1])}")
                 _reply(
                     active,
                     _response(int(request.get("id", 0)), "generator", "a run is already active", 0, 0),
@@ -327,11 +352,14 @@ def serve(service_name: str) -> None:
             try:
                 pid = fork_worker(raw)
             except Exception as exc:
+                _startup_log("fork_failed", request, error=exc)
                 _reply(active, _response(int(request.get("id", 0)), "generator", str(exc), 0, 0))
                 continue
+            _startup_log("worker_forked", request, pid=pid)
             try:
                 _send(active, _started_body(request, pid))
             except Exception as exc:
+                _startup_log("started_send_failed", request, pid=pid, error=exc)
                 try:
                     os.kill(pid, 9)
                     os.waitpid(pid, 0)
@@ -339,6 +367,7 @@ def serve(service_name: str) -> None:
                     pass
                 _reply(active, _response(int(request.get("id", 0)), "generator", str(exc), 0, 0))
                 continue
+            _startup_log("started_sent", request, pid=pid)
             worker = (pid, request, active)
             continue
         _reply(active, handle_payload(raw))

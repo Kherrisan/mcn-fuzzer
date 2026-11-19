@@ -1,6 +1,6 @@
 //! One generator request and the proposal it must follow.
 
-use std::{fs, path::PathBuf};
+use std::path::PathBuf;
 
 use serde_json::Value;
 
@@ -13,7 +13,6 @@ pub(super) struct GeneratorRequest {
     pub(super) id: String,
     pub(super) output_dir: PathBuf,
     pub(super) session: String,
-    pub(super) autonomous: bool,
 }
 
 /// Production-validated generator. It carries no HC terminal or channel state.
@@ -132,80 +131,63 @@ impl GeneratorRequest {
             &self.session,
             mode,
             proposal.is_file().then_some(proposal.as_path()),
-            self.autonomous,
         )
     }
 
     /// Validate and publish this request's generator artifacts.
     pub(super) fn accept(&self) -> Result<ValidatedGenerator, String> {
-        let (result, params) = super::artifacts::check(&self.output_dir, &self.id)?;
-        let proposal = Proposal::read(&self.output_dir.join("proposal.json"))?;
-        // MCP already validated the proposal. Rust only checks the handoff:
-        // the file belongs to this request and has the right origin.
-        if self.autonomous {
-            if proposal.origin != "autonomous" {
-                return Err("autonomous synthesis needs an autonomous proposal".into());
-            }
-        } else {
+        super::accept_artifacts(&self.output_dir, &self.id, |result, params, manifest, generator| {
+            let proposal = Proposal::read(&self.output_dir.join("proposal.json"))?;
             if proposal.origin != "coverage" {
-                return Err("coverage synthesis needs a coverage proposal".into());
+                return Err("synthesis requires a coverage proposal".into());
             }
-        }
-        let published = self.output_dir.join("published");
-        if published.exists() {
-            return Err("published generator path already exists".to_string());
-        }
-        fs::create_dir_all(&published).map_err(|error| error.to_string())?;
-        fs::copy(
-            self.output_dir.join("generator.py"),
-            published.join("generator.py"),
-        )
-        .map_err(|error| error.to_string())?;
-        fs::copy(
-            self.output_dir.join("params.schema.json"),
-            published.join("params.schema.json"),
-        )
-        .map_err(|error| error.to_string())?;
-        let generator =
-            fs::canonicalize(published.join("generator.py")).map_err(|error| error.to_string())?;
-        for (instance, fields) in &params {
-            let step = proposal
-                .trace
-                .iter()
-                .find(|step| &step.name == instance)
-                .ok_or_else(|| format!("params.json instance {instance} is not in the proposal"))?;
-            for field in fields.keys() {
-                if !step.mutable_fields.iter().any(|item| &item.field == field) {
-                    return Err(format!(
-                        "params.json field {instance}.{field} is not declared mutable"
-                    ));
+            let origins = match manifest {
+                Some(manifest) => {
+                    manifest.check(&proposal, &params, &self.id)?;
+                    manifest.origins()
                 }
-            }
-        }
-        let input = build_generator_input(&proposal, generator, params)?;
-        let added = result
-            .get("added_steps")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
+                None => {
+                    // Legacy generator: every parameter is a proposal field.
+                    for (instance, fields) in &params {
+                        let step = proposal.trace.iter().find(|step| &step.name == instance)
+                            .ok_or_else(|| format!("params.json instance {instance} is not in the proposal"))?;
+                        for field in fields.keys() {
+                            if !step.mutable_fields.iter().any(|item| &item.field == field) {
+                                return Err(format!(
+                                    "params.json field {instance}.{field} is not declared mutable"
+                                ));
+                            }
+                        }
+                    }
+                    std::collections::BTreeMap::new()
+                }
+            };
+            let mut input = build_generator_input(&proposal, generator, params)?;
+            input.field_origin = origins;
+            let added = result
+                .get("added_steps")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            Ok(ValidatedGenerator {
+                input,
+                origin: TraceOrigin {
+                    request_id: self.id.clone(),
+                    session: proposal.session.clone(),
+                    step_names: proposal
+                        .trace
+                        .iter()
+                        .map(|step| step.name.clone())
+                        .collect(),
+                    added_steps: added,
+                },
             })
-            .unwrap_or_default();
-        Ok(ValidatedGenerator {
-            input,
-            origin: TraceOrigin {
-                request_id: self.id.clone(),
-                session: proposal.session.clone(),
-                step_names: proposal
-                    .trace
-                    .iter()
-                    .map(|step| step.name.clone())
-                    .collect(),
-                added_steps: added,
-            },
         })
     }
 }

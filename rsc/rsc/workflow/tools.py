@@ -1,4 +1,4 @@
-"""Five file-oriented tools; scheduling and feedback rounds belong to the service."""
+"""File-oriented tools; scheduling and feedback rounds belong to the service."""
 
 import json
 
@@ -49,17 +49,30 @@ FINDING = obj(
     ["category", "description", "batch_ids", "global"],
 )
 REVIEW = obj(
-    {"reviewed_batches": array(STRING, 1), "findings": array(FINDING),
-     "complete": {"type": "boolean"}},
+    {
+        "reviewed_batches": array(STRING, 1),
+        "findings": array(FINDING),
+        "resolutions": array(
+            obj(
+                {
+                    "finding": STRING,
+                    "status": {"enum": ["open", "resolved"]},
+                    "note": STRING,
+                },
+                ["finding", "status"],
+            )
+        ),
+        "complete": {"type": "boolean"},
+    },
     ["reviewed_batches", "findings"],
 )
 PAGING = {"cursor": INTEGER, "max_tokens": {"type": "integer", "minimum": 1, "maximum": 30000}}
 READ = {"read_source_batches", "query_model"}
 PHASE_TOOLS = {
-    "parse": READ | {"submit_parse_result"},
-    "merge": READ | {"submit_model_result"},
-    "fix": READ | {"submit_model_result"},
-    "review": READ | {"submit_review_result"},
+    "parse": READ | {"submit_parsed_model", "validate_model"},
+    "merge": READ | {"submit_merged_model", "validate_model"},
+    "fix": READ | {"submit_model_patch", "validate_model"},
+    "review": READ | {"submit_review"},
 }
 CONTRACTS = {
     "read_source_batches": (
@@ -81,7 +94,7 @@ CONTRACTS = {
         },
         [],
     ),
-    "submit_parse_result": (
+    "submit_parsed_model": (
         "Submit the path of your complete JSON checkpoint covering processed source ranges. "
         "File shape: "
         "{items:[{kind,value,evidence:[{batch_id,block_id}]}],"
@@ -93,15 +106,33 @@ CONTRACTS = {
         {"path": STRING},
         ["path"],
     ),
-    "submit_model_result": (
-        "Submit the path of a complete merged or fixed checkpoint, same file shape as Parse. "
+    "submit_merged_model": (
+        "Submit the path of a complete merged checkpoint, same file shape as Parse. "
         "Preserve all valid source evidence. Do not submit patches. Write under work/<worker>/.",
         {"path": STRING},
         ["path"],
     ),
-    "submit_review_result": (
+    "submit_model_patch": (
+        "Submit a Fix patch JSON file under work/<worker>/. Shape: "
+        "{base: candidate_path, changes:[{op,kind,match?,value?,evidence?}], unresolved?:[...]}. "
+        "Add uses value/evidence; replace uses match/value/evidence; remove uses match. "
+        "Match by name (also party_name for states), or use the full old value for dependencies. "
+        "Match against the frozen base. Omit unresolved to preserve it.",
+        {"path": STRING},
+        ["path"],
+    ),
+    "validate_model": (
+        "Check a submission JSON file under work/<worker>/ without accepting it. "
+        "Use a parser checkpoint in Parse, a full candidate in Merge, or a patch in Fix. "
+        "Returns valid and errors. Correct errors before submitting through the phase's tool.",
+        {"path": STRING},
+        ["path"],
+    ),
+    "submit_review": (
         "Submit path to {reviewed_batches:[batch "
-        "names],findings:[{category,description,batch_ids,global}]}. "
+        "names],findings:[{category,description,batch_ids,global}],"
+        "resolutions:[{finding,status,note?}]}. For each assigned finding reference, "
+        "submit one resolution (open or resolved) in the final review. "
         "Categories: correctable, source_ambiguity, external_reference. Review "
         "source and frozen model, "
         "never edit the candidate. Findings must identify affected source ranges; "
@@ -114,7 +145,7 @@ CONTRACTS = {
 
 def schema(name):
     description, fields, required = CONTRACTS[name]
-    if name in {"submit_parse_result", "submit_model_result"}:
+    if name in {"submit_parsed_model", "submit_merged_model", "submit_model_patch"}:
         definitions = protocol_schema()["$defs"]
         description += "\nProtocol value shapes: " + "; ".join(
             f"{kind}: {shape(definitions[definition], definitions)}"
@@ -146,12 +177,21 @@ def shape(node, definitions):
     return " | ".join(types) if isinstance(types, list) else types
 
 
+class SubmissionError(ValueError):
+    def __init__(self, errors, prefix="invalid content"):
+        self.errors = errors
+        super().__init__(
+            prefix + ": " + "; ".join(f"{item['path']}: {item['message']}" for item in errors)
+        )
+
+
 def validate_shape(contract, value):
     errors = [
-        f"{e.json_path}: {e.message}" for e in Draft202012Validator(contract).iter_errors(value)
+        {"path": e.json_path, "code": "schema", "message": e.message}
+        for e in Draft202012Validator(contract).iter_errors(value)
     ]
     if errors:
-        raise ValueError("invalid content: " + "; ".join(errors))
+        raise SubmissionError(errors)
 
 
 def validate_arguments(name, arguments):

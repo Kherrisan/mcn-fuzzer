@@ -78,6 +78,11 @@ def audit_run(root):
             "correctable findings remain",
         )
         require(
+            all(f["status"] == "resolved" for f in review.get("resolutions", []))
+            and all(f["status"] == "resolved" for f in w.data.get("tracked_findings", {}).values()),
+            "tracked findings remain open",
+        )
+        require(
             w.checkpoint("candidate.json") == w.checkpoint(final["candidate_path"]),
             "frozen candidate differs",
         )

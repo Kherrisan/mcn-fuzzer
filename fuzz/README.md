@@ -141,14 +141,8 @@ Agent initialization also runs in the background: campaigns with seeds load them
 and mutate while the agent prepares. Each synthesis-stage visit checks readiness;
 while initialization is pending it skips dispatch and retains the trigger for a
 later round. Initialization failures pause synthesis while ordinary fuzzing continues.
-Seedless campaigns wait for initialization and the first synthesis input.
-Before the ordinary fuzzer loop starts, the same mutation stage is invoked
-directly while its FIFO is non-empty. It runs the baseline once through normal
-feedback, then applies the ordinary mutation/evaluation loop until a mutated
-child enters the corpus; the baseline is kept when the evaluator finds it
-interesting. The mutation stage is the only
-consumer of the FIFO, and the normal `synthesis → mutation → coverage replay →
-coverage analysis` order is unchanged once the corpus is schedulable.
+A new campaign needs usable seeds or a previously populated corpus. Pending
+synthesis candidates from an earlier run may also supply the first corpus entry.
 
 Round-based `interval` settings have been removed from `[generator_synthesis]`
 and `[coverage]`; configuring them is an error. Initial and final
@@ -242,6 +236,12 @@ normal feedback, then applies the existing `GeneratorMutator` and ordinary
 mutation iterations/evaluation/feedback. A candidate receives
 `clamp(64 * mutable_fields_total, 512, 2048)` evaluations, where the field total
 sums the per-instance `params` field counts; ordinary corpus rounds keep the `1 + rand(0..127)` schedule.
+When the generator's `mutable_fields.json` declares both groups, the candidate
+budget halves: analyzed fields are offered first, the odd evaluation goes to
+analyzed, and adhoc fields follow. A generator with only one group keeps the full
+budget for it, and a pool that runs dry falls back to every field. Ordinary
+corpus rounds may pick either group. Each mutation event records the field's
+`origin`.
 Skipped or unchanged mutations do not consume the candidate budget. The baseline
 enters the corpus only
 when feedback keeps it. Only mutated inputs that pass normal feedback enter the corpus,
@@ -270,19 +270,27 @@ with the validated `mutable_fields` and a trace projected
 onto generator-owned actions: generator sends keep `receiver` and drop
 `sender`, SUT sends become `recv` with `sender` and no `receiver`, SUT
 listen/connect/close steps are omitted, and generator network actions remain.
-The prompt points at that downstream description instead of a receipt. Coverage
-mode never generates without a proposal. Autonomous mode (analysis disabled, or
-seedless bootstrap) asks the agent to write `proposal.draft.json`, run
-`python -m coverage_analysis.server proposal` to validate named instances, and
-then generate. Both modes publish `generator.py`, `params.schema.json`, `params.json`, and
-`result.json`; Rust validates the proposal, code, and initial mutable-field
-defaults in-process before publishing the generator. The proposal copy handed to
+The prompt points at that downstream description instead of a receipt. Synthesis requires an accepted coverage proposal. The agent writes
+`generator.py`, `params.schema.json`, and `params.json`, optionally with
+`mutable_fields.json` when it exposes fields the proposal did not declare, then
+signals completion with `result.json`. `mutable_fields.json` is keyed by model step, because one handler serves every
+instance of that step and Rust later creates, renames, duplicates, and drops
+instances. Each step lists its fields with `origin` `analyzed` or `adhoc`, the
+declared kind and encoding, the default and override rules, whether omission is
+supported, a sample value, and the agent's own `verified` capability check, plus
+a required `reason` recording what the agent audited: candidates it rejected and
+why, or why there were none. Analyzed fields must equal the proposal's set for
+that step, every instance of the step must carry exactly the declared fields, and
+adhoc fields must be new and verified. Rust
+validates a staged copy before publishing the accepted files with one directory
+rename, so a rejected manifest leaves no `published/` directory or staging
+residue. The proposal copy handed to
 synthesis carries the validated `mutable_fields` and
 its trace projected to the generator perspective; dependencies stay in the proposal and
 are filtered if a dropped SUT setup step was an endpoint. Failed or expired
 proposals are aborted and leave existing corpus entries untouched.
 
-The synthesizer prompts are Markdown MiniJinja templates in `prompts/`. They are embedded in the fuzzer at build time, so rebuild after editing them. Both prompts point the agent at two read-only references: [`python/generator_server/template.py`](python/generator_server/template.py), a detailed scaffold with common imports, `ctx` helpers and one commented step-handler example for each ProfuzzGym target (DAAP, DICOM, DNS, DTLS, BFTPD, LightFTP, ProFTPD, PureFTPD, RTSP, SIP, SMTP, SSH, TLS), and [`python/generator_server/params.schema.json`](python/generator_server/params.schema.json), the empty production-compatible parameter-schema shape. The scaffold is a copy reference, not a runnable generator; only the request's `generator.py` and extended `params.schema.json` are published.
+The synthesizer prompts are Markdown MiniJinja templates in `prompts/`. They are embedded in the fuzzer at build time, so rebuild after editing them. Both prompts point the agent at two read-only references: [`python/generator_server/template.py`](python/generator_server/template.py), a detailed scaffold with common imports, `ctx` helpers and one commented step-handler example for each ProfuzzGym target (DAAP, DICOM, DNS, DTLS, BFTPD, LightFTP, ProFTPD, PureFTPD, RTSP, SIP, SMTP, SSH, TLS), and [`python/generator_server/params.schema.json`](python/generator_server/params.schema.json), the empty production-compatible parameter-schema shape. The scaffold is a copy reference, not a runnable generator; the request's generator, schema, and initial parameters are published together.
 
 RSC protocol objects and references use names. `protocol.json` metadata contains
 only `protocol`, `complete`, and `documents`; each source document has `doc_id`,

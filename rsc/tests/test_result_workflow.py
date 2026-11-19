@@ -9,6 +9,7 @@ from protocol_samples import TEXT, base, interactions
 from rsc.protocol.validate import validate_protocol_file
 from rsc.workflow import Workflow, WorkflowError
 from rsc.workflow.audit import audit_run
+from rsc.workflow.review_scope import changed_rows
 from rsc.workflow.store import atomic_json, read_json
 from rsc.workflow.tools import CONTRACTS
 
@@ -73,11 +74,24 @@ def checkpoint(w, a=None):
 def submit(w, worker, payload, tool=None):
     if tool is None:
         tool = {
-            "parse": "submit_parse_result",
-            "merge": "submit_model_result",
-            "fix": "submit_model_result",
-            "review": "submit_review_result",
+            "parse": "submit_parsed_model",
+            "merge": "submit_merged_model",
+            "fix": "submit_model_patch",
+            "review": "submit_review",
         }[w.data["phase"]]
+    if tool == "submit_model_patch" and "items" in payload:
+        base_path = active(w, "fix")[0]["candidate_path"]
+        original = w.checkpoint(base_path)
+        changes = []
+        for item in changed_rows(original["items"], payload["items"]):
+            kind, val = item["kind"], item["value"]
+            fields = ("name", "party_name") if kind == "states" else ("name",)
+            match = val if kind == "step_dependencies" else {k: val[k] for k in fields}
+            changes.append({"op": "remove", "kind": kind, "match": match})
+        changes.extend(
+            {"op": "add", **item} for item in changed_rows(payload["items"], original["items"])
+        )
+        payload = {"base": base_path, "changes": changes, "unresolved": payload["unresolved"]}
     path = w.root / "work" / worker / "result.json"
     atomic_json(path, payload)
     return call(w, worker, tool, path=str(path))
@@ -109,9 +123,19 @@ def merged(w):
     dispatch(w)
 
 
-def review(w, findings=()):
+def review(w, findings=(), *, status="resolved"):
     a = active(w)[0]
-    return submit(w, a["worker"], {"reviewed_batches": a["batches"], "findings": list(findings)})
+    return submit(
+        w,
+        a["worker"],
+        {
+            "reviewed_batches": a["batches"],
+            "findings": list(findings),
+            "resolutions": [
+                {"finding": ref, "status": status} for ref in a.get("finding_refs", {})
+            ],
+        },
+    )
 
 
 def test_partial_review_survives_restart_and_cannot_publish(tmp_path):
@@ -166,7 +190,7 @@ def test_multi_parser_one_whole_input_merger_independent_review(run):
     review(run)
     assert validate_protocol_file(run.root / "protocol.json") == []
     assert audit_run(run.root)["verified"]
-    assert len(CONTRACTS) == 5
+    assert len(CONTRACTS) == 7
     assert not list(run.root.glob("*.sqlite*"))
     assert not (run.root / "revision-table.json").exists()
 
@@ -210,10 +234,10 @@ def test_atomic_validation_and_content_idempotency(run):
         submit(run, a["worker"], invalid)
     assert not (run.root / a["output_path"]).exists()
     answer = submit(run, a["worker"], payload)
-    assert submit(run, a["worker"], payload, "submit_parse_result") == answer
+    assert submit(run, a["worker"], payload, "submit_parsed_model") == answer
     payload["items"][0]["value"]["description"] += " different"
     with pytest.raises(WorkflowError, match="different content"):
-        submit(run, a["worker"], payload, "submit_parse_result")
+        submit(run, a["worker"], payload, "submit_parsed_model")
 
 
 def test_saved_file_survives_failure_before_state_advancement(run, monkeypatch):
@@ -265,7 +289,7 @@ def test_review_cannot_edit_model_and_fix_owner_is_original_parser(tmp_path):
     w = create(tmp_path, parse_workers=1)
     parsed(w)
     with pytest.raises(WorkflowError, match="forbidden"):
-        call(w, "reviewer-1", "submit_model_result", path="ignored")
+        call(w, "reviewer-1", "submit_merged_model", path="ignored")
     review(w, [finding(w)])
     assert w.data["phase"] == "fix"
     a = active(w)[0]
@@ -296,12 +320,40 @@ def test_correctable_errors_never_publish_and_feedback_limit_persists(tmp_path, 
     w = create(tmp_path, parse_workers=1, max_feedback_rounds=limit)
     parsed(w)
     for n in range(limit):
-        review(w, [finding(w)])
+        review(w, [finding(w)] if n == 0 else [], status="open")
         assert w.data["phase"] == "fix" and w.data["round"] == n + 1
         w = Workflow(w.root)
         submit(w, "parser-1", w.checkpoint(active(w)[0]["candidate_path"]))
-    review(w, [finding(w)])
+    review(w, status="open")
     assert w.data["phase"] == "failed" and not (w.root / "protocol.json").exists()
+
+
+def test_rereview_requires_explicit_resolution_and_carries_open_findings(tmp_path):
+    w = create(tmp_path, parse_workers=1)
+    parsed(w)
+    original = finding(w)
+    review(w, [original])
+    submit(w, "parser-1", w.checkpoint(active(w)[0]["candidate_path"]))
+    a = active(w)[0]
+    assert a["finding_refs"] == {"F1": original}
+    with pytest.raises(WorkflowError, match="missing finding resolutions: F1"):
+        submit(w, a["worker"], {"reviewed_batches": a["batches"], "findings": []})
+    assert w.data["phase"] == "review"
+
+    added = {**original, "description": "newly discovered issue"}
+    review(w, [added], status="open")
+    assert [f["status"] for f in w.data["tracked_findings"].values()] == ["open", "open"]
+    assert active(w)[0]["findings"] == [original, added]
+    w.store.close()
+    w = Workflow(w.root)
+    submit(w, "parser-1", w.checkpoint(active(w)[0]["candidate_path"]))
+    assert active(w)[0]["finding_refs"] == {"F1": original, "F2": added}
+    review(w)
+    tracked = w.data["tracked_findings"]
+    assert tracked["F1"]["opened_round"] == 0
+    assert tracked["F2"]["opened_round"] == 1
+    assert all(f["status"] == "resolved" and f["reviewed_round"] == 2 for f in tracked.values())
+    assert audit_run(w.root)["verified"]
 
 
 def test_whole_model_reference_errors_return_to_same_turn_without_consuming_feedback(tmp_path):
@@ -387,7 +439,7 @@ def test_metrics_include_last_submission(run):
     metrics = read_json(run.root / "phases.json")
     assert metrics["semantic_review"]
     stage = next(p for p in metrics["phases"] if p["phase"] == "review")
-    assert stage["calls"]["submit_review_result"] == 1
+    assert stage["calls"]["submit_review"] == 1
 
 
 def test_old_database_requires_archived_implementation(tmp_path):

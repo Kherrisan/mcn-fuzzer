@@ -178,6 +178,9 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
         })
         .transpose()?;
     require_exec(&campaign.target.binary)?;
+    if campaign.generator_synthesis.enabled && !campaign.coverage.analysis_enabled {
+        return Err(Error::illegal_argument("generator synthesis requires coverage.analysis_enabled"));
+    }
     let mut session = Session::open(campaign)?;
     let mailbox = crate::coverage::proposal::ProposalMailbox::default();
     let mut synthesis = GeneratorSynthesisStage::from_campaign(campaign, mailbox.clone())?;
@@ -226,18 +229,6 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
             &[campaign.campaign.seeds.clone()],
         )?;
     }
-    if campaign.generator_synthesis.enabled
-        && session.state.corpus().count() == 0
-        && !mutation.has_queue(&session.state)
-    {
-        let mut bootstrap_rand = libafl_bolts::rands::StdRand::with_seed(0x5052_4f54);
-        let ready = synthesis.bootstrap_first(&mut bootstrap_rand, || analysis.poll_agent())?;
-        mutation.enqueue(&mut session.state, ready.request, ready.input, ready.origin)?;
-    }
-    // A seedless campaign cannot ask the scheduler for a corpus input yet.
-    // Run the same mutation stage directly while it still has synthesis input.
-    // The baseline is evaluated like any other input, so it may itself enable
-    // the ordinary fuzzer loop when feedback keeps it.
     if session.state.corpus().count() == 0 {
         while mutation.has_queue(&session.state) {
             if session.state.corpus().count() > 0 {
@@ -255,7 +246,7 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
         }
         if session.state.corpus().count() == 0 {
             return Err(Error::unknown(
-                "seedless synthesis input produced no corpus entry after mutation exploration"
+                "campaign requires a usable seed or existing corpus entry; autonomous synthesis was removed"
                     .to_string(),
             ));
         }
