@@ -48,10 +48,20 @@ FINDING = obj(
     },
     ["category", "description", "batch_ids", "global"],
 )
+UNRESOLVED_CLASSIFICATION = obj(
+    {
+        "resolved_index": INTEGER,
+        "category": FINDING["properties"]["category"],
+        "description": STRING,
+        "batch_ids": array(STRING, 1),
+    },
+    ["resolved_index", "category", "description", "batch_ids"],
+)
 REVIEW = obj(
     {
         "reviewed_batches": array(STRING, 1),
         "findings": array(FINDING),
+        "classifications": array(UNRESOLVED_CLASSIFICATION),
         "resolutions": array(
             obj(
                 {
@@ -114,7 +124,9 @@ CONTRACTS = {
     ),
     "submit_model_patch": (
         "Submit a Fix patch JSON file under work/<worker>/. Shape: "
-        "{base: candidate_path, changes:[{op,kind,match?,value?,evidence?}], unresolved?:[...]}. "
+        "{base: candidate_path, changes:[{op,kind,match?,value?,evidence?}], "
+        "handled_findings:[{finding,note}], unresolved?:[...]}. "
+        "Include one handling note per assigned finding reference. "
         "Add uses value/evidence; replace uses match/value/evidence; remove uses match. "
         "Match by name (also party_name for states), or use the full old value for dependencies. "
         "Match against the frozen base. Omit unresolved to preserve it.",
@@ -131,7 +143,9 @@ CONTRACTS = {
     "submit_review": (
         "Submit path to {reviewed_batches:[batch "
         "names],findings:[{category,description,batch_ids,global}],"
-        "resolutions:[{finding,status,note?}]}. For each assigned finding reference, "
+        "classifications:[{resolved_index,category,description,batch_ids}],"
+        "resolutions:[{finding,status,note?}]}. Classify each assigned unresolved entry "
+        "by its zero-based index in candidate_path. For each assigned finding reference, "
         "submit one resolution (open or resolved) in the final review. "
         "Categories: correctable, source_ambiguity, external_reference. Review "
         "source and frozen model, "

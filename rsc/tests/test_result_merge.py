@@ -155,13 +155,16 @@ def test_scoped_review_retains_unaffected_accepted_ambiguity(tmp_path):
     payload["unresolved"] = [{"description": "external detail absent", "object_names": []}]
     h.submit(w, "parser-1", payload)
     ambiguity = {
-        **h.finding(w, category="external_reference"),
-        "description": "external detail absent",
+        "resolved_index": 0,
+        "category": "external_reference",
+        "description": "Reviewer confirms that this needs another document",
         "batch_ids": [w.batches[-1]["batch_id"]],
     }
-    h.review(w, [h.finding(w), ambiguity])
+    h.review(w, [h.finding(w)], classifications=[ambiguity])
     h.submit(w, "parser-1", w.checkpoint(h.active(w)[0]["candidate_path"]))
     assert h.active(w)[0]["batches"] == [w.batches[0]["batch_id"]]
+    assert h.active(w)[0]["unresolved_indexes"] == []
+    assert h.active(w)[0]["retained_classifications"] == [ambiguity]
     h.review(w)
     assert w.data["phase"] == "published", w.data
     result = read_json(w.root / "protocol.json")

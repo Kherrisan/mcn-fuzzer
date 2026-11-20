@@ -99,8 +99,10 @@ Preserve every valid source-backed constraint, dependency and evidence citation.
 text when deciding whether concepts match. Submit the complete candidate using submit_merged_model.
 The original parser files remain immutable; there are no replacement/deletion tables.""",
     "fix": """You own this model's fixes because you authored its original parser or merged
-candidate. Read the frozen input candidate and ALL findings. Correct every correctable error,
+candidate. Read the frozen input candidate and every entry in finding_refs. Correct each error,
 including missing references and omitted behavior. Preserve valid constraints and evidence.
+When finding_feedback contains a reference, start with its latest reviewer note. Address the
+remaining condition it identifies and preserve behavior the reviewer has already verified.
 Findings identify defects, not an exhaustive list of affected instances. Re-read the cited
 rule and apply it consistently to all source-supported roles, directions, modes and outcomes
 already represented by the model. Check both successful and failing paths, defaults and
@@ -108,6 +110,9 @@ negotiated alternatives, as well as analogous channels, before submitting. Self-
 complete affected scenario so a local fix does not leave the same omission on a sibling path.
 Use source text to resolve questions. Do not hide a correctable error as an unresolved issue.
 Write a patch and call submit_model_patch. Use the assignment candidate_path as `base`.
+Include one `handled_findings` entry per assigned reference: {"finding":"F1","note":"..."}.
+Name the object, field, or dependency changed to address the remaining condition. If work
+remains, state exactly what is still missing. The reviewer verifies the changes.
 Include only changed records in `changes`: add uses kind/value/evidence, replace also
 matches an old item, and remove uses kind/match. Match uses name (also party_name for
 states), or the full original dependency value. Replacing a record needs its updated
@@ -128,15 +133,19 @@ discovered omissions together, including every affected equivalent path supporte
 On re-review, check whether fixes address the underlying rule across those paths, rather
 than only the particular example named in the previous finding.
 Read review_scope_path first. It identifies old and new snapshots, changed and affected
-objects, and the reason for widening the assignment. Check previous findings and fixes.
+objects, Fix handling notes, and the reason for widening. Verify the previous findings and fixes.
 Never edit the candidate. Submit a complete review JSON:
 {reviewed_batches:[all assigned batch names],findings:[{category,description,batch_ids,global}],
+classifications:[{resolved_index,category,description,batch_ids}],
 resolutions:[{finding,status,note?}]}.
 For each key in the assignment's finding_refs, check the current candidate against its
 source and submit exactly one resolution. Use "resolved" when fixed and "open" otherwise.
-Use note to explain any remaining work. Report only new issues in findings.
-To save partial progress, submit reviewed ranges, accumulated findings and any resolutions
-whose evidence ranges you have reviewed, with complete=false. The final review covers all
+For an open finding, write a note stating the specific condition that is still unmet and name
+the relevant objects, fields, or dependencies. Briefly acknowledge any behavior already fixed.
+RSC sends this note to the next Fix along with the same finding reference. Report only new issues
+in findings.
+To save partial progress, submit reviewed ranges, accumulated findings, classifications and
+resolutions whose evidence you have reviewed, with complete=false. Final review covers all
 assigned ranges and findings and omits complete or sets it to true.
 Use correctable for omissions, incorrect facts, references or other repairable errors.
 Use source_ambiguity only for ambiguity in the source itself, and external_reference only for
@@ -144,8 +153,11 @@ needed facts in an unavailable external reference. Include exact supporting batc
 batch_ids; explain the ambiguity or missing external reference in description.
 Only set global=true if the impact cannot be bounded with specific source batches and
 model references. A finding that spans several known batches can still be localized.
-Classify each candidate unresolved issue explicitly, using its exact description. Publication
-requires every assigned finding to be resolved and no new correctable finding.
+Classify each entry in unresolved_indexes using its zero-based position in the frozen candidate's
+unresolved array as resolved_index. If unresolved_indexes is absent, classify every candidate
+entry. Explain your decision in description and cite batch_ids. Use correctable only if the
+candidate can be repaired from the source. Record the classification once, in classifications.
+Publication requires all assigned entries to be classified and all correctable findings resolved.
 Do not end your turn until submit_review is accepted; tool errors are feedback to repair
 and retry, never a reason to give only a prose final answer.""",
 }

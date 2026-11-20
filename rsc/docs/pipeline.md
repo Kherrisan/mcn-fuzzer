@@ -92,7 +92,11 @@ semantic review. Deterministic errors in a complete single-parser, Merge or Fix 
 are returned immediately for correction in the same turn, without consuming feedback rounds.
 Semantic findings become Fix assignments. The single parser,
 or the merger for multi-parser runs, owns Fix and resumes its native session. Fix submits a
-model patch. The reviewer decides which findings to close.
+model patch. Each `handled_findings` entry has a finding reference and a note naming the
+changed object, field, or dependency, or describing the remaining work.
+Provide one note for every assigned reference. Notes are saved alongside the accepted Fix
+result and passed to the reviewer in the review scope. The reviewer decides which findings
+to close.
 
 The independent reviewer reads the frozen candidate and every assigned source range. Shell
 reads and MCP reads are both valid. Review coverage is a declaration, not a tool receipt or
@@ -107,12 +111,18 @@ proof that an agent understood the text. Review files have this shape:
     "batch_ids": ["batch-00001"],
     "global": false
   }],
+  "classifications": [{
+    "resolved_index": 0,
+    "category": "external_reference",
+    "description": "The request format is defined in a separate specification",
+    "batch_ids": ["batch-00001"]
+  }],
   "resolutions": []
 }
 ```
 
 To checkpoint an unfinished review, add `"complete": false` and list the ranges
-reviewed so far together with all accumulated findings and resolutions. The same review file is
+reviewed so far together with all accumulated findings, classifications and resolutions. The same review file is
 replaced atomically; reviewed coverage cannot shrink. Partial reviews survive
 restart and never authorize publication. Final submission covers all assigned
 ranges and omits `complete` or sets it to `true`.
@@ -123,9 +133,20 @@ prevent publication. Genuine source ambiguity or unavailable external references
 review files retain structured batch evidence. RSC assigns each correctable finding a reference
 such as `F1` in the run state. The next reviewer receives open references in `finding_refs`
 and submits one resolution per reference, for example
-`{"finding": "F1", "status": "resolved"}`. Use `status: "open"` for a finding that still
-needs work, with an optional `note`. Report new problems in `findings`. Publication requires
+`{"finding": "F1", "status": "resolved"}`. When a finding still needs work, use `status: "open"`
+and describe the specific unmet condition in `note`. The next Fix receives the original
+`finding_refs` and, for open references with notes, `finding_feedback` mapping each reference
+to its latest `reviewed_round` and `note`. Report new problems in `findings`. Publication requires
 all tracked findings to be resolved and all candidate unresolved issues to be classified.
+
+For each entry in the assignment's `unresolved_indexes`, give one classification. The
+`resolved_index` is the zero-based position in the frozen candidate's `unresolved` array.
+Classifications carry a decision, source batches and a free-form reason. A missing, duplicate
+or unassigned index blocks the final Review submission so the same Reviewer can correct it.
+An explicit `correctable` classification goes to Fix as a finding scoped to its cited batches.
+Confirmed `source_ambiguity` and `external_reference` entries stay in the published model.
+An unchanged entry at the same index keeps its classification when its evidence lies outside
+the new Review scope.
 
 Initial review covers the entire source. After Fix, local reviews cover open finding ranges and
 evidence from both snapshots. Scope follows changed processing operations and their affected

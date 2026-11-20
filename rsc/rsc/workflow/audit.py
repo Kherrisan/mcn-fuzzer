@@ -35,7 +35,7 @@ def audit_run(root):
             require(a.get("accepted_file"), "file was not accepted through the service")
             payload = read_json(w.root / a["output_path"])
             if a["phase"] == "review":
-                w.validate_review(payload, a)
+                w.validate_review(payload, a, historical=True)
                 require(
                     a["worker"] != w.data["fix_owner"] and a["role"] == "reviewer",
                     "review is not independent",
@@ -45,13 +45,14 @@ def audit_run(root):
                     "reviewed invalid candidate",
                 )
                 reviews.append((a, payload))
+            elif a["phase"] == "fix":
+                w.validate_fix_result(payload, a)
+                require(a["worker"] == w.data["fix_owner"], "incorrect Fix owner")
             else:
                 w.validate_checkpoint(payload, parser=a if a["phase"] == "parse" else None)
                 if a["phase"] == "parse":
                     require(payload["complete"], "parser checkpoint incomplete")
                     parsers.append(a)
-                if a["phase"] == "fix":
-                    require(a["worker"] == w.data["fix_owner"], "incorrect Fix owner")
         require(len(parsers) == len(plan["partitions"]), "parser count differs from plan")
         require(bool(reviews), "missing independent review")
         merges = [a for a in w.store.assignments() if a["phase"] == "merge"]
@@ -86,6 +87,27 @@ def audit_run(root):
             w.checkpoint("candidate.json") == w.checkpoint(final["candidate_path"]),
             "frozen candidate differs",
         )
+        if "unresolved_indexes" in final or "classifications" in review:
+            candidate = w.checkpoint(final["candidate_path"])
+            classifications = [
+                *final.get("retained_classifications", []),
+                *review.get("classifications", []),
+            ]
+            require(
+                sorted(c["resolved_index"] for c in classifications)
+                == list(range(len(candidate["unresolved"])))
+                and all(c["category"] != "correctable" for c in classifications),
+                "candidate unresolved entries lack accepted classifications",
+            )
+            other_ambiguities = [
+                *retained,
+                *(f for f in review["findings"] if f["category"] != "correctable"),
+            ]
+            require(
+                w.data["unresolved"]
+                == w.publication_unresolved(candidate, classifications, other_ambiguities),
+                "published unresolved entries differ from accepted review",
+            )
         producer = next(
             a for a in reversed(w.store.assignments()) if a["phase"] in {"parse", "merge", "fix"}
         )

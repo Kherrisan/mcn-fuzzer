@@ -18,8 +18,10 @@ def test_preflight_and_patch_share_validation_and_commit_atomically(tmp_path):
     invalid = deepcopy(request["value"])
     invalid["channel_name"] = "unknown channel"
     invalid["message_name"] = "unknown message"
+    note = {"finding": "F1", "note": "Added the missing guard on send request."}
     patch = {
         "base": base,
+        "handled_findings": [note],
         "changes": [
             {
                 "op": "replace",
@@ -51,6 +53,13 @@ def test_preflight_and_patch_share_validation_and_commit_atomically(tmp_path):
     assert not (w.root / assignment["output_path"]).exists()
 
     patch["changes"][0]["value"] = {**request["value"], "condition": "corrected guard"}
+    del patch["handled_findings"]
+    assert "missing handling notes for findings: F1" in preflight()["errors"][0]["message"]
+    patch["handled_findings"] = [note, note]
+    assert "duplicate handled finding: F1" in preflight()["errors"][0]["message"]
+    patch["handled_findings"] = [{**note, "finding": "F99"}]
+    assert "unknown or duplicate handled finding: F99" in preflight()["errors"][0]["message"]
+    patch["handled_findings"] = [note]
     patch["base"] = "stale.json"
     assert not preflight()["valid"]
     patch["base"] = base
@@ -58,6 +67,8 @@ def test_preflight_and_patch_share_validation_and_commit_atomically(tmp_path):
     assert h.call(w, worker, "submit_model_patch", path=str(path))["stop_turn"]
     scope = read_json(w.root / h.active(w)[0]["review_scope_path"])
     assert scope["before"] == base and scope["full_review_reason"] is None
+    assert scope["fix_notes"] == [note]
+    assert read_json(w.root / assignment["output_path"])["handled_findings"] == [note]
     assert all(row["object"]["name"] == "send request" for row in scope["changed"])
     actual = w.checkpoint(assignment["output_path"])
     assert len(actual["items"]) == len(frozen["items"])

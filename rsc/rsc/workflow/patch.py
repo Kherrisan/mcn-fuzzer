@@ -9,6 +9,7 @@ from .tools import EVIDENCE, STRING, SubmissionError, array, obj, validate_shape
 
 VALUE = {"type": "object"}
 KIND = {"enum": list(COLLECTIONS)}
+HANDLED_FINDINGS = array(obj({"finding": STRING, "note": STRING}, ["finding", "note"]))
 PATCH = obj(
     {
         "base": STRING,
@@ -25,9 +26,24 @@ PATCH = obj(
             }
         ),
         "unresolved": array(VALUE),
+        "handled_findings": HANDLED_FINDINGS,
     },
     ["base", "changes"],
 )
+
+
+def validate_handled_findings(notes, finding_refs):
+    validate_shape(HANDLED_FINDINGS, notes)
+    seen = set()
+    for entry in notes:
+        ref = entry["finding"]
+        if ref not in finding_refs or ref in seen:
+            raise ValueError(f"unknown or duplicate handled finding: {ref}")
+        if not entry["note"].strip():
+            raise ValueError(f"handled finding {ref} needs a note")
+        seen.add(ref)
+    if missing := sorted(finding_refs.keys() - seen):
+        raise ValueError("missing handling notes for findings: " + ", ".join(missing))
 
 
 def key(kind, value):

@@ -1,5 +1,6 @@
 """Complete file checkpoints, independent review, Fix and crash recovery."""
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 
@@ -9,6 +10,7 @@ from protocol_samples import TEXT, base, interactions
 from rsc.protocol.validate import validate_protocol_file
 from rsc.workflow import Workflow, WorkflowError
 from rsc.workflow.audit import audit_run
+from rsc.workflow.instructions import assignment_instructions
 from rsc.workflow.review_scope import changed_rows
 from rsc.workflow.store import atomic_json, read_json
 from rsc.workflow.tools import CONTRACTS
@@ -80,7 +82,8 @@ def submit(w, worker, payload, tool=None):
             "review": "submit_review",
         }[w.data["phase"]]
     if tool == "submit_model_patch" and "items" in payload:
-        base_path = active(w, "fix")[0]["candidate_path"]
+        fix = active(w, "fix")[0]
+        base_path = fix["candidate_path"]
         original = w.checkpoint(base_path)
         changes = []
         for item in changed_rows(original["items"], payload["items"]):
@@ -91,7 +94,15 @@ def submit(w, worker, payload, tool=None):
         changes.extend(
             {"op": "add", **item} for item in changed_rows(payload["items"], original["items"])
         )
-        payload = {"base": base_path, "changes": changes, "unresolved": payload["unresolved"]}
+        payload = {
+            "base": base_path,
+            "changes": changes,
+            "unresolved": payload["unresolved"],
+            "handled_findings": [
+                {"finding": ref, "note": "Fixture handled this finding."}
+                for ref in fix.get("finding_refs", {})
+            ],
+        }
     path = w.root / "work" / worker / "result.json"
     atomic_json(path, payload)
     return call(w, worker, tool, path=str(path))
@@ -123,7 +134,7 @@ def merged(w):
     dispatch(w)
 
 
-def review(w, findings=(), *, status="resolved"):
+def review(w, findings=(), *, classifications=(), status="resolved", note=None):
     a = active(w)[0]
     return submit(
         w,
@@ -131,8 +142,10 @@ def review(w, findings=(), *, status="resolved"):
         {
             "reviewed_batches": a["batches"],
             "findings": list(findings),
+            "classifications": list(classifications),
             "resolutions": [
-                {"finding": ref, "status": status} for ref in a.get("finding_refs", {})
+                {"finding": ref, "status": status, **({"note": note} if note is not None else {})}
+                for ref in a.get("finding_refs", {})
             ],
         },
     )
@@ -333,6 +346,7 @@ def test_rereview_requires_explicit_resolution_and_carries_open_findings(tmp_pat
     parsed(w)
     original = finding(w)
     review(w, [original])
+    assert "finding_feedback" not in active(w)[0]
     submit(w, "parser-1", w.checkpoint(active(w)[0]["candidate_path"]))
     a = active(w)[0]
     assert a["finding_refs"] == {"F1": original}
@@ -341,18 +355,42 @@ def test_rereview_requires_explicit_resolution_and_carries_open_findings(tmp_pat
     assert w.data["phase"] == "review"
 
     added = {**original, "description": "newly discovered issue"}
-    review(w, [added], status="open")
+    first_note = "The request step still needs a dependency on the setup step."
+    review(w, [added], status="open", note=first_note)
     assert [f["status"] for f in w.data["tracked_findings"].values()] == ["open", "open"]
-    assert active(w)[0]["findings"] == [original, added]
+    assert active(w)[0]["finding_refs"] == {"F1": original, "F2": added}
     w.store.close()
     w = Workflow(w.root)
+    fix = active(w)[0]
+    assert fix["finding_feedback"] == {"F1": {"reviewed_round": 1, "note": first_note}}
     submit(w, "parser-1", w.checkpoint(active(w)[0]["candidate_path"]))
     assert active(w)[0]["finding_refs"] == {"F1": original, "F2": added}
+    a = active(w)[0]
+    second_note = "The dependency exists, but also needs a guard for setup success."
+    submit(
+        w,
+        a["worker"],
+        {
+            "reviewed_batches": a["batches"],
+            "findings": [],
+            "resolutions": [
+                {"finding": "F1", "status": "open", "note": second_note},
+                {"finding": "F2", "status": "resolved", "note": "Verified the fix."},
+            ],
+        },
+    )
+    status = call(w, "coordinator", "workflow_status")
+    fix = next(a for a in status["assignments"] if a["name"] == "fix-3/parser-1")
+    rendered = json.loads(assignment_instructions(fix).rsplit("\nAssignment: ", 1)[1])
+    assert rendered["finding_refs"] == {"F1": original}
+    assert rendered["finding_feedback"] == {"F1": {"reviewed_round": 2, "note": second_note}}
+    submit(w, "parser-1", w.checkpoint(fix["candidate_path"]))
     review(w)
     tracked = w.data["tracked_findings"]
     assert tracked["F1"]["opened_round"] == 0
     assert tracked["F2"]["opened_round"] == 1
-    assert all(f["status"] == "resolved" and f["reviewed_round"] == 2 for f in tracked.values())
+    assert (tracked["F1"]["status"], tracked["F1"]["reviewed_round"]) == ("resolved", 3)
+    assert (tracked["F2"]["status"], tracked["F2"]["reviewed_round"]) == ("resolved", 2)
     assert audit_run(w.root)["verified"]
 
 
@@ -399,6 +437,70 @@ def test_source_ambiguity_publishes_incomplete_with_evidence(run):
     assert run.batches[0]["segments"][0]["block_id"] in model["unresolved"][0]["description"]
     assert read_json(run.root / "reviews/round-0/review.json")["findings"][0]["batch_ids"]
     assert audit_run(run.root)["complete"] is False
+
+
+def test_unresolved_classification_uses_index_and_missing_entries_stay_in_review(tmp_path):
+    w = create(tmp_path, parse_workers=1)
+    payload = checkpoint(w)
+    payload["unresolved"] = [
+        {"description": "Same candidate text", "object_names": [name]}
+        for name in ("send request", "send reply")
+    ]
+    submit(w, "parser-1", payload)
+    a = active(w)[0]
+    assert a["unresolved_indexes"] == [0, 1]
+    first = {
+        "resolved_index": 1,
+        "category": "external_reference",
+        "description": "Different reviewer wording",
+        "batch_ids": a["batches"][:1],
+    }
+    with pytest.raises(WorkflowError, match="missing unresolved classifications.*0"):
+        review(w, classifications=[first])
+    with pytest.raises(WorkflowError, match="unassigned or duplicate resolved_index"):
+        review(w, classifications=[first, first])
+    with pytest.raises(WorkflowError, match="unassigned or duplicate resolved_index"):
+        review(w, classifications=[{**first, "resolved_index": 2}])
+    assert w.data["phase"] == "review" and w.data["round"] == 0
+    assert not any(a["phase"] == "fix" for a in w.store.assignments())
+    review(
+        w,
+        classifications=[first, {**first, "resolved_index": 0, "category": "source_ambiguity"}],
+    )
+    assert w.data["phase"] == "published"
+    model = read_json(w.root / "protocol.json")
+    assert not model["meta"]["complete"]
+    assert [x["object_names"] for x in model["unresolved"]] == [["send request"], ["send reply"]]
+    assert all(
+        x["description"].startswith("Same candidate text [source:") for x in model["unresolved"]
+    )
+    assert audit_run(w.root)["verified"]
+
+
+def test_unresolved_can_be_classified_as_a_local_fix(tmp_path):
+    w = create(tmp_path, parse_workers=1)
+    payload = checkpoint(w)
+    payload["unresolved"] = [{"description": "Not sure about the request", "object_names": []}]
+    submit(w, "parser-1", payload)
+    review(
+        w,
+        classifications=[
+            {
+                "resolved_index": 0,
+                "category": "correctable",
+                "description": "The source gives the missing rule",
+                "batch_ids": active(w)[0]["batches"][:1],
+            }
+        ],
+    )
+    fix = active(w)[0]
+    assert fix["phase"] == "fix"
+    assert not fix["finding_refs"]["F1"]["global"]
+    assert fix["finding_refs"]["F1"]["batch_ids"] == [w.batches[0]["batch_id"]]
+    payload["unresolved"] = []
+    submit(w, "parser-1", payload)
+    review(w)
+    assert audit_run(w.root)["complete"]
 
 
 def test_merge_budget_failure_preserves_all_parser_results(run):
