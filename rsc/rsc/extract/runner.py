@@ -64,8 +64,10 @@ algorithms, conditions or validation rules, search existing names and aliases ev
 evidence does not overlap this batch. Read the latest matching entities and enrich the same
 concept with update_entities. Create another entity only for a distinct source-defined concept.
 Patched lists replace previous lists: retain all still-valid fields, processing operations and
-branches while adding detail, and cite the new evidence. Resolve conflicting definitions using
-their stated conditions, versions and extension applicability; record unsupported ambiguity.
+branches while adding detail, and cite the new evidence. For a small added, renamed or removed
+set of a message's associated_fields, submit associated_fields_delta instead of the whole list.
+Resolve conflicting definitions using their stated conditions, versions and extension
+applicability; record unsupported ambiguity.
 Use the real protocol terms, resolve aliases by reading evidence, preserve conditions and
 exceptions, and avoid inventing types, roles, branches, or dependencies. Record uncertainty
 when the evidence cannot support a model item. A missing item from another category may be

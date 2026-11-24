@@ -721,7 +721,9 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
         Read current entities first. Each patched list is a full replacement: combine new
         details with all still-valid existing fields, operations and evidence. Use stable names.
         When exactly one field changes, unqualified citations apply to that field.
-        For multiple changed fields, cite every field explicitly. Submit at most 20 entities.
+        For multiple changed fields, cite every field explicitly. For a small change to one
+        message's associated_fields, send associated_fields_delta (add, replace or remove by
+        exact field name) instead of the whole list. Submit at most 20 entities.
         """
         return await mutate(lambda: current().update_entities(entities))
 

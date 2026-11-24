@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -2331,6 +2332,252 @@ def test_category_fix_rounds_keep_their_own_history(sources, tmp_path, monkeypat
         ("steps", []),
         ("steps", ["category"]),
     ]
+
+
+def message_with_fields(sources, names):
+    return entity(
+        sources,
+        "messages",
+        name="Request",
+        associated_fields=[{"name": name} for name in names],
+    )
+
+
+def add_message(work, sources, names):
+    work.add_entities(
+        TypeAdapter(list[EntityAddition]).validate_python(
+            [message_with_fields(sources, names)]
+        )
+    )
+    return "E1"
+
+
+def update_with(work, sources, **fields):
+    return work.update_entities(
+        [EntityUpdate.model_validate({"id": "E1", "evidence": [citation(sources)], **fields})]
+    )
+
+
+def field_names(work):
+    return [field["name"] for field in work.records["E1"]["value"]["associated_fields"]]
+
+
+def test_associated_fields_delta_adds_renames_and_removes_in_place(sources):
+    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    add_message(work, sources, ["A", "B", "C", "D"])
+    work.update_entities(
+        [
+            EntityUpdate.model_validate(
+                {
+                    "id": "E1",
+                    "evidence": [citation(sources)],
+                    "associated_fields_delta": {
+                        "remove": ["B"],
+                        "replace": [{"name": "C", "new_name": "C2"}],
+                        "add": [{"name": "X", "before": "D"}, {"name": "Y"}],
+                    },
+                }
+            )
+        ]
+    )
+    # Removals vanish, renames stay in place, anchored additions land before their anchor,
+    # unanchored additions append.
+    assert field_names(work) == ["A", "C2", "X", "D", "Y"]
+    # The saved request holds the expanded list, in the old shape, without the delta key.
+    record = work.mutations[-1]["request"][0]
+    assert "associated_fields_delta" not in record
+    assert record["patch"]["associated_fields"] == [{"name": name} for name in field_names(work)]
+
+
+def test_associated_fields_delta_keeps_submission_order_for_one_anchor(sources):
+    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    add_message(work, sources, ["A", "B"])
+    work.update_entities(
+        [
+            EntityUpdate.model_validate(
+                {
+                    "id": "E1",
+                    "evidence": [citation(sources)],
+                    "associated_fields_delta": {
+                        "add": [
+                            {"name": "X1", "before": "B"},
+                            {"name": "X2", "before": "B"},
+                            {"name": "X3", "before": "A"},
+                        ]
+                    },
+                }
+            )
+        ]
+    )
+    assert field_names(work) == ["X3", "A", "X1", "X2", "B"]
+
+
+def test_associated_fields_delta_matches_the_full_list_path(sources):
+    delta_work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    list_work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    for work in (delta_work, list_work):
+        add_message(work, sources, ["A", "B", "C"])
+    update_with(
+        delta_work,
+        sources,
+        associated_fields_delta={"remove": ["A"], "add": [{"name": "D", "before": "C"}]},
+    )
+    update_with(list_work, sources, patch={"associated_fields": [
+        {"name": "B"}, {"name": "D"}, {"name": "C"}
+    ]})
+    assert delta_work.records == list_work.records
+    assert delta_work.issues() == list_work.issues()
+    assert delta_work.snapshot == list_work.snapshot
+
+
+@pytest.mark.parametrize(
+    ("delta", "message"),
+    [
+        ({"remove": ["missing"]}, "not in associated_fields"),
+        ({"replace": [{"name": "missing", "new_name": "X"}]}, "not in associated_fields"),
+        ({"replace": [{"name": "A", "new_name": "B"}]}, "names already exist"),
+        ({"add": [{"name": "B"}]}, "names already exist"),
+        ({"add": [{"name": "X", "before": "missing"}]}, "is not in the resulting fields"),
+        ({"remove": ["A"], "replace": [{"name": "A", "new_name": "X"}]}, "both removed"),
+        ({}, "at least one add, replace or remove"),
+    ],
+)
+def test_associated_fields_delta_rejects_bad_edits(sources, delta, message):
+    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    add_message(work, sources, ["A", "B"])
+    before = deepcopy(work.records)
+    with pytest.raises(ValueError, match=message):
+        update_with(work, sources, associated_fields_delta=delta)
+    assert work.records == before
+    assert work.snapshot == 1
+
+
+def test_associated_fields_delta_rejects_stale_snapshot_and_other_kinds(sources):
+    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    add_message(work, sources, ["A"])
+    update_with(work, sources, associated_fields_delta={"add": [{"name": "B"}], "snapshot": 1})
+    with pytest.raises(ValueError, match="stale associated_fields snapshot"):
+        update_with(
+            work, sources, associated_fields_delta={"add": [{"name": "C"}], "snapshot": 999}
+        )
+    assert field_names(work) == ["A", "B"]
+    party_work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "parties"))
+    party_work.add_entities(
+        TypeAdapter(list[EntityAddition]).validate_python([party(sources, "C")])
+    )
+    with pytest.raises(ValueError, match="only applies to messages"):
+        party_work.update_entities(
+            [
+                EntityUpdate.model_validate(
+                    {
+                        "id": "E1",
+                        "evidence": [citation(sources)],
+                        "associated_fields_delta": {"add": [{"name": "X"}]},
+                    }
+                )
+            ]
+        )
+
+
+def test_associated_fields_delta_cannot_mix_with_the_full_list(sources):
+    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    add_message(work, sources, ["A"])
+    with pytest.raises(ValueError, match="either patch.associated_fields or"):
+        update_with(
+            work,
+            sources,
+            patch={"associated_fields": [{"name": "B"}]},
+            associated_fields_delta={"add": [{"name": "C"}]},
+        )
+
+
+def test_associated_fields_delta_still_needs_field_evidence(sources):
+    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    add_message(work, sources, ["A"])
+    with pytest.raises(ValueError, match="missing field evidence"):
+        work.update_entities(
+            [
+                EntityUpdate.model_validate(
+                    {
+                        "id": "E1",
+                        "evidence": [
+                            {**citation(sources), "field": "/name"}
+                        ],
+                        "associated_fields_delta": {"add": [{"name": "B"}]},
+                    }
+                )
+            ]
+        )
+
+
+def test_associated_fields_delta_rejects_moving_cited_indices(sources):
+    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    fixture = message_with_fields(sources, ["A", "B", "C"])
+    fixture["evidence"] = [{**citation(sources), "field": "/associated_fields/1"}]
+    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([fixture]))
+    with pytest.raises(ValueError, match="/associated_fields/1"):
+        update_with(work, sources, associated_fields_delta={"remove": ["A"]})
+    # Dropping the trailing field leaves the cited index alone.
+    update_with(work, sources, associated_fields_delta={"remove": ["C"]})
+    assert field_names(work) == ["A", "B"]
+
+
+def test_associated_fields_delta_shares_one_snapshot_across_entities(sources):
+    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    work.add_entities(
+        TypeAdapter(list[EntityAddition]).validate_python(
+            [
+                message_with_fields(sources, ["A"]),
+                {**message_with_fields(sources, ["B"]), "value": {"name": "Response",
+                 "associated_fields": [{"name": "B"}]}},
+            ]
+        )
+    )
+    snapshot = work.snapshot
+    work.update_entities(
+        [
+            EntityUpdate.model_validate(
+                {
+                    "id": "E1",
+                    "evidence": [citation(sources)],
+                    "associated_fields_delta": {"add": [{"name": "A2"}], "snapshot": snapshot},
+                }
+            ),
+            EntityUpdate.model_validate(
+                {
+                    "id": "E2",
+                    "evidence": [citation(sources)],
+                    "associated_fields_delta": {"add": [{"name": "B2"}], "snapshot": snapshot},
+                }
+            ),
+        ]
+    )
+    assert [field["name"] for field in work.records["E1"]["value"]["associated_fields"]] == [
+        "A",
+        "A2",
+    ]
+    assert [field["name"] for field in work.records["E2"]["value"]["associated_fields"]] == [
+        "B",
+        "B2",
+    ]
+    # One mutation carried both edits, so a shared read snapshot stays valid for the call.
+    assert len(work.mutations) == 2
+
+
+def test_associated_fields_delta_replays_once_and_stays_optional(sources):
+    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    add_message(work, sources, ["A"])
+    update_with(work, sources, associated_fields_delta={"add": [{"name": "B", "before": "A"}]})
+    mutations = len(work.mutations)
+    # An identical submission is a retry: the receipt answers and no second write lands.
+    update_with(work, sources, associated_fields_delta={"add": [{"name": "B", "before": "A"}]})
+    assert len(work.mutations) == mutations
+    assert field_names(work) == ["B", "A"]
+    # Without the new key the update path is unchanged.
+    update_with(work, sources, patch={"name": "Request2"})
+    assert work.records["E1"]["value"]["name"] == "Request2"
+    assert field_names(work) == ["B", "A"]
+    assert "associated_fields_delta" not in work.mutations[-1]["request"][0]
 
 
 def test_oversized_entity_pages_its_fields(sources):

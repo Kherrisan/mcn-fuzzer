@@ -108,12 +108,50 @@ EntityAddition = Annotated[
 ]
 
 
+class FieldAddition(StrictModel):
+    name: Annotated[str, Field(min_length=1)] = Field(description="Exact name of the added field.")
+    before: str = Field(
+        default="",
+        description="Exact name of the field it goes before; empty appends to the end.",
+    )
+
+
+class FieldRename(StrictModel):
+    name: Annotated[str, Field(min_length=1)] = Field(description="Exact existing field name.")
+    new_name: Annotated[str, Field(min_length=1)] = Field(
+        description="Name that replaces it in place.",
+    )
+
+
+class AssociatedFieldsDelta(StrictModel):
+    """Name-based edit of one message's associated_fields, applied by the write path."""
+
+    remove: list[str] = Field(default_factory=list, description="Exact names to drop.")
+    replace: list[FieldRename] = Field(
+        default_factory=list, description="In-place renames, keeping the current position."
+    )
+    add: list[FieldAddition] = Field(
+        default_factory=list, description="New names, in submission order."
+    )
+    snapshot: int | None = Field(
+        default=None,
+        description="Workspace snapshot returned by the read that this edit is based on.",
+    )
+
+
 class EntityUpdate(StrictModel):
     id: str = Field(description="Existing entity ID returned by registry tools.")
     evidence: Annotated[list[Evidence], Field(min_length=1)]
     patch: dict[str, Any] = Field(
         default_factory=dict,
         description="Object mapping changed top-level fields to their full replacement values.",
+    )
+    associated_fields_delta: AssociatedFieldsDelta | None = Field(
+        default=None,
+        description=(
+            "Optional name-based edit of a message's associated_fields; mutually exclusive "
+            "with patch.associated_fields."
+        ),
     )
     aliases: list[str] | None = None
     withdraw_reason: str = ""
@@ -179,6 +217,82 @@ def normalized(kind, value):
         mode="json",
         by_alias=True,
     )
+
+
+def delta_fields(fields, delta, snapshot):
+    """Rebuild one message's full ordered field list from a name-based delta.
+
+    Removals disappear, renames stay in their original position, and additions land in
+    submission order before their still-existing anchor (or at the end without one). The
+    caller then feeds the result through the normal full-list write path.
+    """
+    if delta.snapshot is not None and delta.snapshot != snapshot:
+        raise ValueError(
+            f"stale associated_fields snapshot {delta.snapshot}; the workspace is at {snapshot}"
+        )
+    if not (delta.remove or delta.replace or delta.add):
+        raise ValueError("associated_fields_delta needs at least one add, replace or remove")
+    names = [field["name"] for field in fields]
+    if len(set(names)) != len(names):
+        raise ValueError("the existing associated_fields names are not unique; submit the list")
+    removed = list(delta.remove)
+    if len(set(removed)) != len(removed):
+        raise ValueError("each remove target may appear only once")
+    for name in removed:
+        if name not in names:
+            raise ValueError(f"remove target {name!r} is not in associated_fields")
+    renamed = {}
+    targets = []
+    for item in delta.replace:
+        if item.name not in names:
+            raise ValueError(f"replace target {item.name!r} is not in associated_fields")
+        if item.name in removed:
+            raise ValueError(f"{item.name!r} cannot be both removed and replaced")
+        if item.new_name in renamed.values() or item.new_name in targets:
+            raise ValueError(f"replace target {item.new_name!r} is used more than once")
+        renamed[item.name] = item.new_name
+        targets.append(item.new_name)
+    added = [item.name for item in delta.add]
+    if len(set(added)) != len(added):
+        raise ValueError("each added name may appear only once")
+    result = []
+    for field in fields:
+        name = field["name"]
+        if name in removed:
+            continue
+        result.append({"name": renamed.get(name, name)})
+    for item in delta.add:
+        if not item.before:
+            result.append({"name": item.name})
+            continue
+        index = next(
+            (position for position, field in enumerate(result) if field["name"] == item.before),
+            None,
+        )
+        if index is None:
+            raise ValueError(f"add anchor {item.before!r} is not in the resulting fields")
+        result.insert(index, {"name": item.name})
+    final = [field["name"] for field in result]
+    duplicates = sorted({name for name in final if final.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"names already exist or repeat after this delta: {duplicates}")
+    return result
+
+
+def moved_field_evidence(evidence, before, after):
+    """Index-based evidence paths that would land on another field after a delta."""
+
+    moved = []
+    for entry in evidence:
+        parts = entry["field"].strip("/").split("/")
+        if parts[0] != "associated_fields" or len(parts) < 2 or not parts[1].isdecimal():
+            continue
+        index = int(parts[1])
+        old = before[index]["name"] if index < len(before) else None
+        new = after[index]["name"] if index < len(after) else None
+        if old != new:
+            moved.append(entry["field"])
+    return moved
 
 
 def migrate_registry(data):
@@ -358,8 +472,8 @@ class Workspace:
             raise ValueError(f"unknown active entity {entity_id!r}")
         return entity_id
 
-    def mutate(self, operation, request, apply, *, touched=()):
-        key = dumps([operation, request])
+    def mutate(self, operation, request, apply, *, touched=(), key_request=None):
+        key = dumps([operation, request if key_request is None else key_request])
         if cached := self.receipts.get(key):
             result, updated = cached
             if all(self.records.get(i) == row for i, row in updated.items()) and (
@@ -457,6 +571,9 @@ class Workspace:
         """
 
         changed = set()
+        # The saved request keeps the old shape: a delta is expanded to the full list that
+        # the write path actually applied. Receipts key on the model's raw request instead.
+        expanded = []
 
         def apply():
             before = deepcopy(self.records)
@@ -467,8 +584,14 @@ class Workspace:
                 if entity_id in changed:
                     raise ValueError(f"duplicate update for {entity_id}")
                 changed.add(entity_id)
+                record = item.model_dump(mode="json", exclude={"associated_fields_delta"})
                 if item.withdraw_reason:
-                    if self.assignment.phase == "scan" or item.patch or item.aliases is not None:
+                    if (
+                        self.assignment.phase == "scan"
+                        or item.patch
+                        or item.aliases is not None
+                        or item.associated_fields_delta is not None
+                    ):
                         raise ValueError("withdrawals are standalone validation repairs")
                     if any(link["to"] == entity_id for link in self.data["redirects"].values()):
                         raise ValueError("cannot withdraw a canonical merge target")
@@ -477,10 +600,32 @@ class Workspace:
                         "reason": item.withdraw_reason,
                         "evidence": self.evidence(item.evidence),
                     }
+                    expanded.append(record)
                     continue
-                value = normalized(row["kind"], {**row["value"], **item.patch})
+                patch = item.patch
+                delta = item.associated_fields_delta
+                if delta is not None:
+                    if "associated_fields" in patch:
+                        raise ValueError(
+                            "submit either patch.associated_fields or associated_fields_delta"
+                        )
+                    if row["kind"] != "messages":
+                        raise ValueError("associated_fields_delta only applies to messages")
+                    fields = delta_fields(row["value"]["associated_fields"], delta, self.snapshot)
+                    moved = moved_field_evidence(
+                        row["evidence"], row["value"]["associated_fields"], fields
+                    )
+                    if moved:
+                        raise ValueError(
+                            "this delta moves fields that existing evidence cites: "
+                            + ", ".join(moved)
+                        )
+                    patch = {**patch, "associated_fields": fields}
+                record["patch"] = patch
+                expanded.append(record)
+                value = normalized(row["kind"], {**row["value"], **patch})
                 citations = self.evidence(item.evidence, value, aliases=item.aliases)
-                touched = {key for key in item.patch if value[key] != row["value"].get(key)}
+                touched = {key for key in patch if value[key] != row["value"].get(key)}
                 if len(touched) == 1:
                     (field,) = touched
                     for entry in citations:
@@ -502,8 +647,8 @@ class Workspace:
 
         if not 1 <= len(entities) <= MAX_PAGE:
             raise ValueError(f"provide 1..{MAX_PAGE} entities")
-        request = [entity.model_dump(mode="json") for entity in entities]
-        return self.mutate("update", request, apply, touched=changed)
+        raw = [entity.model_dump(mode="json") for entity in entities]
+        return self.mutate("update", expanded, apply, touched=changed, key_request=raw)
 
     def merge_entities(
         self,
