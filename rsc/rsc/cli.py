@@ -251,9 +251,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    from rsc.extract.cli import register as register_extract
     from rsc.workflow.cli import register
 
     register(sub)
+    register_extract(sub)
 
     p = sub.add_parser("doctor", help="check environment, dependencies and schemas")
     selection_arguments(p)

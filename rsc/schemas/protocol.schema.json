@@ -4,7 +4,7 @@
       "additionalProperties": false,
       "properties": {
         "name": {
-          "description": "Protocol field name. Do not invent a hash or sequence.",
+          "description": "Source-defined field name or stable nested field path.",
           "minLength": 1,
           "title": "Name",
           "type": "string"
@@ -378,7 +378,7 @@
       "additionalProperties": false,
       "properties": {
         "reads": {
-          "description": "Inputs: state.<name>, message.<field>, or message_bytes after send/receive.",
+          "description": "Concrete computation or verification inputs: endpoint-owned state.<name>, message.<field>, or message_bytes after send/receive for encoded-message operations.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -387,7 +387,7 @@
           "type": "array"
         },
         "writes": {
-          "description": "Outputs: state.<name>, or message.<field> before send.",
+          "description": "Persisted state.<name> outputs owned by this endpoint, or transmitted message.<field> outputs before send.",
           "items": {
             "minLength": 1,
             "type": "string"
@@ -396,7 +396,7 @@
           "type": "array"
         },
         "rule": {
-          "description": "Short calculation or check, including applicable branches and failure behavior.",
+          "description": "Source-supported calculation or verification, including its trigger, input transformation, output timing, applicable branches and failure behavior.",
           "minLength": 1,
           "title": "Rule",
           "type": "string"
@@ -414,13 +414,13 @@
       "additionalProperties": false,
       "properties": {
         "name": {
-          "description": "Short protocol term. Reuse the same message's name. A message is an actual protocol message or RFC-defined independently exchanged transfer unit. Grammar productions and table classification labels do not automatically constitute messages. Abstract categories, command groups, fields and syntax components are not independent message types. Ordinary message types need not carry associated fields. A concrete response code defines a separate message type only when its response carries associated fields needed in later interactions for correlation, connection setup, branching or interaction state. The response code itself or free-form reply wording alone does not justify a separate type; otherwise reuse an actually exchanged, source-supported shared response form, not a response-code family or classification label.",
+          "description": "Short protocol term. Reuse the same message's name. A message is an actual protocol message or RFC-defined independently exchanged transfer unit. Grammar productions and table classification labels do not automatically constitute messages. Abstract categories, command groups, fields and syntax components are not independent message types. A source-defined empty body may have no associated fields. A concrete response code defines a separate message type only when its response carries associated fields needed in later interactions for correlation, connection setup, branching or interaction state. The response code itself or free-form reply wording alone does not justify a separate type; otherwise reuse an actually exchanged, source-supported shared response form, not a response-code family or classification label.",
           "minLength": 1,
           "title": "Name",
           "type": "string"
         },
         "associated_fields": {
-          "description": "Attach a field only to the message that actually transmits it. Retain only fields needed for cross-message correlation, connection setup, interaction branching or interaction state. A message that triggers another message does not inherit that message's fields. Do not extract complete wire layouts or ordinary payload details.",
+          "description": "Extract source-defined fields needed to construct, parse, compute or validate the message, including headers, lengths, selectors, authentication values, structured payloads and extensions. Include fields used in negotiation, state updates, branching or later exchanges. Use stable dot-separated paths for nested fields that need independent access, consistently across messages, processing and field relations. Attach each field to its transmitting message. Keep local-only values in processing or states. Preserve source-defined encoding, length, value and presence constraints in evidence notes and applicable processing rules. Use an empty field list when the source defines an empty body; otherwise revisit detailed definitions before retaining a fieldless message.",
           "items": {
             "$ref": "#/$defs/field"
           },

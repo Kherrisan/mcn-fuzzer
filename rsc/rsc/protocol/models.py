@@ -28,7 +28,7 @@ class BlockRef(StrictModel):
 
 
 class AssociatedField(StrictModel):
-    name: NonEmpty = Field(description="Protocol field name. Do not invent a hash or sequence.")
+    name: NonEmpty = Field(description="Source-defined field name or stable nested field path.")
 
 
 class Party(StrictModel):
@@ -110,14 +110,21 @@ class State(StrictModel):
 
 class ProcessingOperation(StrictModel):
     reads: list[NonEmpty] = Field(
-        description="Inputs: state.<name>, message.<field>, or message_bytes after send/receive."
+        description=(
+            "Concrete computation or verification inputs: endpoint-owned state.<name>, "
+            "message.<field>, or message_bytes after send/receive for encoded-message operations."
+        )
     )
     writes: list[NonEmpty] = Field(
-        description="Outputs: state.<name>, or message.<field> before send."
+        description=(
+            "Persisted state.<name> outputs owned by this endpoint, "
+            "or transmitted message.<field> outputs before send."
+        )
     )
     rule: NonEmpty = Field(
         description=(
-            "Short calculation or check, including applicable branches and failure behavior."
+            "Source-supported calculation or verification, including its trigger, input "
+            "transformation, output timing, applicable branches and failure behavior."
         )
     )
 

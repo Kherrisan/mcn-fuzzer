@@ -9,7 +9,7 @@ def reference_errors(records: dict) -> list[str]:
     return [issue["description"] for issue in reference_issues(records)]
 
 
-def reference_issues(records: dict, bindings=None) -> list[dict]:
+def reference_issues(records: dict, bindings=None, *, resolved=None) -> list[dict]:
     """Return locations and involved record keys without choosing ambiguous definitions.
 
     Merge supplies its established (record key, value path) bindings. Published models
@@ -49,6 +49,8 @@ def reference_issues(records: dict, bindings=None) -> list[dict]:
                 type_="missing_reference" if not matches else "ambiguous_reference",
             )
             return None
+        if resolved is not None:
+            resolved[(owner, path)] = matches[0]
         return matches[0]
 
     for kind, values in names.items():
@@ -72,6 +74,11 @@ def reference_issues(records: dict, bindings=None) -> list[dict]:
         ):
             issue("connectionless channel has connection roles", key, path=("connection",))
         for i, source in enumerate(c["endpoint_sources"]):
+            if resolved is not None:
+                path = ("endpoint_sources", i, "party_name")
+                matches = targets(key, path, "parties", source["party_name"])
+                if len(matches) == 1:
+                    resolved[key, path] = matches[0]
             if source["party_name"] not in c["endpoint_party_names"]:
                 issue(
                     "endpoint source party is not a channel endpoint",

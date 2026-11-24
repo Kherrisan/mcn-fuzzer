@@ -1,0 +1,2808 @@
+"""Exercise the incremental workflow with local tool-calling model responses."""
+
+import asyncio
+import json
+
+import pytest
+from pydantic import TypeAdapter
+
+from rsc.artifacts import read_jsonl
+from rsc.extract.cli import ExtractConfig
+from rsc.extract.registry import (
+    LEGACY_SCAN_KINDS,
+    ORDER,
+    SCAN_KINDS,
+    SCAN_WRITES,
+    Assignment,
+    EntityAddition,
+    EntityUpdate,
+    Evidence,
+    Unresolved,
+    Workspace,
+    migrate_registry,
+)
+from rsc.extract.sources import Sources
+from rsc.extract.tools import related
+from rsc.protocol.validate import validate_protocol_file
+from rsc.workflow.store import atomic_json, read_json
+
+
+@pytest.fixture
+def sources(tmp_path):
+    result = []
+    for number in (959, 3659):
+        source = tmp_path / f"rfc{number}.txt"
+        source.write_text(
+            f"Network Working Group\nRequest for Comments: {number}\n\n"
+            f"   Test protocol\n\n1. First Section\n\n   A client uses a server, see Section 2.\n"
+            "2. Second Section\n\n   A server responds to a client.\n"
+        )
+        result.append(str(source))
+    return Sources.create(tmp_path, result, 8000, 12000, [])
+
+
+def citation(sources):
+    doc_id, block_id = next(iter(sources.blocks))
+    return {"document_id": doc_id, "block_id": block_id}
+
+
+def party(sources, name):
+    return {
+        "kind": "parties",
+        "value": {"name": name, "description": "Protocol endpoint"},
+        "evidence": [citation(sources)],
+    }
+
+
+def test_batch_registry_summary_includes_all_evidence_matches(sources):
+    batch_id, next_batch_id = sources.batches
+    local = sources.batch_context(batch_id)
+    remote = sources.batch_context(next_batch_id)
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "scan", "parties"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    remote_party = {
+        **party(sources, "Client"),
+        "aliases": ["server"],
+        "evidence": [{"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}],
+    }
+    work.add_entities(add([remote_party]))
+    assert related(work)["candidates"] == []
+
+    entries = [
+        {
+            **party(sources, f"Endpoint {i}"),
+            "aliases": [f"alias {i} " + "x" * 500],
+            "evidence": [
+                {"document_id": local["doc_id"], "block_id": local["segments"][0]["block"]}
+            ],
+        }
+        for i in range(24)
+    ]
+    work.add_entities(add(entries[:20]))
+    work.add_entities(add(entries[20:]))
+    context = related(work)
+    assert context["entity_counts"] == {kind: 25 if kind == "parties" else 0 for kind in ORDER}
+    assert [row["name"] for row in context["candidates"]] == [f"Endpoint {i}" for i in range(24)]
+
+
+def test_batch_receives_all_open_unresolved_from_other_batches(sources):
+    current, earlier = sources.batches
+    remote = sources.batch_context(earlier)
+    evidence = [{"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}]
+    work = Workspace(sources, "test", empty_registry(), Assignment(earlier, "scan", "parties"))
+    for i in range(12):
+        work.record_unresolved(
+            Unresolved(
+                description=f"Missing definition {i} " + "x" * 1000,
+                entity_ids=[],
+                evidence=evidence,
+                missing_information=f"Need definition {i}",
+            )
+        )
+    work.solve_unresolved(
+        "U1", "Definition found", [Evidence.model_validate(evidence[0])]
+    )
+    work = Workspace(sources, "test", work.data, Assignment(current, "scan", "channels"))
+    items = related(work)["unresolved"]
+    assert [item["id"] for item in items] == [f"U{i}" for i in range(2, 13)]
+    assert items[-1]["missing_information"] == "Need definition 11"
+    assert all(item["evidence"][0]["document_id"] == remote["doc_id"] for item in items)
+
+
+def test_source_map_and_snapshot(sources, tmp_path):
+    assert len(sources.batches) == 2
+    for key, block in sources.blocks.items():
+        if not block["text"].strip():
+            continue
+        locator = sources.evidence(*key)
+        assert key in sources.sections[(key[0], tuple(locator["section_path"]))]
+        assert sources.block_batches[key]
+        assert sources.originals[key[0]][locator["start"] : locator["end"]].strip()
+    doc_id, block_id = next(iter(sources.blocks))
+    short = f"blk-{int(block_id.split('-')[1])}"
+    assert sources.evidence(doc_id, short) == sources.evidence(doc_id, block_id)
+    first = sources.manifest["documents"][0]
+    (tmp_path / first["input"]).write_text("input edited")
+    Sources(tmp_path, sources.manifest)
+    (tmp_path / first["snapshot"]).write_text("frozen input edited")
+    with pytest.raises(ValueError, match="source snapshot changed"):
+        Sources(tmp_path, sources.manifest)
+
+
+def empty_registry():
+    return {
+        "entities": {},
+        "redirects": {},
+        "unresolved": {},
+        "withdrawn": {},
+        "next_entity": 0,
+        "next_issue": 0,
+    }
+
+
+def test_batch_writes_are_atomic_and_idempotent(sources):
+    work = Workspace(sources, "test", empty_registry(), Assignment("b", "scan", "parties"))
+    add = TypeAdapter(list[EntityAddition])
+    first = party(sources, "Client")
+    broken = {**party(sources, "Server"), "evidence": [{"document_id": "absent", "block_id": "?"}]}
+    with pytest.raises(ValueError, match="unknown source"):
+        work.add_entities(add.validate_python([first, broken]))
+    assert not work.records
+    entities = add.validate_python([first, party(sources, "Server")])
+    assert [item["id"] for item in work.add_entities(entities)] == ["E1", "E2"]
+    assert work.add_entities(entities) == work.add_entities(entities)
+    cite = {**citation(sources), "field": "/description"}
+    update = [
+        EntityUpdate(id="E1", patch={"description": "sender"}, evidence=[citation(sources)]),
+        EntityUpdate(id="E2", patch={"description": "receiver"}, evidence=[cite]),
+    ]
+    with pytest.raises(ValueError, match="duplicate update"):
+        work.update_entities([update[0], update[0]])
+    assert "revision" not in work.records["E1"]
+    assert work.records["E1"]["value"]["description"] == "Protocol endpoint"
+    assert [row["id"] for row in work.update_entities(update)] == ["E1", "E2"]
+    assert work.update_entities(update)[0]["id"] == "E1"
+    assert len(work.mutations) == 2
+    work.update_entities(
+        [EntityUpdate(id="E1", patch={"description": "initiator"}, evidence=[cite])]
+    )
+    work.update_entities(update)
+    assert work.records["E1"]["value"]["description"] == "sender"
+    assert work.records["E1"]["evidence"][-1]["field"] == "/description"
+
+
+def test_merge_redirects_and_rewrites_channel_references(sources):
+    work = Workspace(sources, "test", empty_registry(), Assignment("global", "global"))
+    add = TypeAdapter(list[EntityAddition])
+    work.add_entities(
+        add.validate_python(
+            [
+                party(sources, "Client"),
+                party(sources, "User"),
+                {
+                    "kind": "channels",
+                    "evidence": [citation(sources)],
+                    "value": {
+                        "name": "c",
+                        "description": "connection",
+                        "transport": "TCP",
+                        "connection": "connection_oriented",
+                        "endpoint_party_names": ["User"],
+                        "initiator_party_name": "User",
+                        "acceptor_party_name": None,
+                        "endpoint_sources": [
+                            {"party_name": "User", "parameter": "port", "from": "fixed"}
+                        ],
+                    },
+                },
+            ]
+        )
+    )
+    receipt = work.merge_entities(
+        "E1",
+        ["E2"],
+        "RFC uses interchangeable names",
+        [Evidence(**citation(sources))],
+    )
+    assert receipt["id"] == work.canonical("E2") == "E1"
+    channel = work.records["E3"]
+    assert "revision" not in channel
+    assert channel["value"]["initiator_party_name"] == "Client"
+    assert channel["value"]["endpoint_sources"][0]["party_name"] == "Client"
+    assert not work.structural_issues()
+
+
+def entity(sources, kind, **value):
+    return {"kind": kind, "value": value, "evidence": [citation(sources)]}
+
+
+def channel(sources, name, *, connected=True):
+    return entity(
+        sources,
+        "channels",
+        name=name,
+        description="Channel",
+        transport="TCP" if connected else "UDP",
+        connection="connection_oriented" if connected else "connectionless",
+        endpoint_party_names=["Client"],
+        initiator_party_name="Client" if connected else None,
+        acceptor_party_name="Client" if connected else None,
+        endpoint_sources=[],
+    )
+
+
+def fixtures_by_kind(sources):
+    return {
+        "parties": party(sources, "Client"),
+        "channels": channel(sources, "Datagrams", connected=False),
+        "messages": entity(sources, "messages", name="Packet", associated_fields=[]),
+        "steps": entity(
+            sources,
+            "steps",
+            name="Send",
+            action="send",
+            channel_name="Datagrams",
+            sender_name="Client",
+            receiver_name="Client",
+            message_name="Packet",
+            condition="",
+        ),
+        "step_dependencies": entity(
+            sources,
+            "step_dependencies",
+            prior_step="Send",
+            dependent_step="Send",
+            condition="repeat",
+            field_relations=[],
+        ),
+    }
+
+
+def interaction_fixtures(sources):
+    """One interaction unit: the step, the state it writes and its dependency."""
+    return {
+        "steps": entity(
+            sources,
+            "steps",
+            name="Send",
+            action="send",
+            channel_name="Datagrams",
+            sender_name="Client",
+            receiver_name="Client",
+            message_name="Packet",
+            condition="",
+            processing={
+                "before_send": [{"reads": [], "writes": ["state.Flag"], "rule": "Set flag"}]
+            },
+        ),
+        "states": entity(
+            sources, "states", name="Flag", party_name="Client", source="processing"
+        ),
+        "step_dependencies": entity(
+            sources,
+            "step_dependencies",
+            prior_step="Send",
+            dependent_step="Send",
+            condition="repeat",
+            field_relations=[],
+        ),
+    }
+
+
+def fake_model(sources, turns, *, add_party=True):
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    def run(messages, info):
+        if isinstance(messages[-1].parts[-1], UserPromptPart):
+            prompt = json.loads(messages[-1].parts[-1].content)
+            if prompt.get("stage") not in ("review", "gap"):
+                turns.append((prompt["assignment"], len(messages)))
+        else:
+            prompt = next(
+                json.loads(part.content)
+                for message in reversed(messages)
+                for part in message.parts
+                if isinstance(part, UserPromptPart)
+            )
+        if prompt.get("stage") == "review":
+            return ModelResponse(parts=[ToolCallPart("complete_review", {})])
+        if prompt.get("stage") == "gap":
+            return ModelResponse(parts=[ToolCallPart("complete_gaps", {})])
+        task = prompt["assignment"]
+        already_added = any(
+            isinstance(part, ToolReturnPart) and part.tool_name == "add_entities"
+            for message in messages
+            for part in message.parts
+        )
+        if add_party and task["phase"] == "scan" and not already_added:
+            fixtures = fixtures_by_kind(sources)
+            if task["kind"] == "steps":
+                entities = list(interaction_fixtures(sources).values())
+            elif task["kind"] == "basics":
+                entities = [fixtures[kind] for kind in SCAN_WRITES["basics"]]
+            else:
+                entities = [fixtures[task["kind"]]]
+            return ModelResponse(
+                parts=[
+                    ToolCallPart("add_entities", {"entities": entities}),
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "complete_batch" if task["phase"] == "scan" else "complete_fix",
+                    {"summary": "Read RFC"},
+                ),
+            ]
+        )
+
+    return FunctionModel(run)
+
+
+def strip_suggestions(rows):
+    return [{k: v for k, v in row.items() if k != "suggestion"} for row in rows]
+
+
+def no_review():
+    """Review/gap stub: finish each batch immediately with no gaps."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    def run(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            tool = "complete_review" if prompt.get("stage") == "review" else "complete_gaps"
+            return ModelResponse(parts=[ToolCallPart(tool, {})])
+        return ModelResponse(parts=[])
+
+    return FunctionModel(run)
+
+
+def test_complete_run_and_resume(sources, tmp_path, monkeypatch):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from rsc.extract.runner import Runner
+
+    turns = []
+    model = fake_model(sources, turns)
+    first = Runner(tmp_path, sources, "test", ExtractConfig(), model, no_review())
+    save = first.save
+
+    def interrupt(**values):
+        save(**values)
+        if values.get("batch") == 1:
+            raise OSError("interrupted after commit")
+
+    monkeypatch.setattr(first, "save", interrupt)
+    with pytest.raises(OSError, match="after commit"):
+        asyncio.run(first.run())
+    initial_log = tmp_path / "llm" / "scan" / "basics" / "batch-00001.jsonl"
+    saved = read_jsonl(initial_log)
+    assert [row["event"] for row in saved] == ["request", "response", "request", "response"]
+    second = Runner(tmp_path, sources, "test", ExtractConfig(), model, no_review())
+    asyncio.run(second.run())
+    assert read_jsonl(initial_log) == saved
+    assert (tmp_path / "llm" / "scan" / "steps" / "batch-00001.jsonl").is_file()
+    assert [(task["kind"], task["id"]) for task, _ in turns] == [
+        (kind, batch) for kind in SCAN_KINDS for batch in sources.batches
+    ]
+    assert turns[0][1] == 1
+    assert turns[1][1] > 1
+    checkpoint = read_json(tmp_path / "extract-checkpoint.json")
+    assert len(checkpoint["registry"]["entities"]) == 6
+    assert checkpoint["global_checks"] == 1
+    assert not validate_protocol_file(tmp_path / "protocol.json")
+    assert read_json(tmp_path / "unresolved.json") == []
+
+
+def test_resume_rejects_a_six_pass_checkpoint(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    from rsc.extract.runner import Runner
+
+    atomic_json(
+        tmp_path / "extract-checkpoint.json",
+        {
+            "scan_kinds": list(ORDER),
+            "category": 0,
+            "batch": 0,
+            "global_checks": 0,
+            "global_errors": None,
+            "registry": empty_registry(),
+            "history": [],
+            "compact_summary": "",
+            "records": [],
+            "published": False,
+        },
+    )
+    with pytest.raises(ValueError, match="cannot change scan layout on resume"):
+        Runner(tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review())
+
+
+def test_model_log_keeps_failed_and_successful_attempts_in_one_file(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.exceptions import ModelHTTPError
+    from pydantic_ai.messages import ModelResponse, ThinkingPart, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    path = tmp_path / "llm" / "category" / "steps" / "validate-steps-7.jsonl"
+    calls = 0
+
+    def respond(messages, info):
+        nonlocal calls
+        calls += 1
+        assert read_jsonl(path)[-1]["event"] == "request"
+        if calls == 1:
+            with path.open("a", encoding="utf-8") as stream:
+                stream.write('{"event":"interrupted')
+            raise ModelHTTPError(502, "test", {"error": "upstream unavailable"})
+        if calls == 2:
+            return ModelResponse(
+                parts=[
+                    ThinkingPart(content="test reasoning"),
+                    ToolCallPart("validate_entities", {}),
+                ]
+            )
+        return ModelResponse(parts=[ToolCallPart("complete_fix", {"summary": "checked"})])
+
+    config = ExtractConfig(assignment_retries=1, history_tool_chars=1)
+    runner = Runner(tmp_path, sources, "test", config, FunctionModel(respond), no_review())
+    work = runner.workspace(Assignment("validate-steps-7", "category", "steps"))
+
+    async def run():
+        async with runner.toolset:
+            return await runner.retry(work)
+
+    history, record = asyncio.run(run())
+    assert record["status"] == "completed"
+    rows = read_jsonl(path)
+    assert [(r["assignment_attempt"], r["request_number"], r["event"]) for r in rows] == [
+        (1, 1, "request"),
+        (1, 1, "error"),
+        (2, 1, "request"),
+        (2, 1, "response"),
+        (2, 2, "request"),
+        (2, 2, "response"),
+    ]
+    assert rows[0]["run_id"] == rows[1]["run_id"] != rows[2]["run_id"]
+    assert len({r["run_id"] for r in rows[2:]}) == 1
+    assert rows[1]["error"]["body"] == {"error": "upstream unavailable"}
+    assert rows[2]["model_request_parameters"]["instruction_parts"]
+    assert any(
+        tool["name"] == "validate_entities"
+        for tool in rows[2]["model_request_parameters"]["function_tools"]
+    )
+    assert rows[3]["response"]["parts"][0]["content"] == "test reasoning"
+    assert history[0]["thinking_dropped"] == 1
+    parts = [part for message in rows[4]["messages"] for part in message["parts"]]
+    result = next(p for p in parts if p["part_kind"] == "tool-return")
+    assert result["content"]["rows"] == []
+
+
+def test_failed_assignment_records_spent_time_and_usage(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.exceptions import ModelAPIError
+    from pydantic_ai.messages import ModelResponse, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    calls = 0
+
+    def respond(messages, info):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return ModelResponse(parts=[ToolCallPart("validate_entities", {})])
+        raise ModelAPIError("test-model", "prompt rejected")
+
+    config = ExtractConfig(assignment_retries=0)
+    runner = Runner(tmp_path, sources, "test", config, FunctionModel(respond), no_review())
+    batch_id = next(iter(sources.batches))
+    work = runner.workspace(Assignment(batch_id, "scan", "parties"))
+
+    async def run():
+        async with runner.toolset:
+            return await runner.retry(work)
+
+    history, record = asyncio.run(run())
+    assert record["status"] == "failed"
+    assert "prompt rejected" in record["summary"]
+    # The attempt worked for one request before the provider refused, and that time
+    # and usage must survive into the checkpoint.
+    assert record["elapsed_seconds"] > 0
+    assert record["usage"]["requests"] >= 1
+    assert record["tool_calls"] >= 1
+    assert history == []
+
+
+def test_review_stage_retries_a_model_error(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.exceptions import ModelAPIError
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    calls = 0
+
+    def review(messages, info):
+        nonlocal calls
+        calls += 1
+        latest = messages[-1].parts[-1]
+        assert isinstance(latest, UserPromptPart)
+        assert json.loads(latest.content)["stage"] == "review"
+        if calls == 1:
+            raise ModelAPIError("test-model", "prompt flagged by the provider")
+        return ModelResponse(parts=[ToolCallPart("complete_review", {})])
+
+    config = ExtractConfig(assignment_retries=1, review_requests_per_second=100)
+    runner = Runner(
+        tmp_path, sources, "test", config, fake_model(sources, []), FunctionModel(review)
+    )
+    asyncio.run(runner.run())
+
+    batches = list(sources.batches)
+    assert calls == len(batches) + 1
+    assert {entry["stage"] for entry in runner.state["review"]["batches"].values()} == {
+        "reviewed"
+    }
+    rows = read_jsonl(tmp_path / "llm" / "review" / f"{batches[0]}.jsonl")
+    assert [(row["assignment_attempt"], row["event"]) for row in rows] == [
+        (1, "request"),
+        (1, "error"),
+        (2, "request"),
+        (2, "response"),
+    ]
+    review_records = [r for r in runner.state["records"] if r["phase"] == "review"]
+    assert len(review_records) == len(batches)
+    first = runner.state["review"]["batches"][batches[0]]
+    # A provider error before any response bills no request, but the attempt's
+    # wall clock is real and now survives into the checkpoint.
+    assert first["review_retry_seconds"] > 0
+    assert isinstance(first["review_retry_usage"], dict)
+
+
+def test_make_agent_uses_configured_tool_retries(sources):
+    pytest.importorskip("pydantic_ai")
+    from pydantic_ai.messages import ModelResponse
+    from pydantic_ai.models.function import FunctionModel
+    from pydantic_ai.toolsets import FunctionToolset
+
+    from rsc.extract.runner import make_agent
+
+    agent = make_agent(
+        FunctionModel(lambda messages, info: ModelResponse(parts=[])),
+        FunctionToolset(),
+        ExtractConfig(max_tool_retries=3),
+    )
+    # pydantic_ai keeps this on a private attribute.
+    assert agent._max_tool_retries == 3  # noqa: SLF001
+
+
+def test_global_limit_is_durable(sources, tmp_path):
+    pytest.importorskip("fastmcp")
+    from rsc.extract.runner import Runner
+
+    config = ExtractConfig()
+    model = fake_model(sources, [], add_party=False)
+    for _ in range(2):
+        runner = Runner(tmp_path, sources, "test", config, model, no_review())
+        with pytest.raises(ValueError, match="failed after 6 checks"):
+            asyncio.run(runner.run())
+        assert runner.state["global_checks"] == 6
+        assert not (tmp_path / "protocol.json").exists()
+
+
+def test_category_validation_is_visible_and_repairable(sources, tmp_path, monkeypatch):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    seen = []
+    fallback = fake_model(sources, []).function
+
+    def respond(messages, info):
+        prompt = next(
+            json.loads(part.content)
+            for message in reversed(messages)
+            for part in message.parts
+            if isinstance(part, UserPromptPart)
+        )
+        task = prompt["assignment"]
+        latest = messages[-1].parts[-1]
+        if task["kind"] == "basics" and task["phase"] == "scan":
+            if isinstance(latest, UserPromptPart):
+                # Every batch repeats the same names, so the merged pass records
+                # duplicates that the basics validation must surface and repair.
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            "add_entities",
+                            {
+                                "entities": [
+                                    party(sources, "Client"),
+                                    channel(sources, "Datagrams", connected=False),
+                                    entity(
+                                        sources,
+                                        "messages",
+                                        name="Packet",
+                                        associated_fields=[],
+                                    ),
+                                ]
+                            },
+                        )
+                    ]
+                )
+        if task["phase"] == "category":
+            if isinstance(latest, UserPromptPart):
+                return ModelResponse(parts=[ToolCallPart("validate_entities", {})])
+            if isinstance(latest, ToolReturnPart) and latest.tool_name == "validate_entities":
+                seen.append(latest.content)
+                duplicates = [
+                    row for row in latest.content["rows"] if row["type"] == "same_name"
+                ]
+                if duplicates:
+                    return ModelResponse(
+                        parts=[
+                            ToolCallPart(
+                                "merge_entities",
+                                {
+                                    "keep_id": row["records"][0],
+                                    "ids": row["records"][1:],
+                                    "reason": "same concept",
+                                    "evidence": [citation(sources)],
+                                },
+                            )
+                            for row in duplicates
+                        ]
+                    )
+        if task["phase"] == "scan" and task["kind"] != "basics":
+            return fallback(messages, info)
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "complete_batch" if task["phase"] == "scan" else "complete_fix",
+                    {"summary": "Complete"},
+                )
+            ]
+        )
+
+    model = FunctionModel(respond)
+    runner = Runner(tmp_path, sources, "test", ExtractConfig(), model, no_review())
+    save = runner.save
+
+    def interrupt(**values):
+        save(**values)
+        if values.get("category_repairs") == 1:
+            raise OSError("interrupted after repair commit")
+
+    monkeypatch.setattr(runner, "save", interrupt)
+    with pytest.raises(OSError, match="after repair commit"):
+        asyncio.run(runner.run())
+    runner = Runner(tmp_path, sources, "test", ExtractConfig(), model, no_review())
+    asyncio.run(runner.run())
+    assert seen
+    assert "same_name" in str(seen[0])
+    targets = {row["to"] for row in runner.state["registry"]["redirects"].values()}
+    assert targets == {"E1", "E2", "E3"}
+    assert not validate_protocol_file(tmp_path / "protocol.json")
+
+
+def test_in_batch_compaction_preserves_active_tool_exchange():
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from types import SimpleNamespace
+
+    from pydantic_ai import ModelMessagesTypeAdapter
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+
+    from rsc.extract.runner import ContextBudget, tokens
+
+    def exchange(text, call_id):
+        return [
+            ModelRequest(parts=[UserPromptPart(text)]),
+            ModelResponse(parts=[ToolCallPart("list_entities", {}, call_id)]),
+            ModelRequest(parts=[ToolReturnPart("list_entities", {}, call_id)]),
+        ]
+
+    old = exchange("old " * 400, "previous")
+    current = exchange("current", "active")
+    context = SimpleNamespace(messages=old + current)
+    state = SimpleNamespace(
+        rows=[{"messages": old, "decision": "Client alias confirmed in RFC 959"}],
+        discarded=0,
+        summary="",
+        summary_tokens=128,
+        limit=tokens(ModelMessagesTypeAdapter.dump_json(current).decode()) + 100,
+    )
+    result = asyncio.run(
+        ContextBudget().before_model_request(
+            SimpleNamespace(deps=state),
+            context,
+        )
+    )
+    assert result.messages[1:] == current
+    assert "alias confirmed" in result.messages[0].parts[0].content
+    assert state.discarded == 1
+
+
+def test_party_alias_projection_preserves_only_declared_party_links(sources):
+    work = Workspace(sources, "test", empty_registry(), Assignment("global", "global"))
+    client = party(sources, "Client")
+    client["value"]["alias"] = ["initiating client", "User", "Client"]
+    work.add_entities(
+        TypeAdapter(list[EntityAddition]).validate_python([client, party(sources, "User")])
+    )
+    assert work.protocol_model()["parties"][0]["alias"] == ["User"]
+    assert work.records["E1"]["value"]["alias"] == ["initiating client", "User", "Client"]
+
+
+def test_lifecycle_checks_mature_and_each_channel_requires_its_own_actions(sources):
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work = Workspace(
+        sources, "test", empty_registry(), Assignment("check-party", "category", "parties")
+    )
+    work.add_entities(add([party(sources, "Client")]))
+    assert work.deferred_checks() == ["party_channel"]
+    assert not work.issues()
+    work = Workspace(
+        sources, "test", work.data, Assignment("check-channel", "category", "channels")
+    )
+    assert work.issues()[0]["type"] == "party_without_channel"
+    work.add_entities(
+        add(
+            [
+                channel(sources, "One"),
+                channel(sources, "Two"),
+                channel(sources, "Datagrams", connected=False),
+            ]
+        )
+    )
+    assert "channel_step" in work.deferred_checks()
+    assert not work.issues()
+    work = Workspace(sources, "test", work.data, Assignment("check-steps", "category", "steps"))
+    issues = work.issues()
+    assert all("blocking" not in issue for issue in issues)
+    assert {f["check_ref"] for f in issues if f["type"].startswith("channel_requires_")} == {
+        f"channel_requires_{action}:{key}"
+        for key in ("E2", "E3")
+        for action in ("connect", "listen", "close")
+    }
+    assert all(f["evidence"] for f in issues)
+    with pytest.raises(ValueError, match="not an open coverage check"):
+        work.record_unresolved(
+            Unresolved(
+                description="Missing action",
+                entity_ids=["E2"],
+                evidence=[citation(sources)],
+                check_refs=["channel_requires_connect:E999"],
+            )
+        )
+    assert not work.index.incoming["E2"]
+    work.add_entities(
+        add(
+            [
+                entity(
+                    sources,
+                    "steps",
+                    name=action,
+                    action=action,
+                    party_name="Client",
+                    channel_name="One",
+                    condition="",
+                )
+                for action in ("connect", "listen", "close")
+            ]
+        )
+    )
+    assert len(work.index.incoming["E2"]) == 3
+    assert {
+        f["check_ref"] for f in work.issues() if f["type"].startswith("channel_requires_")
+    } == {
+        f"channel_requires_{action}:E3" for action in ("connect", "listen", "close")
+    }
+
+
+def test_cross_category_coverage_remains_open_until_repaired(sources):
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    fixture = fixtures_by_kind(sources)
+    work = Workspace(sources, "test", empty_registry(), Assignment("seed", "global"))
+    work.add_entities(
+        add(
+            [
+                *(fixture[k] for k in ORDER[:3]),
+                entity(sources, "states", name="flag", party_name="Client", source="processing"),
+                entity(sources, "messages", name="Component", associated_fields=[]),
+            ]
+        )
+    )
+    work.record_unresolved(
+        Unresolved(
+            description="The wire packet lacks its action",
+            entity_ids=["E3"],
+            evidence=[citation(sources)],
+        )
+    )
+    work.data["unresolved"]["U1"]["deferred_kind"] = "steps"
+    assert migrate_registry(work.data)
+    work = Workspace(
+        sources, "test", work.data, Assignment("check-messages", "category", "messages")
+    )
+    assert not work.issues()
+    work = Workspace(sources, "test", work.data, Assignment("check-steps", "category", "steps"))
+    checks = {f["check_ref"] for f in work.issues()}
+    assert {"state_without_access:E4", "message_without_send:E3"} <= checks
+    assert "deferred_entity:U1" not in checks
+    assert "deferred_kind" not in work.open_unresolved()[0]
+    work.add_entities(add([fixture["steps"]]))
+    work.record_unresolved(
+        Unresolved(
+            description="The Component is embedded in the wire packet",
+            entity_ids=["E5"],
+            evidence=[citation(sources)],
+            check_refs=["message_without_send:E5"],
+        )
+    )
+    work.record_unresolved(
+        Unresolved(
+            description="State hook cannot be completed with supplied sources",
+            entity_ids=["E4"],
+            evidence=[citation(sources)],
+            check_refs=["state_without_access:E4"],
+        )
+    )
+    cite = Evidence.model_validate(citation(sources))
+    work.solve_unresolved("U1", "Packet send has been added", [cite])
+    assert {issue["check_ref"] for issue in work.issues()} == {
+        "message_without_send:E5",
+        "state_without_access:E4",
+        "step_without_dependency:E6",
+    }
+    with pytest.raises(ValueError, match="linked coverage checks remain: state_without_access:E4"):
+        work.solve_unresolved("U3", "Premature closure", [cite])
+    work.update_entities(
+        [EntityUpdate(id="E5", withdraw_reason="Component is an embedded field", evidence=[cite])]
+    )
+    assert work.solve_unresolved("U2", "Withdrew the standalone component", [cite])["resolved"]
+    assert {issue["check_ref"] for issue in work.issues()} == {
+        "state_without_access:E4",
+        "step_without_dependency:E6",
+    }
+    assert work.protocol_model()["unresolved"][0]["object_names"] == ["flag"]
+    assert not work.protocol_model()["meta"]["complete"]
+    work = Workspace(
+        sources, "test", work.data, Assignment("check-deps", "category", "step_dependencies")
+    )
+    assert {f["check_ref"] for f in work.issues()} == {
+        "state_without_access:E4", "step_without_dependency:E6"
+    }
+    work.add_entities(add([fixture["step_dependencies"]]))
+    work.update_entities(
+        [
+            EntityUpdate(
+                id="E6",
+                patch={
+                    "processing": {
+                        "before_send": [{"reads": [], "writes": ["state.flag"], "rule": "set"}]
+                    }
+                },
+                evidence=[{**citation(sources), "field": "/processing"}],
+            )
+        ]
+    )
+    assert not work.issues()
+    receipt = work.solve_unresolved("U3", "The send step now writes the flag", [cite])
+    assert receipt == {"id": "U3", "resolved": True}
+    assert work.solve_unresolved("U3", "The send step now writes the flag", [cite]) == receipt
+    assert work.protocol_model()["meta"]["complete"]
+
+
+def test_legacy_coverage_stays_valid_only_until_its_entity_changes(sources):
+    work = Workspace(sources, "test", empty_registry(), Assignment("check", "category", "steps"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(
+        add([entity(sources, "messages", name=name, associated_fields=[]) for name in ("A", "B")])
+    )
+    cite = citation(sources)
+    for i in (1, 2):
+        key = f"E{i}"
+        ref = f"message_without_send:{key}"
+        result = work.record_unresolved(
+            Unresolved(
+                description=f"{key} is embedded",
+                entity_ids=[key],
+                evidence=[cite],
+                check_refs=[ref],
+            )
+        )
+        record = work.data["unresolved"][result["id"]]
+        record["disposition"] = "exempt"
+        record.pop("check_entity_ids")
+        record["check_revisions"] = {key: 1}
+        work.records[key]["revision"] = i
+    assert migrate_registry(work.data)
+    assert all("revision" not in row for row in work.records.values())
+    assert all("check_revisions" not in item for item in work.data["unresolved"].values())
+    assert all("disposition" not in item for item in work.data["unresolved"].values())
+    work = Workspace(sources, "test", work.data, Assignment("check", "category", "steps"))
+    assert [item["id"] for item in work.open_unresolved()] == ["U1"]
+    assert [item["check_ref"] for item in work.issues()] == [
+        "message_without_send:E1", "message_without_send:E2"
+    ]
+    work.update_entities([EntityUpdate(id="E1", patch={"name": "Renamed A"}, evidence=[cite])])
+    assert work.open_unresolved() == []
+    assert {item["check_ref"] for item in work.issues()} == {
+        "message_without_send:E1",
+        "message_without_send:E2",
+    }
+
+
+def test_sixth_global_validation_can_publish(sources, tmp_path, monkeypatch):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    check = Workspace.structural_issues
+    calls = []
+    reviewed = []
+    fallback = fake_model(sources, []).function
+
+    def fail_first_five(work):
+        if work.assignment.id == "global-validation":
+            calls.append(work.assignment.id)
+            if len(calls) <= 5:
+                return [
+                    {"type": "test", "records": [], "path": [], "description": f"try again {i}"}
+                    for i in range(10)
+                ]
+        return check(work)
+
+    def review(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            if prompt["assignment"]["phase"] == "global":
+                reviewed.append(prompt["validation_errors"])
+        return fallback(messages, info)
+
+    monkeypatch.setattr(Workspace, "structural_issues", fail_first_five)
+    runner = Runner(tmp_path, sources, "test", ExtractConfig(), FunctionModel(review), no_review())
+    asyncio.run(runner.run())
+    assert len(calls) == runner.state["global_checks"] == 6
+    checks = [
+        strip_suggestions(r["issues"])
+        for r in runner.state["records"]
+        if r["phase"] == "global-validation"
+    ]
+    assert [len(issues) for issues in reviewed] == [10] * 5
+    assert checks == [strip_suggestions(rows) for rows in reviewed] + [[]]
+    assert len(list((tmp_path / "llm" / "global").glob("global-fix-*.jsonl"))) == 5
+    assert read_json(tmp_path / "protocol.json")["meta"]["complete"]
+
+
+@pytest.mark.parametrize("repair_coverage", [False, True])
+def test_global_fix_rechecks_tracked_coverage_and_unresolved_after_resume(
+    sources, tmp_path, monkeypatch, repair_coverage
+):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    reviewed = []
+    cite = citation(sources)
+    check_ref = "state_without_access:E6"
+    flag_hook = {"reads": [], "writes": ["state.Flag"], "rule": "Set flag"}
+
+    def check_details(rows):
+        assert len(rows) == 1
+        check = rows[0]
+        assert check["check_ref"] == check_ref
+        assert check["records"] == ["E6"]
+        assert "Flag" in check["description"]
+        assert check["evidence"][0]["block_id"] == cite["block_id"]
+
+    def respond(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            assert prompt["assignment"]["phase"] == "global"
+            assert prompt["validation_error_count"] == 1
+            check_details(prompt["validation_errors"])
+            assert prompt["repairable_categories"] == list(ORDER)
+            reviewed.extend(row["id"] for row in prompt["unresolved"])
+            assert set(prompt["entities"]) == {"E1", "E6"}
+            assert prompt["unresolved"][-1]["check_refs"] == [check_ref]
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "solve_unresolved",
+                        {
+                            "unresolved_id": "U1",
+                            "reason": "The current model covers the referenced role",
+                            "evidence": [cite],
+                        },
+                    )
+                ]
+            )
+        if isinstance(latest, ToolReturnPart) and latest.tool_name == "solve_unresolved":
+            assert latest.content == {"id": "U1", "resolved": True}
+            return ModelResponse(parts=[ToolCallPart("validate_entities", {})])
+        if isinstance(latest, ToolReturnPart) and latest.tool_name == "update_entities":
+            assert latest.content[0]["id"] == "E4"
+            return ModelResponse(parts=[ToolCallPart("complete_fix", {"summary": "Repaired flag"})])
+        assert isinstance(latest, ToolReturnPart) and latest.tool_name == "validate_entities"
+        assert latest.content["error_count"] == 1
+        check_details(latest.content["rows"])
+        assert [row["id"] for row in latest.content["unresolved"]] == reviewed[1:]
+        if repair_coverage:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "update_entities",
+                        {
+                            "entities": [
+                                {
+                                    "id": "E4",
+                                    "patch": {"processing": {"before_send": [flag_hook]}},
+                                    "evidence": [{**cite, "field": "/processing"}],
+                                }
+                            ]
+                        },
+                    )
+                ]
+            )
+        return ModelResponse(parts=[ToolCallPart("complete_fix", {"summary": "Reviewed gaps"})])
+
+    config = ExtractConfig(max_global_validation_attempts=2)
+    model = FunctionModel(respond)
+    runner = Runner(tmp_path, sources, "test", config, model, no_review())
+    work = runner.workspace(Assignment("seed", "global"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(add(list(fixtures_by_kind(sources).values())))
+    for i in range(12):
+        work.record_unresolved(
+            Unresolved(description=f"Open item {i}", entity_ids=["E1"], evidence=[cite])
+        )
+    work.add_entities(
+        add([entity(sources, "states", name="Flag", party_name="Client", source="processing")])
+    )
+    work.record_unresolved(
+        Unresolved(
+            description="The flag has no hook yet",
+            entity_ids=["E6"],
+            evidence=[cite],
+            check_refs=[check_ref],
+        )
+    )
+    runner.save(
+        registry=work.data,
+        category=len(SCAN_KINDS),
+        records=[
+            {"phase": "scan", "kind": kind, "id": batch}
+            for kind in SCAN_KINDS
+            for batch in sources.batches
+        ],
+    )
+    save = runner.save
+
+    def interrupt(**updates):
+        save(**updates)
+        if updates.get("global_checks") == 1:
+            raise OSError("interrupted before global Fix")
+
+    monkeypatch.setattr(runner, "save", interrupt)
+    with pytest.raises(OSError, match="before global Fix"):
+        asyncio.run(runner.run())
+    assert not reviewed
+    assert not runner.state["published"]
+    check_details(runner.state["global_errors"])
+    runner = Runner(tmp_path, sources, "test", config, model, no_review())
+    if repair_coverage:
+        asyncio.run(runner.run())
+        assert runner.state["published"]
+        assert runner.state["global_errors"] == []
+        expected = reviewed[1:-1]
+        assert [row["id"] for row in read_json(tmp_path / "unresolved.json")] == expected
+        assert not read_json(tmp_path / "protocol.json")["meta"]["complete"]
+    else:
+        with pytest.raises(ValueError, match="global validation failed after 2 checks"):
+            asyncio.run(runner.run())
+        assert not runner.state["published"]
+        check_details(runner.state["global_errors"])
+        assert not (tmp_path / "protocol.json").exists()
+        expected = reviewed[1:]
+    assert reviewed == [f"U{i}" for i in range(1, 14)]
+    assert runner.state["global_checks"] == 2
+    receipt = next(row for row in runner.state["records"] if row["phase"] == "global")
+    assert receipt["status"] == "completed_with_unresolved"
+    assert receipt["unresolved_ids"] == sorted(expected)
+
+
+@pytest.mark.parametrize(
+    ("phase", "kind", "categories"),
+    [
+        ("scan", "messages", ("messages",)),
+        ("scan", "basics", ("parties", "channels", "messages")),
+        ("scan", "steps", ("steps", "states", "step_dependencies")),
+        ("category", "basics", ORDER[:3]),
+        ("category", "steps", ORDER),
+        ("global", None, ORDER),
+    ],
+)
+def test_scan_and_fix_prompt_describe_write_scope(sources, tmp_path, phase, kind, categories):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from rsc.extract.runner import Runner
+
+    runner = Runner(
+        tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review()
+    )
+    assignment_id = next(iter(sources.batches)) if phase == "scan" else "fix"
+    work = runner.workspace(Assignment(assignment_id, phase, kind))
+    prompt = json.loads(runner.prompt(work, []))
+    if phase == "scan" and len(categories) == 1:
+        assert f"During this scan, write only {kind}." in prompt["rule"]
+    elif phase == "scan":
+        assert "During this scan, write only" not in prompt["rule"]
+        assert "Order your own work" in prompt["rule"]
+        if kind == "steps":
+            assert "write steps, states and step_dependencies together" in prompt["rule"]
+            assert "cryptographic handshakes" in prompt["rule"]
+        else:
+            assert "write parties, channels and messages together" in prompt["rule"]
+            assert "belong to the interaction-unit pass" in prompt["rule"]
+    else:
+        assert prompt["repairable_categories"] == list(categories)
+        assert prompt["repair"].startswith(
+            f"You may write entities in {', '.join(categories)} during this Fix."
+        )
+        assert "write only" not in (prompt["rule"] or "")
+
+
+def test_interaction_scan_writes_states_and_dependencies(sources):
+    batch_id = next(iter(sources.batches))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "scan", "steps"))
+    work.add_entities(add(list(interaction_fixtures(sources).values())))
+    assert [row["kind"] for row in work.records.values()] == [
+        "steps",
+        "states",
+        "step_dependencies",
+    ]
+    with pytest.raises(ValueError, match="this scan can only write steps, states"):
+        work.add_entities(add([party(sources, "Client")]))
+
+
+def test_basics_scan_writes_three_categories(sources):
+    batch_id = next(iter(sources.batches))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "scan", "basics"))
+    work.add_entities(add(list(fixtures_by_kind(sources).values())[:3]))
+    assert [row["kind"] for row in work.records.values()] == [
+        "parties",
+        "channels",
+        "messages",
+    ]
+    with pytest.raises(ValueError, match="this scan can only write parties, channels"):
+        work.add_entities(add([interaction_fixtures(sources)["steps"]]))
+
+
+def test_basics_scan_ready_and_deferred(sources):
+    batch_id = next(iter(sources.batches))
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "scan", "basics"))
+    assert work.repairable_categories == ORDER[:3]
+    assert work.ready == ORDER[:2]
+    assert work.write_scope == ("parties", "channels", "messages")
+    assert work.deferred_checks() == ["channel_step"]
+
+
+def test_basics_fix_repairable_categories(sources):
+    work = Workspace(
+        sources, "test", empty_registry(), Assignment("validate-basics", "category", "basics")
+    )
+    assert work.repairable_categories == ORDER[:3]
+    assert work.ready == ORDER[:3]
+    assert work.deferred_checks() == ["channel_step", "message_send"]
+    for kind in ("parties", "channels", "messages"):
+        assert not work.allowed(kind)
+    with pytest.raises(ValueError, match="cannot write unscanned category steps"):
+        work.allowed("steps")
+
+
+def test_basics_prompt_orders_parties_then_channels_then_messages(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from rsc.extract.runner import Runner
+
+    runner = Runner(
+        tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review()
+    )
+    batch_id = next(iter(sources.batches))
+    prompt = json.loads(runner.prompt(runner.workspace(Assignment(batch_id, "scan", "basics")), []))
+    rule = prompt["rule"]
+    assert "write parties, channels and messages together" in rule
+    assert "Order your own work in three steps" in rule
+    assert "every distinct role the document treats as a participant" in rule
+    assert "speaks it again to another" in rule
+    assert "middlebox" not in rule
+    assert "If a party appears only in messages" in rule
+    assert "belong to the interaction-unit pass" in rule
+    assert "write steps, states and step_dependencies together" not in rule
+
+
+def test_legacy_four_pass_checkpoint_resumes(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    from rsc.extract.runner import Runner
+
+    atomic_json(
+        tmp_path / "extract-checkpoint.json",
+        {
+            "scan_kinds": list(LEGACY_SCAN_KINDS),
+            "category": 1,
+            "batch": 0,
+            "global_checks": 0,
+            "global_errors": None,
+            "registry": empty_registry(),
+            "history": [],
+            "compact_summary": "",
+            "records": [],
+            "published": False,
+        },
+    )
+    runner = Runner(
+        tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review()
+    )
+    assert runner.scan_kinds == LEGACY_SCAN_KINDS
+
+
+def test_interaction_scan_defers_only_dependencies(sources):
+    batch_id = next(iter(sources.batches))
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "scan", "steps"))
+    assert work.repairable_categories == ORDER
+    assert work.ready == ORDER[:5]
+    assert work.write_scope == ("steps", "states", "step_dependencies")
+    assert work.deferred_checks() == ["step_dependency"]
+
+
+def test_interaction_scan_flags_missing_state_producer_immediately(sources):
+    batch_id = next(iter(sources.batches))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "scan", "steps"))
+    work.add_entities(
+        add([entity(sources, "states", name="Lonely", party_name="Client", source="processing")])
+    )
+    description = {row["description"] for row in work.issues()}
+    assert "State 'Lonely' has no hook reads or writes and no processing producer" in description
+
+
+def test_interaction_unit_fix_covers_every_category(sources):
+    work = Workspace(sources, "test", empty_registry(), Assignment("fix", "category", "steps"))
+    assert work.repairable_categories == ORDER
+    assert work.ready == ORDER
+    assert work.deferred_checks() == []
+    for kind in ORDER:
+        assert not work.allowed(kind)
+
+
+def test_verify_coverage_requires_every_scan_kind_per_batch(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    from rsc.extract.runner import Runner
+
+    runner = Runner(
+        tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review()
+    )
+    runner.save(
+        records=[
+            {"phase": "scan", "kind": kind, "id": batch}
+            for kind in SCAN_KINDS[:-1]
+            for batch in sources.batches
+        ]
+    )
+    with pytest.raises(ValueError, match="incomplete or unordered"):
+        runner.verify_coverage()
+
+
+def test_advisory_step_without_processing_is_visible_but_not_blocking(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    fixture = fixtures_by_kind(sources)
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work = Workspace(sources, "test", empty_registry(), Assignment("check", "category", "steps"))
+    work.add_entities(
+        add(
+            [
+                fixture["parties"],
+                fixture["channels"],
+                fixture["messages"],
+                fixture["steps"],
+                fixture["step_dependencies"],
+            ]
+        )
+    )
+    assert work.issues() == []
+    assert [row["check_ref"] for row in work.advisory_issues()] == [
+        "step_without_processing:E4"
+    ]
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            report = (await client.call_tool("validate_entities", {})).data
+            assert report["error_count"] == 0
+            assert report["advisory_count"] == 1
+            assert report["rows"] == []
+            assert [row["check_ref"] for row in report["advisory"]] == [
+                "step_without_processing:E4"
+            ]
+            assert report["advisory"][0]["suggestion"]
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    ("phase", "kind", "categories"),
+    [
+        ("scan", "parties", ORDER[:1]),
+        ("scan", "basics", ("parties", "channels", "messages")),
+        ("scan", "steps", ("steps", "states", "step_dependencies")),
+        ("category", "channels", ORDER[:2]),
+        ("category", "basics", ORDER[:3]),
+        ("global", None, ORDER),
+    ],
+)
+def test_completion_tools_return_repairable_categories(sources, phase, kind, categories):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+    from fastmcp.exceptions import ToolError
+
+    from rsc.extract.tools import make_server
+
+    assignment = Assignment("test", phase, kind)
+    work = Workspace(sources, "test", empty_registry(), assignment)
+    expected = "complete_batch" if phase == "scan" else "complete_fix"
+    other = "complete_fix" if phase == "scan" else "complete_batch"
+    args = {"summary": "Finished"}
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    if phase == "category":
+        work.add_entities(add([party(sources, "Client")]))
+        work.repair_start_count = len(work.issues())
+    elif phase == "global":
+        seed = Workspace(sources, "test", empty_registry(), Assignment("seed", "global"))
+        seed.add_entities(add([party(sources, "Client")]))
+        seed.record_unresolved(
+            Unresolved(
+                description="Client needs a channel",
+                entity_ids=["E1"],
+                evidence=[citation(sources)],
+                check_refs=["party_without_channel:E1"],
+            )
+        )
+        work = Workspace(sources, "test", seed.data, assignment)
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            with pytest.raises(ToolError, match=f"use {expected}"):
+                await client.call_tool(other, args)
+            assert work.completion is None
+            if phase == "category":
+                rejected = await client.call_tool(expected, args)
+                assert rejected.data["accepted"] is False
+                assert rejected.data["repairable_categories"] == list(categories)
+                work.add_entities(add([channel(sources, "Datagrams", connected=False)]))
+            if phase == "global":
+                # A no-op global Fix is rejected once so the agent retries with a change.
+                rejected = await client.call_tool(expected, args)
+                assert rejected.data["accepted"] is False
+                assert rejected.data["repair_start_count"] == work.repair_start_count
+                assert rejected.data["error_count"] == len(work.issues())
+                assert len(rejected.data["errors"]) == len(work.issues())
+                assert all("suggestion" in row for row in rejected.data["errors"])
+            result = await client.call_tool(expected, args)
+            scope = {
+                "repairable_categories": list(categories),
+            }
+            if phase == "global":
+                validation = (await client.call_tool("validate_entities", {})).data
+                assert validation["error_count"] == 1
+                assert strip_suggestions(validation["rows"]) == [
+                    {
+                        "type": "party_without_channel",
+                        "check_ref": "party_without_channel:E1",
+                        "records": ["E1"],
+                        "path": [],
+                        "description": "Party 'Client' is not a channel endpoint",
+                        "evidence": seed.records["E1"]["evidence"],
+                    }
+                ]
+                assert validation["unresolved"] == [seed.data["unresolved"]["U1"]]
+                scope.update(validation)
+            assert result.data == {"accepted": True, "assignment": "test", **scope}
+            repeated = await client.call_tool(expected, args)
+            assert repeated.data == {"accepted": True, **scope}
+
+    asyncio.run(check())
+
+
+def test_entity_tools_return_full_evidence_blocks_and_references(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+    fixture = fixtures_by_kind(sources)
+    location = citation(sources)
+    doc, block_id = location["document_id"], location["block_id"]
+    span = sources.evidence(doc, block_id)
+    fixture["channels"]["evidence"] = [
+        {
+            **location,
+            "start": span["start"],
+            "end": span["start"] + 1,
+            "note": f"Evidence {i}",
+        }
+        for i in range(10)
+    ]
+    fixture["channels"]["mentions"] = [location]
+    step = fixture["steps"]
+    variants = [
+        {**step, "value": {**step["value"], "name": f"Send variant {i}"}} for i in range(10)
+    ]
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(add([*fixture.values(), *variants]))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            assert len(await client.list_tools()) == 15
+            result = await client.call_tool("get_entity", {"id": "E2"})
+            assert result.data["references"] == [
+                *[
+                    {"from": f"E{i}", "field": ["channel_name"], "to": "E2"}
+                    for i in [4, *range(6, 16)]
+                ],
+                {"from": "E2", "field": ["endpoint_party_names", 0], "to": "E1"},
+            ]
+            assert result.data["evidence"] == [
+                {**cite, "text": sources.blocks[doc, block_id]["text"]}
+                for cite in work.records["E2"]["evidence"]
+            ]
+            assert len(result.data["evidence"]) == 10
+            assert result.data["mentions"] == work.records["E2"]["mentions"]
+            found = await client.call_tool("search_entities", {"queries": ["Datagrams"]})
+            assert found.data["rows"] == [result.data]
+            batch = await client.call_tool(
+                "get_entity",
+                {"ids": ["E1", "E2", "E2", "E999"]},
+            )
+            assert list(batch.data["entities"]) == ["E1", "E2"]
+            assert batch.data["entities"]["E2"] == result.data
+            assert "unknown active entity" in batch.data["errors"]["E999"]
+            empty = await client.call_tool("get_entity", {"ids": []})
+            assert empty.data == {"entities": {}, "errors": {}}
+            missing = await client.call_tool(
+                "read_source",
+                {"document_id": location["document_id"], "section_path": ["99"]},
+            )
+            assert missing.data["error"] == "unknown or empty section path"
+            assert missing.data["nearby_section_paths"]
+            assert all(
+                (location["document_id"], tuple(path)) in sources.sections
+                for path in missing.data["nearby_section_paths"]
+            )
+
+    asyncio.run(check())
+
+
+def test_search_entities_returns_paged_union_of_name_and_alias_matches(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(
+        add(
+            [
+                party(sources, "Client Proxy"),
+                {**party(sources, "Server"), "aliases": ["Remote Peer"]},
+                party(sources, "Client"),
+                channel(sources, "Client"),
+            ]
+        )
+    )
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            args = {"queries": ["client", "REMOTE PEER", "proxy", "client"], "kind": "parties"}
+            first = await client.call_tool("search_entities", {**args, "limit": 2})
+            second = await client.call_tool(
+                "search_entities", {**args, "offset": first.data["next_offset"], "limit": 2}
+            )
+            assert [row["id"] for row in first.data["rows"]] == ["E2", "E3"]
+            assert [row["id"] for row in second.data["rows"]] == ["E1"]
+            assert second.data["next_offset"] is None
+            single = await client.call_tool("search_entities", {"query": "client"})
+            assert [row["id"] for row in single.data["rows"]] == ["E3", "E4", "E1"]
+            listed = await client.call_tool("list_entities", {"kind": "parties", "limit": 1})
+            assert listed.data["rows"] == [
+                {"id": "E1", "kind": "parties", "name": "Client Proxy", "aliases": []}
+            ]
+            empty = await client.call_tool("search_entities", {"queries": []})
+            assert empty.data == {"rows": [], "next_offset": None}
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("repair_rounds", [1, 2])
+def test_category_review_and_tool_return_all_issues(sources, tmp_path, repair_rounds):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, ToolReturnPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    reviewed = []
+    cite = citation(sources)
+
+    def respond(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            reviewed.append(prompt["validation_errors"])
+            assert prompt["repairable_categories"] == list(ORDER[:2])
+            assert [item["id"] for item in prompt["unresolved"]] == ["U1"]
+            ids = {i for issue in reviewed[-1] for i in issue["records"]}
+            assert set(prompt["entities"]) == ids
+            assert all(
+                row["id"] == i and row["value"]["name"] and row["evidence"]
+                and "revision" not in row
+                for i, row in prompt["entities"].items()
+            )
+            return ModelResponse(parts=[ToolCallPart("validate_entities", {})])
+        if isinstance(latest, ToolReturnPart) and latest.tool_name == "validate_entities":
+            assert latest.content["rows"] == reviewed[-1]
+            assert latest.content["error_count"] == len(reviewed[-1])
+            assert "blocking_count" not in latest.content
+            errors = reviewed[-1][:13]
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "update_entities",
+                        {
+                            "entities": [
+                                {
+                                    "id": row["records"][0],
+                                    "withdraw_reason": "This object is not a channel participant",
+                                    "evidence": [cite],
+                                }
+                                for row in errors
+                            ],
+                        },
+                    )
+                ]
+            )
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "complete_fix",
+                    {"summary": "Checked source"},
+                )
+            ]
+        )
+
+    config = ExtractConfig(max_repair_rounds=repair_rounds)
+    runner = Runner(tmp_path, sources, "test", config, FunctionModel(respond), no_review())
+    work = runner.workspace(Assignment("seed", "global"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(add([party(sources, f"Role {i}") for i in range(20)]))
+    work.add_entities(add([party(sources, f"Role {i}") for i in range(20, 25)]))
+    work.record_unresolved(
+        Unresolved(description="Earlier unresolved issue", entity_ids=[], evidence=[cite])
+    )
+    runner.save(registry=work.data, category=1, batch=len(sources.batches))
+    atomic_json(
+        tmp_path / "extract-failure.json",
+        {
+            "assignment": {"id": "validate-channels", "phase": "category", "kind": "channels"},
+            "error": "request_limit exceeded",
+        },
+    )
+
+    async def check():
+        async with runner.toolset:
+            await runner.validate_category(1, "channels")
+
+    asyncio.run(check())
+    assert [len(issues) for issues in reviewed] == [25, 12][:repair_rounds]
+    assert runner.state["category"] == 2
+    assert runner.state["batch"] == runner.state["category_repairs"] == 0
+    remaining = runner.workspace(Assignment("validate-channels", "category", "channels")).issues()
+    assert len(remaining) == (12 if repair_rounds == 1 else 0)
+    assert [
+        row["error_count"]
+        for row in runner.state["records"]
+        if row["phase"] == "category-validation"
+    ] == [25, 12, 0][:repair_rounds + 1]
+
+
+def test_large_tool_results_are_stubbed_with_readable_blocks():
+    pytest.importorskip("pydantic_ai")
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
+
+    from rsc.extract.runner import compact_json_messages, compact_messages
+
+    big = "blk-000129 " + "RFC text " * 600
+    small = {"text": "ok"}
+
+    messages, changed = compact_messages(
+        [ModelRequest(parts=[ToolReturnPart("read_source", {"text": big}, "call-1")])], 1200
+    )
+    assert changed == 1
+    stub = messages[0].parts[0].content
+    assert stub["omitted"] is True and stub["blocks"] == ["blk-000129"]
+    assert messages[0].parts[0].tool_call_id == "call-1"
+
+    rows = [
+        {
+            "parts": [
+                {"part_kind": "tool-return", "tool_name": "read_source", "content": {"text": big}},
+                {"part_kind": "tool-return", "tool_name": "get_entity", "content": small},
+            ]
+        }
+    ]
+    stubs, thinking = compact_json_messages(rows, 1200)
+    assert (stubs, thinking) == (1, 0)
+    assert rows[0]["parts"][0]["content"]["omitted"] is True
+    assert rows[0]["parts"][1]["content"] == small
+
+
+def test_context_budget_stubs_before_dropping_rows():
+    pytest.importorskip("pydantic_ai")
+    from types import SimpleNamespace
+
+    from pydantic_ai import ModelMessagesTypeAdapter
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
+
+    from rsc.extract.runner import ContextBudget, tokens
+
+    old = [
+        ModelRequest(
+            parts=[ToolReturnPart("read_source", {"text": "blk-000001 " + "x" * 8000}, "c1")]
+        ),
+        ModelRequest(
+            parts=[ToolReturnPart("read_source", {"text": "blk-000002 " + "y" * 8000}, "c2")]
+        ),
+    ]
+    current = [ModelRequest(parts=[ToolReturnPart("get_entity", {"id": "E1"}, "c3")])]
+    context = SimpleNamespace(messages=old + current)
+    state = SimpleNamespace(
+        rows=[{"messages": old, "decision": "earlier decision"}],
+        discarded=0,
+        summary="",
+        summary_tokens=128,
+        keep_full_turns=1,
+        tool_chars=1200,
+        stub_before_drop=True,
+        limit=tokens(ModelMessagesTypeAdapter.dump_json(current).decode()) + 400,
+    )
+    result = asyncio.run(ContextBudget().before_model_request(SimpleNamespace(deps=state), context))
+    # The old tool results shrink to stubs, so no row has to be discarded.
+    assert state.discarded == 0
+    assert result.messages[0].parts[0].content["omitted"] is True
+    assert result.messages[-1].parts[0].content == {"id": "E1"}
+
+
+def test_history_compaction_is_recorded(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+
+    from rsc.extract.cli import ExtractConfig
+    from rsc.extract.runner import Runner
+
+    config = ExtractConfig(context_tokens=6000, output_tokens=1024, tool_result_reserve_tokens=1024)
+    runner = Runner(tmp_path, sources, "test", config, review_model=no_review())
+    rows = [{"messages": [], "tokens": 4000, "decision": f"decision {index}"} for index in range(3)]
+    runner.save(history=rows)
+    runner.history('{"batch_id": "batch-00001"}')
+    assert runner.compactions, "compaction must be recorded"
+    record = runner.compactions[-1]
+    assert record["trigger"] == "history"
+    assert record["discarded_rows"] >= 1
+    assert record["retained_rows"] < len(rows)
+
+
+def test_repairs_start_without_scan_history(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+
+    from rsc.extract.cli import ExtractConfig
+    from rsc.extract.runner import Runner
+
+    runner = Runner(tmp_path, sources, "test", ExtractConfig())
+    runner.save(
+        history=[{"messages": [], "tokens": 10, "decision": "scan decision"}],
+        compact_summary="scan summary",
+        category=1,
+    )
+
+    async def check():
+        async with runner.toolset:
+            # No parties exist, so the category passes with no issues and no agent turn.
+            await runner.validate_category(1, "channels")
+
+    asyncio.run(check())
+    assert runner.state["history"] == []
+    assert runner.state["compact_summary"] == ""
+
+
+def test_history_rows_drop_stored_reasoning():
+    from rsc.extract.runner import compact_json_messages
+
+    rows = [
+        {
+            "parts": [
+                {"part_kind": "thinking", "content": "long reasoning " * 100},
+                {"part_kind": "tool-call", "tool_name": "get_entity", "args": {"id": "E1"}},
+                {"part_kind": "tool-return", "tool_name": "get_entity", "content": {"id": "E1"}},
+            ]
+        }
+    ]
+    stubs, thinking = compact_json_messages(rows, 1200)
+    assert (stubs, thinking) == (0, 1)
+    assert [part["part_kind"] for part in rows[0]["parts"]] == ["tool-call", "tool-return"]
+
+
+
+
+def review_model(handler):
+    """Reviewer/gap-fix model driven by tool calls; records each initial prompt."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    calls = []
+
+    def run(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            calls.append(prompt.get("stage"))
+            parts = handler(prompt, len(calls)) or []
+            return ModelResponse(parts=parts)
+        return ModelResponse(parts=[ToolCallPart("complete_review", {})])
+
+    return FunctionModel(run), calls
+
+
+def test_review_instructions_cover_all_categories_and_nesting():
+    from rsc.extract.review import INSTRUCTIONS
+
+    for term in (
+        "Party",
+        "Channel",
+        "Message",
+        "State",
+        "Step",
+        "Step dependency",
+        "endpoint_sources",
+        "before_send",
+        "after_send",
+        "on_receive",
+        "message_bytes",
+        "field_relations",
+        "evidence",
+    ):
+        assert term in INSTRUCTIONS
+    assert "FTP" not in INSTRUCTIONS and "TLS" not in INSTRUCTIONS
+    assert "ClientHello" not in INSTRUCTIONS
+    assert "do not require a state to gain attributes" in INSTRUCTIONS
+
+
+def test_review_records_gaps_and_deduplicates(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ToolCallPart
+
+    from rsc.extract.runner import Runner
+
+    batch_id = next(iter(sources.batches))
+    block = sources.batches[batch_id]["segments"][1]
+    payload = {
+        "kind": "states",
+        "name": "session flag",
+        "block_id": block["block_id"],
+        "missing_attributes": ["reset condition"],
+    }
+
+    def handler(prompt, count):
+        if not prompt.get("recorded_gaps"):
+            return [
+                ToolCallPart("record_gap", payload),
+                ToolCallPart("record_gap", payload),
+            ]
+        return [ToolCallPart("complete_review", {})]
+
+    model, calls = review_model(handler)
+    runner = Runner(
+        tmp_path,
+        sources,
+        "test",
+        ExtractConfig(review_requests_per_second=100),
+        no_review(),
+        model,
+    )
+    asyncio.run(runner.review_gaps())
+    review = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    entry = review["batches"][batch_id]
+    assert entry["stage"] == "reviewed"
+    assert len(entry["gaps"]) == 1
+    gap = entry["gaps"][0]
+    assert gap["document_id"] == sources.batches[batch_id]["doc_id"]
+    assert gap["block_id"] == block["block_id"]
+    assert gap["section_path"] == block["section_path"]
+    assert gap["missing_attributes"] == ["reset condition"]
+    assert gap["gap_id"].startswith(f"{gap['document_id']}-g")
+    # The document group that followed fixed this gap.
+    assert gap["status"] == "done"
+
+
+def test_review_toolset_is_read_only(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "review"))
+    reviewer = {
+        "list_entities",
+        "search_entities",
+        "get_entity",
+        "read_source",
+        "validate_entities",
+        "record_gap",
+        "complete_review",
+    }
+
+    async def check():
+        async with Client(make_server(lambda: work, readonly=True)) as client:
+            names = {tool.name for tool in await client.list_tools()}
+            assert names == reviewer
+            # A read-only server does not even offer the tool, so the model cannot
+            # spend a request on a rejected write.
+            with pytest.raises(Exception, match="add_entities"):
+                await client.call_tool("add_entities", {"entities": [party(sources, "Client")]})
+            report = (await client.call_tool("validate_entities", {})).data
+            assert report["error_count"] >= 0
+        async with Client(make_server(lambda: work)) as client:
+            names = {tool.name for tool in await client.list_tools()}
+            assert len(names) == 15
+            assert names - reviewer == {
+                "add_entities",
+                "update_entities",
+                "merge_entities",
+                "record_unresolved",
+                "solve_unresolved",
+                "complete_batch",
+                "complete_fix",
+                "complete_gaps",
+            }
+
+    asyncio.run(check())
+
+
+def test_review_batches_run_concurrently(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    batches = list(sources.batches)
+    arrival = {"count": 0}
+    together = asyncio.Event()
+    serial = []
+
+    async def review(messages, info):
+        latest = messages[-1].parts[-1]
+        if not isinstance(latest, UserPromptPart):
+            return ModelResponse(parts=[ToolCallPart("complete_review", {})])
+        prompt = json.loads(latest.content)
+        arrival["count"] += 1
+        if arrival["count"] >= len(batches):
+            together.set()
+        try:
+            await asyncio.wait_for(together.wait(), 0.5)
+        except TimeoutError:
+            # A serial schedule reaches the second reviewer only after the first
+            # assignment finished, so the first one waits out the timeout.
+            serial.append(prompt["batch"]["batch_id"])
+        block = prompt["batch"]["text"].split("]")[0].removeprefix("[")
+        return ModelResponse(
+            parts=[
+                ToolCallPart(
+                    "record_gap",
+                    {
+                        "kind": "parties",
+                        "name": f"party {prompt['batch']['batch_id']}",
+                        "block_id": block,
+                    },
+                )
+            ]
+        )
+
+    config = ExtractConfig(review_requests_per_second=100, review_concurrency=2)
+    runner = Runner(tmp_path, sources, "test", config, no_review(), FunctionModel(review))
+    asyncio.run(runner.review_gaps())
+    assert not serial, f"reviewers started serially: {serial}"
+    review = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    for batch_id in batches:
+        entry = review["batches"][batch_id]
+        assert entry["stage"] == "reviewed"
+        # Each task writes into its own workspace: no batch sees the other's gap.
+        assert [gap["batch_id"] for gap in entry["gaps"]] == [batch_id]
+        assert entry["gaps"][0]["name"] == f"party {batch_id}"
+
+
+def test_batches_review_in_parallel_then_fix_grouped(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    order = []
+    batches = list(sources.batches)
+
+    def handler(prompt, count):
+        batch_id = prompt["batch"]["batch_id"]
+        order.append(("review", batch_id))
+        if batch_id == batches[0] and not prompt.get("recorded_gaps"):
+            block = prompt["batch"]["text"].split("]")[0].removeprefix("[")
+            return [
+                ToolCallPart(
+                    "record_gap", {"kind": "parties", "name": "client", "block_id": block}
+                )
+            ]
+        return [ToolCallPart("complete_review", {})]
+
+    model, calls = review_model(handler)
+    fallback = fake_model(sources, [])
+
+    def main(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            if prompt.get("stage") == "gap":
+                order.append(("gap", prompt["assignment"]))
+        return fallback.function(messages, info)
+
+    runner = Runner(
+        tmp_path,
+        sources,
+        "test",
+        ExtractConfig(review_requests_per_second=100),
+        FunctionModel(main),
+        model,
+    )
+    asyncio.run(runner.review_gaps())
+    reviews = [index for index, (phase, _) in enumerate(order) if phase == "review"]
+    gaps = [index for index, (phase, _) in enumerate(order) if phase == "gap"]
+    assert len(reviews) == len(batches) and gaps
+    # Every batch is reviewed before the first document group runs.
+    assert max(reviews) < min(gaps)
+
+
+def test_zero_gap_batch_skips_gap_fix(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ToolCallPart
+
+    from rsc.extract.runner import Runner
+
+    model, calls = review_model(lambda prompt, count: [ToolCallPart("complete_review", {})])
+    runner = Runner(
+        tmp_path,
+        sources,
+        "test",
+        ExtractConfig(review_requests_per_second=100),
+        no_review(),
+        model,
+    )
+    asyncio.run(runner.review_gaps())
+    review = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    assert {entry["stage"] for entry in review["batches"].values()} == {"reviewed"}
+    assert review["groups"] == {}
+    assert not list((tmp_path / "llm").glob("gap/*"))
+
+
+def test_review_role_is_read_only_and_completion_tools_are_separated(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    review_work = Workspace(
+        sources, "test", empty_registry(), Assignment(batch_id, "review")
+    )
+    gap_work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
+    scan_work = Workspace(
+        sources, "test", empty_registry(), Assignment(batch_id, "scan", "parties")
+    )
+
+    async def check():
+        async with Client(make_server(lambda: review_work)) as client:
+            with pytest.raises(Exception, match="reviewer cannot modify"):
+                await client.call_tool("add_entities", {"entities": [party(sources, "Client")]})
+            with pytest.raises(Exception, match="use complete_fix for review assignments"):
+                await client.call_tool("complete_fix", {"summary": "x"})
+            with pytest.raises(Exception, match="requires a gap"):
+                await client.call_tool("complete_gaps", {})
+        async with Client(make_server(lambda: gap_work)) as client:
+            with pytest.raises(Exception, match="requires a review"):
+                await client.call_tool("complete_review", {})
+            accepted = await client.call_tool("complete_gaps", {})
+            assert accepted.data["accepted"] is True
+        async with Client(make_server(lambda: scan_work)) as client:
+            with pytest.raises(Exception, match="requires a review"):
+                await client.call_tool("complete_review", {})
+
+    asyncio.run(check())
+
+
+def failing_review_model(failing):
+    """Reviewer fake that fails the named batch once, then completes."""
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    attempts = {}
+
+    def run(messages, info):
+        latest = messages[-1].parts[-1]
+        if not isinstance(latest, UserPromptPart):
+            return ModelResponse(parts=[])
+        prompt = json.loads(latest.content)
+        batch_id = prompt["batch"]["batch_id"]
+        if batch_id == failing and not attempts.get(batch_id):
+            attempts[batch_id] = 1
+            return ModelResponse(parts=[])
+        return ModelResponse(parts=[ToolCallPart("complete_review", {})])
+
+    return FunctionModel(run), attempts
+
+
+def test_review_failure_is_isolated(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+
+    from rsc.extract.runner import Runner
+
+    batches = list(sources.batches)
+    failing, sibling = batches[0], batches[1]
+    model, attempts = failing_review_model(failing)
+    config = ExtractConfig(
+        review_requests_per_second=100, assignment_retries=0, max_tool_retries=0
+    )
+    runner = Runner(tmp_path, sources, "test", config, no_review(), model)
+    with pytest.raises(ValueError):
+        asyncio.run(runner.review_gaps())
+    review = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    assert review["batches"][failing]["stage"] == "review_failed"
+    # The sibling finished even though one batch failed, and its work is on disk.
+    assert review["batches"][sibling]["stage"] == "reviewed"
+    assert review["batches"][sibling]["review_calls"] >= 1
+
+    resumed = Runner(tmp_path, sources, "test", config, no_review(), model)
+    asyncio.run(resumed.review_gaps())
+    review = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    assert review["batches"][failing]["stage"] == "reviewed"
+    # Only the failed batch was reviewed again.
+    assert attempts == {failing: 1}
+
+
+def test_review_failure_keeps_batch_unfinished_and_resume_retries_it(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+
+    from rsc.extract.runner import Runner
+
+    batch_id = next(iter(sources.batches))
+    model, attempts = failing_review_model(batch_id)
+    config = ExtractConfig(
+        review_requests_per_second=100, assignment_retries=0, max_tool_retries=0
+    )
+    runner = Runner(tmp_path, sources, "test", config, no_review(), model)
+    with pytest.raises(ValueError):
+        asyncio.run(runner.review_gaps())
+    review = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    assert review["batches"][batch_id]["stage"] == "review_failed"
+    resumed = Runner(tmp_path, sources, "test", config, no_review(), model)
+    asyncio.run(resumed.review_gaps())
+    review = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    assert review["batches"][batch_id]["stage"] == "reviewed"
+
+
+def test_gap_failure_resumes_at_gap_stage(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    batch_id = next(iter(sources.batches))
+    document_id = sources.batches[batch_id]["doc_id"]
+    group_id = f"gap-{document_id}-1"
+    fix_attempts = {"n": 0}
+
+    def handler(prompt, count):
+        if not prompt.get("recorded_gaps"):
+            block = prompt["batch"]["text"].split("]")[0].removeprefix("[")
+            return [
+                ToolCallPart(
+                    "record_gap", {"kind": "parties", "name": "client", "block_id": block}
+                )
+            ]
+        return [ToolCallPart("complete_review", {})]
+
+    reviewer, _ = review_model(handler)
+
+    def main(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            if prompt.get("stage") == "gap":
+                fix_attempts["n"] += 1
+                if fix_attempts["n"] == 1:
+                    return ModelResponse(parts=[])
+                return ModelResponse(parts=[ToolCallPart("complete_gaps", {})])
+        return ModelResponse(parts=[])
+
+    config = ExtractConfig(
+        review_requests_per_second=100, assignment_retries=0, max_tool_retries=0
+    )
+    runner = Runner(tmp_path, sources, "test", config, FunctionModel(main), reviewer)
+    with pytest.raises(ValueError):
+        asyncio.run(runner.review_gaps())
+    review = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    assert review["groups"][group_id]["status"] == "failed"
+    assert review["batches"][batch_id]["stage"] == "reviewed"
+
+    resumed = Runner(tmp_path, sources, "test", config, FunctionModel(main), reviewer)
+    asyncio.run(resumed.review_gaps())
+    review = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    assert review["groups"][group_id]["status"] == "done"
+    assert review["batches"][batch_id]["gaps"][0]["status"] == "done"
+
+
+def test_gaps_grouped_by_document(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    batches = list(sources.batches)
+    expected = {
+        batches[0]: [("states", "flag"), ("parties", "client"), ("messages", "hello")],
+        batches[1]: [("states", "other flag"), ("parties", "other client")],
+    }
+
+    def handler(prompt, count):
+        batch_id = prompt["batch"]["batch_id"]
+        if prompt.get("recorded_gaps"):
+            return [ToolCallPart("complete_review", {})]
+        block = prompt["batch"]["text"].split("]")[0].removeprefix("[")
+        return [
+            ToolCallPart(
+                "record_gap", {"kind": kind, "name": name, "block_id": block}
+            )
+            for kind, name in expected[batch_id]
+        ]
+
+    reviewer, _ = review_model(handler)
+    seen = []
+    fallback = fake_model(sources, [])
+
+    def main(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            if prompt.get("stage") == "gap":
+                seen.append(
+                    (
+                        prompt["assignment"],
+                        prompt["document_id"],
+                        [gap["gap_id"] for gap in prompt["gaps"]],
+                    )
+                )
+        return fallback.function(messages, info)
+
+    runner = Runner(
+        tmp_path,
+        sources,
+        "test",
+        ExtractConfig(review_requests_per_second=100),
+        FunctionModel(main),
+        reviewer,
+    )
+    asyncio.run(runner.review_gaps())
+    state = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    first, second = (sources.batches[batch_id]["doc_id"] for batch_id in batches)
+    assert set(state["groups"]) == {f"gap-{first}-1", f"gap-{second}-1"}
+    group = state["groups"][f"gap-{first}-1"]
+    assert group["status"] == "done"
+    assert group["gap_ids"] == [f"{first}-g{n}" for n in (1, 2, 3)]
+    assert state["groups"][f"gap-{second}-1"]["gap_ids"] == [
+        f"{second}-g{n}" for n in (1, 2)
+    ]
+    # Documents run in manifest order, and the groups never interleave.
+    assert [(item[0], item[1]) for item in seen] == [
+        (f"gap-{first}-1", first),
+        (f"gap-{second}-1", second),
+    ]
+
+
+def test_gap_group_respects_max_and_ids_are_stable(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ModelResponse, ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    batch_id = next(iter(sources.batches))
+    document_id = sources.batches[batch_id]["doc_id"]
+    names = [f"missing {number}" for number in range(1, 8)]
+
+    def handler(prompt, count):
+        # Only the first document records gaps, so its seven gaps span three groups.
+        if prompt["batch"]["batch_id"] != batch_id or prompt.get("recorded_gaps"):
+            return [ToolCallPart("complete_review", {})]
+        block = prompt["batch"]["text"].split("]")[0].removeprefix("[")
+        return [
+            ToolCallPart("record_gap", {"kind": "states", "name": name, "block_id": block})
+            for name in names
+        ]
+
+    reviewer, _ = review_model(handler)
+    calls = []
+
+    def main(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            calls.append(json.loads(latest.content)["assignment"])
+        return ModelResponse(parts=[ToolCallPart("complete_gaps", {})])
+
+    config = ExtractConfig(review_requests_per_second=100, gap_group_max=3)
+    runner = Runner(tmp_path, sources, "test", config, FunctionModel(main), reviewer)
+    asyncio.run(runner.review_gaps())
+    state = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    groups = {
+        f"gap-{document_id}-{number}": state["groups"][f"gap-{document_id}-{number}"]
+        for number in (1, 2, 3)
+    }
+    assert [len(group["gap_ids"]) for group in groups.values()] == [3, 3, 1]
+    ids = [gap_id for group in groups.values() for gap_id in group["gap_ids"]]
+    assert ids == [f"{document_id}-g{number}" for number in range(1, 8)]
+
+    before = {
+        key: (group["gap_ids"], group["status"]) for key, group in groups.items()
+    }
+    # A resume recomputes the same ids and skips every finished group.
+    resumed = Runner(tmp_path, sources, "test", config, FunctionModel(main), reviewer)
+    calls.clear()
+    asyncio.run(resumed.gap_groups())
+    state = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    assert calls == []
+    assert {
+        key: (group["gap_ids"], group["status"]) for key, group in groups.items()
+    } == before
+    assert {
+        key: group["gap_ids"] for key, group in state["groups"].items()
+    } == {key: ids for key, (ids, _) in before.items()}
+
+    # A crash after the first group must not shift the boundaries of the rest.
+    crashed = read_json(tmp_path / "extract-checkpoint.json")
+    finished = crashed["review"]["groups"][f"gap-{document_id}-1"]["gap_ids"]
+    for number in (2, 3):
+        crashed["review"]["groups"][f"gap-{document_id}-{number}"]["status"] = "failed"
+    for gap in crashed["review"]["batches"][batch_id]["gaps"]:
+        if gap["gap_id"] not in finished:
+            gap["status"] = "pending"
+    atomic_json(tmp_path / "extract-checkpoint.json", crashed)
+    resumed = Runner(tmp_path, sources, "test", config, FunctionModel(main), reviewer)
+    calls.clear()
+    asyncio.run(resumed.gap_groups())
+    state = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    assert calls == [f"gap-{document_id}-2", f"gap-{document_id}-3"]
+    for key, (gap_ids, _) in before.items():
+        assert state["groups"][key]["gap_ids"] == gap_ids
+        assert state["groups"][key]["status"] == "done"
+
+
+def test_record_gap_uses_supplied_block_id(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    batch = sources.batches[batch_id]
+    block = batch["segments"][2]
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "review"))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            result = await client.call_tool(
+                "record_gap",
+                {"kind": "states", "name": "flag", "block_id": block["block_id"]},
+            )
+            gap = result.data["gap"]
+            assert result.data["recorded"] is True
+            assert gap["block_id"] == block["block_id"]
+            assert gap["document_id"] == batch["doc_id"]
+            assert gap["section_path"] == block["section_path"]
+            assert gap["batch_id"] == batch_id
+            assert gap["evidence_text"] == ""
+
+    asyncio.run(check())
+
+
+def test_record_gap_keeps_unmatched_text_verbatim(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    block_id = sources.batches[batch_id]["segments"][0]["block_id"]
+    quote = "  a paraphrase that appears nowhere in this RFC,   word for word  "
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "review"))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            result = await client.call_tool(
+                "record_gap",
+                {
+                    "kind": "states",
+                    "name": "flag",
+                    "block_id": block_id,
+                    "evidence_text": quote,
+                },
+            )
+            assert result.data["recorded"] is True
+            # Trimmed at the edges and otherwise stored exactly as given.
+            assert result.data["gap"]["evidence_text"] == quote.strip()
+
+    asyncio.run(check())
+
+
+def test_record_gap_rejects_unknown_block_id(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    batch = sources.batches[batch_id]
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "review"))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            with pytest.raises(Exception) as caught:
+                await client.call_tool(
+                    "record_gap",
+                    {"kind": "states", "name": "flag", "block_id": "blk-999999"},
+                )
+            message = str(caught.value)
+            assert "is not a block of" in message
+            assert batch["segments"][0]["block_id"] in message
+
+    asyncio.run(check())
+
+
+def test_record_gap_dedupes_by_block(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    block_id = sources.batches[batch_id]["segments"][0]["block_id"]
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "review"))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            first = await client.call_tool(
+                "record_gap",
+                {
+                    "kind": "states",
+                    "name": "flag",
+                    "block_id": block_id,
+                    "evidence_text": "first wording",
+                },
+            )
+            second = await client.call_tool(
+                "record_gap",
+                {
+                    "kind": "states",
+                    "name": "flag",
+                    "block_id": block_id,
+                    "evidence_text": "a different wording",
+                },
+            )
+            assert first.data["recorded"] is True
+            assert second.data["recorded"] is False
+            assert second.data["gap"]["evidence_text"] == "first wording"
+            assert len(work.gaps) == 1
+
+    asyncio.run(check())
+
+
+def test_complete_gaps_records_unresolved_ids(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    document_id = sources.batches[batch_id]["doc_id"]
+    gaps = [
+        {
+            "gap_id": f"{document_id}-g{number}",
+            "kind": "states",
+            "name": f"gap {number}",
+            "missing_attributes": [],
+            "document_id": document_id,
+            "block_id": sources.batches[batch_id]["segments"][0]["block_id"],
+            "section_path": [],
+            "batch_id": batch_id,
+            "evidence_text": "",
+            "note": f"cited from {batch_id}",
+            "status": "pending",
+        }
+        for number in (1, 2)
+    ]
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
+    work.gaps = gaps
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            # Both arguments stay optional so the single-batch path is unchanged.
+            assert tools["complete_gaps"].inputSchema.get("required") in (None, [])
+            with pytest.raises(Exception, match="unknown gap ids"):
+                await client.call_tool(
+                    "complete_gaps", {"unresolved_gap_ids": [f"{document_id}-g9"]}
+                )
+            accepted = await client.call_tool(
+                "complete_gaps",
+                {"summary": "one gap is not supported", "unresolved_gap_ids": [gaps[1]["gap_id"]]},
+            )
+            assert accepted.data["accepted"] is True
+        assert work.completion["unresolved_gap_ids"] == [gaps[1]["gap_id"]]
+        assert work.completion["summary"] == "one gap is not supported"
+        assert work.completion["status"] == "gaps_completed"
+
+    asyncio.run(check())
+
+    plain = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
+    plain.gaps = []
+
+    async def empty_call():
+        async with Client(make_server(lambda: plain)) as client:
+            accepted = await client.call_tool("complete_gaps", {})
+            assert accepted.data["accepted"] is True
+        assert plain.completion["unresolved_gap_ids"] == []
+
+    asyncio.run(empty_call())
+
+
+def test_old_review_checkpoint_is_migrated(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    batches = list(sources.batches)
+    done_batch, gap_batch = batches[0], batches[1]
+    gap_doc = sources.batches[gap_batch]["doc_id"]
+
+    def old_gap(batch_id, name):
+        return {
+            "kind": "states",
+            "name": name,
+            "evidence_text": "old quote",
+            "missing_attributes": [],
+            "document_id": sources.batches[batch_id]["doc_id"],
+            "block_id": sources.batches[batch_id]["segments"][0]["block_id"],
+            "section_path": [],
+            "batch_id": batch_id,
+            "note": f"cited from {batch_id}",
+        }
+
+    atomic_json(
+        tmp_path / "extract-checkpoint.json",
+        {
+            "scan_kinds": list(SCAN_KINDS),
+            "category": len(SCAN_KINDS),
+            "batch": 0,
+            "global_checks": 0,
+            "global_errors": None,
+            "registry": empty_registry(),
+            "history": [],
+            "compact_summary": "",
+            "records": [],
+            "published": False,
+            "review": {
+                "cursor": 1,
+                "batches": {
+                    done_batch: {"stage": "done", "gaps": [old_gap(done_batch, "legacy gap")]},
+                    gap_batch: {"stage": "gap", "gaps": [old_gap(gap_batch, "open gap")]},
+                },
+            },
+        },
+    )
+    seen = []
+    fallback = fake_model(sources, [])
+
+    def main(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            if prompt.get("stage") == "gap":
+                seen.append(prompt)
+        return fallback.function(messages, info)
+
+    reviewer, _ = review_model(lambda prompt, count: [ToolCallPart("complete_review", {})])
+    runner = Runner(
+        tmp_path,
+        sources,
+        "test",
+        ExtractConfig(review_requests_per_second=100),
+        FunctionModel(main),
+        reviewer,
+    )
+    review = runner.state["review"]
+    assert "cursor" not in review
+    assert review["batches"][done_batch]["stage"] == "done"
+    assert review["batches"][done_batch]["gaps"][0]["status"] == "legacy_done"
+    assert review["batches"][gap_batch]["stage"] == "reviewed"
+    assert review["batches"][gap_batch]["gaps"][0]["status"] == "pending"
+
+    asyncio.run(runner.review_gaps())
+    state = read_json(tmp_path / "extract-checkpoint.json")["review"]
+    assert state["batches"][done_batch]["gaps"][0]["status"] == "legacy_done"
+    assert seen and seen[0]["assignment"] == f"gap-{gap_doc}-1"
+    assert seen[0]["document_id"] == gap_doc
+    assert [gap["name"] for gap in seen[0]["gaps"]] == ["open gap"]
+    # The finished batch is not reviewed again and its legacy gap is never re-fixed.
+    assert state["batches"][done_batch]["stage"] == "done"
+    assert set(state["groups"]) == {f"gap-{gap_doc}-1"}
+    assert state["batches"][gap_batch]["gaps"][0]["status"] == "done"
+    assert seen[0]["source_batches"] == [gap_batch]
+
+
+def test_list_entities_batch_filter_returns_full_definitions(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(add([party(sources, "Client")]))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            result = await client.call_tool("list_entities", {"batch_id": batch_id})
+            row = result.data["rows"][0]
+            assert row["value"]["description"] == "Protocol endpoint"
+            assert row["evidence"][0]["block_id"]
+            assert "text" not in row["evidence"][0]
+
+    asyncio.run(check())
+
+
+def test_complete_gaps_takes_no_arguments(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            schema = tools["complete_gaps"].inputSchema
+            assert set(schema["properties"]) == {"summary", "unresolved_gap_ids"}
+            assert schema.get("required") in (None, [])
+            accepted = await client.call_tool("complete_gaps", {})
+            assert accepted.data["accepted"] is True
+
+    asyncio.run(check())
+
+
+def test_every_issue_type_has_a_suggestion():
+    from rsc.extract.guidance import GENERIC_HINT, issue_suggestion, with_suggestions
+
+    hints = [
+        {
+            "type": "missing_reference",
+            "description": "states reference ('Client','Flag') has 0 matches",
+        },
+        {"type": "same_name", "description": "ambiguous parties name 'Client'"},
+        {"type": "structure", "description": "state 'Client Flag' has no processing producer"},
+        {"type": "structure", "description": "field 'digest' is not carried by 'Alert'"},
+        {"type": "structure", "description": "channel 'C' role is not an endpoint"},
+        {"type": "structure", "description": "connectionless channel has connection roles"},
+        {"type": "state_without_access", "description": "State 'Flag' has no hook access"},
+        {
+            "type": "channel_requires_close",
+            "description": "Channel 'C' requires an endpoint close step",
+        },
+        {"type": "deferred_entity", "description": "missing definition"},
+    ]
+    for row in hints:
+        text = issue_suggestion(row)
+        assert text and text != GENERIC_HINT
+    rows = with_suggestions(hints)
+    assert all(row["suggestion"] == issue_suggestion(row) for row in rows)
+    assert hints[0] not in rows or "suggestion" not in hints[0]
+    producer = with_suggestions([hints[2]])[0]["suggestion"]
+    assert "writer" in producer or "writes state.Client Flag" in producer
+    assert "external" in producer
+
+
+def test_validate_entities_returns_suggestions(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "category", "channels"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(add([party(sources, "Client")]))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            report = (await client.call_tool("validate_entities", {})).data
+            assert report["error_count"] >= 1
+            assert all(row["suggestion"] for row in report["rows"])
+
+    asyncio.run(check())
+
+
+def test_global_fix_prompt_carries_suggestions_and_start_count(sources, tmp_path, monkeypatch):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    seen = []
+    original = Workspace.structural_issues
+    fired = []
+
+    def one_error(work):
+        if work.assignment.id == "global-validation" and not fired:
+            fired.append(1)
+            return [{"type": "test", "records": [], "path": [], "description": "try once"}]
+        return original(work)
+
+    fallback = fake_model(sources, []).function
+
+    def watch(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            if prompt["assignment"]["phase"] == "global":
+                seen.append(prompt)
+        return fallback(messages, info)
+
+    monkeypatch.setattr(Workspace, "structural_issues", one_error)
+    runner = Runner(tmp_path, sources, "test", ExtractConfig(), FunctionModel(watch), no_review())
+    asyncio.run(runner.run())
+    assert seen
+    assert seen[0]["repair_start_count"] == 1
+    assert all("suggestion" in row for row in seen[0]["validation_errors"])
+
+
+def test_list_entities_returns_related_step_scenarios(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    first, second = tuple(sources.batches)
+    seed = Workspace(sources, "test", empty_registry(), Assignment(first, "global"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    fixture = fixtures_by_kind(sources)
+    seed.add_entities(
+        add(
+            [
+                fixture["messages"],
+                fixture["steps"],
+                {
+                    **fixture["steps"],
+                    "evidence": [
+                        {
+                            "document_id": sources.batches[second]["doc_id"],
+                            "block_id": sources.batches[second]["segments"][0]["block_id"],
+                        }
+                    ],
+                    "value": {**fixture["steps"]["value"], "name": "Send elsewhere"},
+                },
+            ]
+        )
+    )
+
+    work = Workspace(sources, "test", seed.data, Assignment(first, "review"))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            result = (await client.call_tool("list_entities", {"batch_id": first})).data
+            steps = result.get("related_steps") or []
+            assert steps, "same-message steps from other batches are summarized"
+            row = steps[0]
+            assert set(row) == {"id", "name", "action", "channel", "condition", "hooks"}
+            assert "rule" not in json.dumps(row)
+
+    asyncio.run(check())
+
+
+def test_hook_stats_recorded_after_review(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ToolCallPart
+
+    from rsc.extract.runner import Runner
+
+    model, calls = review_model(lambda prompt, count: [ToolCallPart("complete_review", {})])
+    runner = Runner(
+        tmp_path,
+        sources,
+        "test",
+        ExtractConfig(review_requests_per_second=100),
+        no_review(),
+        model,
+    )
+    asyncio.run(runner.review_gaps())
+    records = [r for r in runner.state["records"] if r["phase"] == "review"]
+    assert records and all("hook_stats" in r for r in records)
+    assert set(records[0]["hook_stats"]) == {"hooks", "actions"}

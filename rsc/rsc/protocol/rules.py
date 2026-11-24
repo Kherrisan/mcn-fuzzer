@@ -4,7 +4,7 @@ MESSAGE_SCOPE_RULES = (
     "A message is an actual protocol message or RFC-defined independently exchanged transfer unit. "
     "Grammar productions and table classification labels do not automatically constitute "
     "messages. Abstract categories, command groups, fields and syntax components are not "
-    "independent message types. Ordinary message types need not carry associated fields. "
+    "independent message types. A source-defined empty body may have no associated fields. "
     "A concrete response code defines a separate message type "
     "only when its response carries associated fields needed in later interactions for "
     "correlation, connection setup, branching or interaction state. The response code itself "
@@ -47,8 +47,25 @@ NETWORK_ACTION_RULES = (
 )
 
 ASSOCIATED_FIELD_RULES = (
-    "Attach a field only to the message that actually transmits it. Retain only fields "
-    "needed for cross-message correlation, connection setup, interaction branching or "
-    "interaction state. A message that triggers another message does not inherit that "
-    "message's fields. Do not extract complete wire layouts or ordinary payload details."
+    "Extract source-defined fields needed to construct, parse, compute or validate the message, "
+    "including headers, lengths, selectors, authentication values, structured payloads and "
+    "extensions. Include fields used in negotiation, state updates, branching or later exchanges. "
+    "Use stable dot-separated paths for nested fields that need independent access, consistently "
+    "across messages, processing and field relations. Attach each field to its transmitting "
+    "message. Keep local-only values in processing or states. Preserve source-defined encoding, "
+    "length, value and presence constraints in evidence notes and applicable processing rules. "
+    "Use an empty field list when the source defines an empty body; otherwise revisit detailed "
+    "definitions before retaining a fieldless message."
+)
+
+SCENARIO_RULES = (
+    "For each source-supported interaction, preserve participants, direction and channel, "
+    "initial/default state, request and response branches, sender computation, receiver parsing "
+    "and verification, successful and failing outcomes, and closure, reuse, retry or resumption. "
+    "Distinguish each peer and preserve forwarding between control and data paths. Reuse "
+    "operation templates and put occurrence-specific guards on dependencies. Connect a "
+    "prerequisite to the exchange that supplies its result. Record required, conditional and "
+    "optional behavior with its exact guard. Represent prohibited behavior in receiver checks "
+    "and failure rules. Apply each rule only to supported protocol versions and extensions, "
+    "respecting source-stated updates and replacements."
 )
