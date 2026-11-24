@@ -1,5 +1,8 @@
 """Name, field-carrier, endpoint and network-action checks shared with scoped merging."""
 
+import json
+from collections import defaultdict
+
 from .contract import COLLECTIONS, record_identity
 
 NETWORK_ACTIONS = ("listen", "connect", "close")
@@ -243,4 +246,166 @@ def reference_issues(records: dict, bindings=None, *, resolved=None) -> list[dic
                         messages[0],
                         path=("field_relations", i, side),
                     )
+    return issues
+
+
+def coverage_issues(records: dict, resolved=None, ready=None) -> list[dict]:
+    """Coverage rules: every declared object must take part in the interaction it models.
+
+    Extraction gates these rules by scan stage (``ready``) because the objects they
+    compare arrive in separate passes; a published model is always fully ready.
+    """
+    resolved = resolved or {}
+    ready = tuple(COLLECTIONS) if ready is None else tuple(ready)
+    by_kind = defaultdict(list)
+    incoming = defaultdict(list)
+    outgoing = defaultdict(list)
+    actions = defaultdict(set)
+    for key, row in records.items():
+        by_kind[row["kind"]].append(key)
+    for (owner, path), target in resolved.items():
+        edge = {"from": owner, "field": list(path), "to": target}
+        incoming[target].append(edge)
+        outgoing[owner].append(edge)
+    for step in by_kind["steps"]:
+        value = records[step]["value"]
+        channel = resolved.get((step, ("channel_name",)))
+        party = resolved.get((step, ("party_name",)))
+        if channel is not None and party is not None:
+            actions[channel, value["action"]].add(party)
+
+    def referenced_by(key, kind, field=None):
+        return any(
+            records[edge["from"]]["kind"] == kind
+            and (field is None or edge["field"][0] == field)
+            for edge in incoming[key]
+        )
+
+    checks = []
+
+    def add(rule, key, description, *, field=(), advisory=False):
+        row = {
+            "type": rule,
+            "check_ref": f"{rule}:{key}",
+            "records": [key],
+            "path": list(field),
+            "description": description,
+        }
+        if advisory:
+            row["advisory"] = True
+        checks.append(row)
+
+    def check_channel(key):
+        value = records[key]["value"]
+        name = value["name"]
+        if value["connection"] != "connection_oriented":
+            if not referenced_by(key, "steps", "channel_name"):
+                add("channel_without_step", key, f"Channel {name!r} has no step")
+            return
+        for action, role in (
+            ("connect", "initiator_party_name"),
+            ("listen", "acceptor_party_name"),
+        ):
+            expected = resolved.get((key, (role,)))
+            if expected is None or expected not in actions[key, action]:
+                add(
+                    f"channel_requires_{action}",
+                    key,
+                    f"Channel {name!r} requires a {action} step by its declared {role}",
+                    field=(role,),
+                )
+        endpoints = {
+            edge["to"] for edge in outgoing[key] if edge["field"][0] == "endpoint_party_names"
+        }
+        if not endpoints & actions[key, "close"]:
+            add(
+                "channel_requires_close",
+                key,
+                f"Channel {name!r} requires an endpoint close step",
+                field=("connection",),
+            )
+
+    def check_state(key):
+        value = records[key]["value"]
+        name = value["name"]
+        accesses = {
+            edge["field"][3] for edge in incoming[key] if edge["field"][0] == "processing"
+        }
+        if not accesses:
+            description = f"State {name!r} has no hook reads or writes"
+            if value["source"] == "processing":
+                description += " and no processing producer"
+            add("state_without_access", key, description)
+
+    if "channels" in ready:
+        for key in by_kind["parties"]:
+            if not referenced_by(key, "channels", "endpoint_party_names"):
+                name = records[key]["value"]["name"]
+                add("party_without_channel", key, f"Party {name!r} is not a channel endpoint")
+
+    if "steps" in ready:
+        for key in by_kind["channels"]:
+            check_channel(key)
+        for key in by_kind["messages"]:
+            if not referenced_by(key, "steps", "message_name"):
+                name = records[key]["value"]["name"]
+                add("message_without_send", key, f"Message {name!r} has no send step")
+        for key in by_kind["states"]:
+            check_state(key)
+        # Advisory: the source may prescribe a bare transmission, so the reviewer decides
+        # whether an empty hook is a real gap. Kept visible but never blocking.
+        for key in by_kind["steps"]:
+            value = records[key]["value"]
+            if value["action"] != "send" or any((value.get("processing") or {}).values()):
+                continue
+            add(
+                "step_without_processing",
+                key,
+                f"Step {value['name']!r} sends {value['message_name']!r} with no processing",
+                advisory=True,
+            )
+
+    if "step_dependencies" in ready:
+        for key in by_kind["steps"]:
+            if not referenced_by(key, "step_dependencies"):
+                name = records[key]["value"]["name"]
+                add("step_without_dependency", key, f"Step {name!r} has no dependency links")
+    return checks
+
+
+def duplicate_issues(records: dict) -> list[dict]:
+    """Identical declarations the message/dependency schema cannot reject by itself."""
+    issues = []
+    seen = {}
+    for key, row in records.items():
+        value = row["value"]
+        if row["kind"] == "step_dependencies":
+            duplicate = json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            if duplicate in seen:
+                issues.append(
+                    {
+                        "type": "duplicate_dependency",
+                        "records": [key, seen[duplicate]],
+                        "path": [],
+                        "description": "duplicate dependency",
+                    }
+                )
+            seen[duplicate] = key
+        if row["kind"] == "messages":
+            names = [field["name"] for field in value["associated_fields"]]
+            if len(set(names)) != len(names):
+                issues.append(
+                    {
+                        "type": "duplicate_field",
+                        "records": [key],
+                        "path": ["associated_fields"],
+                        "description": "message field names must be unique",
+                    }
+                )
     return issues

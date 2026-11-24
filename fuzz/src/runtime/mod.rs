@@ -563,6 +563,9 @@ fn child_setup(
         if crate::coverage::mcp::requested() {
             crate::coverage::introspection::bind_host_listener()?;
         }
+        if crate::agents::synthesis_mcp_requested() {
+            crate::engine::synthesis::mcp::bind_host_listener()?;
+        }
         nix::sched::unshare(CloneFlags::CLONE_NEWNET).map_err(|error| {
             Error::unknown(format!("PID 1 unshare(CLONE_NEWNET) failed: {error}"))
         })?;

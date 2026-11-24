@@ -64,6 +64,7 @@ __pycache__/
 # Local editor, agent, and credential configuration.
 /.agents/
 /.codex/
+/.loopx/
 /.aws/
 .env
 .env.*

@@ -131,31 +131,24 @@ them in the campaign workspace, including `WORKSPACE/lib`.
 
 ## Validate before publishing (every successful generation)
 
-Use [validate_generator.py](scripts/validate_generator.py) with the campaign
-Python. The generation prompt supplies its absolute path and a fully rendered
-command with OUTPUT_DIR, the request id and PYTHONPATH. Execute that
-command directly; do not recreate its syntax, schema or parameter checks.
+Use the static validation tool or command specified in the generation prompt.
+Use that result directly without recreating the artifact checks.
 
 0. Audit each model step's handler and record in that step's `reason` any field
    beyond the proposal, each rejected candidate with its reason, or why there was
    no candidate. Zero candidates is valid, but it must be stated.
 1. Finish generator.py, params.schema.json, params.json and mutable_fields.json.
 2. Write the success completion object to OUTPUT_DIR/result.draft.json.
-3. Run the supplied validator command with `--result` pointing to that draft,
-   `--check-imports` and the campaign `--pythonpath`. It prints a JSON report and
-   exits 0 on success, 1 on validation failure. Fix reported errors and rerun.
-4. Only after success, atomically rename result.draft.json to result.json. The
-   validator neither publishes nor modifies artifacts. Its syntax, schema,
-   parameter and import checks say nothing about whether a declared field changes
-   the encoded message; verify override, and omission when `omit` is true,
-   separately and record how in the field entry. A failed synthesis may
-   publish its error completion directly without successful-generator checks.
+3. Validate the draft. Fix reported errors and validate again. Check override
+   and omission by reading the handler and encoder, and record the relevant
+   code path in each field entry. The agent may optionally use the isolated
+   import probe described in [validation.md](references/validation.md).
+4. After static validation passes, atomically rename result.draft.json to
+   result.json. A failed synthesis may publish its error completion directly.
 
 Read [validation.md](references/validation.md) for the exact supported checks and
 their limits. Review trace correspondence, prerequisite conditions, resource
-cleanup and protocol-specific wire behavior separately. Do not replace actual
-runtime evidence with a successful static report. The maintainer audit below is
-for the whole installed environment; it is not the per-generator validator.
+cleanup in the source. Keep static results separate from runtime evidence.
 
 ## Audit and setup (maintainer actions)
 

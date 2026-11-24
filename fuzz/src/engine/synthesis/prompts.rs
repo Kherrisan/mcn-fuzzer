@@ -119,6 +119,7 @@ pub struct SynthesisPromptContext {
     model: IndexedModel,
     binding: Binding,
     mode: ExecutionMode,
+    draft_mcp: bool,
 }
 
 impl SynthesisPromptContext {
@@ -141,12 +142,18 @@ impl SynthesisPromptContext {
             model,
             binding,
             mode: ExecutionMode::Fuzzer,
+            draft_mcp: false,
         })
     }
 
     /// Describe SUT startup without changing the template.
     pub fn with_execution(mut self, mode: ExecutionMode) -> Self {
         self.mode = mode;
+        self
+    }
+
+    pub(super) fn with_draft_mcp(mut self, enabled: bool) -> Self {
+        self.draft_mcp = enabled;
         self
     }
 
@@ -193,6 +200,7 @@ impl SynthesisPromptContext {
         .map_err(|error| libafl::Error::serialize(error.to_string()))?;
         render_initialization(serde_json::json!({
             "campaign": self.campaign,
+            "draft_mcp": self.draft_mcp,
             "execution": execution_text(self.mode),
             "session": session,
             "hold": if hold { "1" } else { "0" },
@@ -243,6 +251,7 @@ impl SynthesisPromptContext {
         .to_string();
         render_generation(serde_json::json!({
             "campaign": self.campaign,
+            "draft_mcp": self.draft_mcp,
             "execution": execution_text(self.mode),
             "output_dir": output_dir,
             "request_id": request_id,

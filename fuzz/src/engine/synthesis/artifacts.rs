@@ -10,7 +10,11 @@ use crate::agents::artifacts::{check_identity, read_json};
 use crate::engine::input::InstanceParams;
 
 pub(super) fn check_result(output: &Path, request: &str) -> Result<Value, String> {
-    let result = read_json(&output.join("result.json"))?;
+    check_result_file(&output.join("result.json"), request)
+}
+
+pub(super) fn check_result_file(path: &Path, request: &str) -> Result<Value, String> {
+    let result = read_json(path)?;
     check_identity(&result, &[("request_id", request)])?;
     if result.get("status").and_then(Value::as_str) != Some("ok") {
         return Err(result
@@ -337,7 +341,7 @@ pub struct DeclaredField {
     pub omit: bool,
     #[serde(default)]
     pub sample: Option<Value>,
-    /// The generator's own check that override and omission change the bytes.
+    /// The synthesis agent confirmed the override and omission paths in the code.
     #[serde(default)]
     pub verified: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -371,7 +375,6 @@ pub struct FieldManifest {
 
 const DEFAULT_RULES: [&str; 4] = ["baseline", "fixed", "derived", "prior_state"];
 const OVERRIDE_RULES: [&str; 4] = ["encoded", "fixed", "derived", "rejected"];
-const MAX_REASON_BYTES: usize = 600;
 const FIELD_KINDS: [&str; 6] = ["string", "bytes", "integer", "boolean", "list", "map"];
 
 impl FieldManifest {
@@ -451,12 +454,6 @@ impl FieldManifest {
             if declared.reason.trim().is_empty() {
                 return Err(format!(
                     "mutable_fields.json step {} needs a non-empty reason",
-                    declared.step
-                ));
-            }
-            if declared.reason.len() > MAX_REASON_BYTES {
-                return Err(format!(
-                    "mutable_fields.json step {} reason exceeds {MAX_REASON_BYTES} bytes",
                     declared.step
                 ));
             }

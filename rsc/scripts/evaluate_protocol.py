@@ -48,7 +48,7 @@ def main():
     parser.add_argument("model", type=Path)
     parser.add_argument("--gold", type=Path, required=True)
     args = parser.parse_args()
-    errors = validate_protocol_file(args.model)
+    errors = validate_protocol_file(args.model, coverage=True)
     if errors:
         print(json.dumps({"validation_errors": errors}, indent=2))
         return 2

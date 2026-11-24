@@ -205,6 +205,17 @@ fn main() -> ExitCode {
                         mcn_fuzz::agents::GenerationRequest {
                             hc: loaded.agents.hc_executable.clone(),
                             output,
+                            synthesis_mcp: loaded.generator_synthesis.enabled
+                                && loaded
+                                    .agents
+                                    .profiles
+                                    .get(&loaded.generator_synthesis.profile)
+                                    .is_some_and(|profile| {
+                                        matches!(
+                                            profile.provider,
+                                            mcn_fuzz::app::config::AgentProvider::Codex
+                                        )
+                                    }),
                         },
                     );
                 }

@@ -37,7 +37,9 @@ OUTPUT_DIR={{ output_dir }}
 - Campaign Python interpreter: {{ campaign.python }}
 - Campaign Python import path (PYTHONPATH): {{ campaign.pythonpath }}
 - Generator module skill (read-only): {{ campaign.generator_skill }}
-- Artifact validator: {{ campaign.generator_validator }}
+{% if draft_mcp %}- Draft validator: `synthesis.validate_synthesis_draft`.
+{% else %}- Static artifact validator: {{ campaign.generator_validator }}
+{% endif %}
 - Public I/O API source: {{ campaign.pythonpath }}/generator_server/context.py
 - Generator scaffold (read-only): {{ campaign.pythonpath }}/generator_server/template.py
 - Empty params schema template (read-only): {{ campaign.pythonpath }}/generator_server/params.schema.json
@@ -199,11 +201,11 @@ operation cannot be carried out; never fabricate a reply or claim runtime succes
 3. Write a generator module, shared helpers as needed, a parameter schema, and valid initial
    parameters. Keep imports safe before fork and case resources inside the initializer or handlers.
    Follow the detailed API/lifecycle rules supplied by the generation task.
-4. Use the skill's fixed validator with the campaign Python for syntax, interface,
-   schema/parameter and completion checks, plus its isolated import probe. Write
-   result.draft.json first, validate it, then atomically rename it to result.json.
-   Review cleanup and correspondence to the steps separately. Static checks do
-   not establish successful SUT interaction.
+4. Write result.draft.json, then use the static validation tool or command
+   specified in the generation prompt. Review the handler and helper source
+   without running either. The skill describes an optional isolated import
+   probe for the agent. Once static validation passes, atomically rename the
+   draft to result.json.
 5. Publish completion JSON atomically after other artifacts are complete. End
    that response and await the next dispatched task. Do not poll directories or
    launch another fuzzer/SUT to continue independently.

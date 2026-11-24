@@ -1333,13 +1333,9 @@ pub mod http {
     use rmcp::{
         handler::server::{tool::ToolRouter, wrapper::Parameters},
         tool, tool_handler, tool_router,
-        transport::streamable_http_server::{
-            session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
-        },
         ServerHandler,
     };
     use serde::{Deserialize, Serialize};
-    use tokio::sync::oneshot;
 
     use super::{IntrospectionStore, ProposalId, ProposalOrigin, ProposalStatus};
     use crate::coverage::proposal::{Proposal, ProposalGoal};
@@ -1687,97 +1683,25 @@ pub mod http {
     #[tool_handler]
     impl ServerHandler for IntrospectionServer {}
 
-    pub struct IntrospectionHttp {
-        url: String,
-        shutdown: Option<oneshot::Sender<()>>,
-        thread: Option<std::thread::JoinHandle<()>>,
-    }
+    pub struct IntrospectionHttp(crate::agents::mcp::McpHttp);
 
     impl IntrospectionHttp {
         pub fn start(
             store: Arc<IntrospectionStore>,
             listener: std::net::TcpListener,
         ) -> Result<Self, String> {
-            listener
-                .set_nonblocking(true)
-                .map_err(|error| format!("setting introspection listener nonblocking: {error}"))?;
-            let (bound_tx, bound_rx) = oneshot::channel();
-            let (shutdown_tx, shutdown_rx) = oneshot::channel();
-            let thread = std::thread::Builder::new()
-                .name("campaign-introspection".into())
-                .spawn(move || {
-                    let runtime = match tokio::runtime::Builder::new_multi_thread()
-                        .enable_all()
-                        .build()
-                    {
-                        Ok(runtime) => runtime,
-                        Err(error) => {
-                            let _ = bound_tx.send(Err(error.to_string()));
-                            return;
-                        }
-                    };
-                    runtime.block_on(async move {
-                        let listener = match tokio::net::TcpListener::from_std(listener) {
-                            Ok(listener) => listener,
-                            Err(error) => {
-                                let _ = bound_tx.send(Err(error.to_string()));
-                                return;
-                            }
-                        };
-                        let port = match listener.local_addr() {
-                            Ok(addr) => addr.port(),
-                            Err(error) => {
-                                let _ = bound_tx.send(Err(error.to_string()));
-                                return;
-                            }
-                        };
-                        let service = StreamableHttpService::new(
-                            move || Ok(IntrospectionServer::new(Arc::clone(&store))),
-                            LocalSessionManager::default().into(),
-                            StreamableHttpServerConfig::default(),
-                        );
-                        let router = axum::Router::new().nest_service("/mcp", service);
-                        let _ = bound_tx.send(Ok(port));
-                        let _ = axum::serve(listener, router)
-                            .with_graceful_shutdown(async move {
-                                let _ = shutdown_rx.await;
-                            })
-                            .await;
-                    });
-                })
-                .map_err(|error| error.to_string())?;
-            let port = bound_rx
-                .blocking_recv()
-                .map_err(|_| "introspection server dropped its bind result".to_string())??;
-            Ok(Self {
-                url: format!("http://127.0.0.1:{port}/mcp"),
-                shutdown: Some(shutdown_tx),
-                thread: Some(thread),
+            crate::agents::mcp::McpHttp::start(listener, "campaign-introspection", move || {
+                IntrospectionServer::new(Arc::clone(&store))
             })
+            .map(Self)
         }
 
         pub fn url(&self) -> &str {
-            &self.url
+            self.0.url()
         }
 
-        pub fn shutdown(mut self) {
-            if let Some(shutdown) = self.shutdown.take() {
-                let _ = shutdown.send(());
-            }
-            if let Some(thread) = self.thread.take() {
-                let _ = thread.join();
-            }
-        }
-    }
-
-    impl Drop for IntrospectionHttp {
-        fn drop(&mut self) {
-            if let Some(shutdown) = self.shutdown.take() {
-                let _ = shutdown.send(());
-            }
-            if let Some(thread) = self.thread.take() {
-                let _ = thread.join();
-            }
+        pub fn shutdown(self) {
+            drop(self);
         }
     }
 }

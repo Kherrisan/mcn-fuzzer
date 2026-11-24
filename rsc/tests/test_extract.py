@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 
 import pytest
 from pydantic import TypeAdapter
@@ -24,7 +25,7 @@ from rsc.extract.registry import (
 from rsc.extract.sources import Sources
 from rsc.extract.tools import related
 from rsc.protocol.validate import validate_protocol_file
-from rsc.workflow.store import atomic_json, read_json
+from rsc.workflow.store import atomic_json, dumps, read_json
 
 
 @pytest.fixture
@@ -477,10 +478,13 @@ def test_model_log_keeps_failed_and_successful_attempts_in_one_file(sources, tmp
         for tool in rows[2]["model_request_parameters"]["function_tools"]
     )
     assert rows[3]["response"]["parts"][0]["content"] == "test reasoning"
-    assert history[0]["thinking_dropped"] == 1
+    assert history[0]["phase"] == "category" and history[0]["kind"] == "steps"
+    assert history[0]["assignment_id"] == "validate-steps-7"
+    # Completed rows are stored as produced; only budget pressure condenses them.
     parts = [part for message in rows[4]["messages"] for part in message["parts"]]
     result = next(p for p in parts if p["part_kind"] == "tool-return")
-    assert result["content"]["rows"] == []
+    assert result["content"]["error_count"] == 0
+    assert result["content"]["current_group"] is None
 
 
 def test_failed_assignment_records_spent_time_and_usage(sources, tmp_path):
@@ -645,11 +649,17 @@ def test_category_validation_is_visible_and_repairable(sources, tmp_path, monkey
                 )
         if task["phase"] == "category":
             if isinstance(latest, UserPromptPart):
-                return ModelResponse(parts=[ToolCallPart("validate_entities", {})])
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            "validate_entities", {"view": "issues", "issue_type": "same_name"}
+                        )
+                    ]
+                )
             if isinstance(latest, ToolReturnPart) and latest.tool_name == "validate_entities":
                 seen.append(latest.content)
                 duplicates = [
-                    row for row in latest.content["rows"] if row["type"] == "same_name"
+                    row for row in latest.content["issues"] if row["type"] == "same_name"
                 ]
                 if duplicates:
                     return ModelResponse(
@@ -696,50 +706,6 @@ def test_category_validation_is_visible_and_repairable(sources, tmp_path, monkey
     targets = {row["to"] for row in runner.state["registry"]["redirects"].values()}
     assert targets == {"E1", "E2", "E3"}
     assert not validate_protocol_file(tmp_path / "protocol.json")
-
-
-def test_in_batch_compaction_preserves_active_tool_exchange():
-    pytest.importorskip("pydantic_ai")
-    pytest.importorskip("fastmcp")
-    from types import SimpleNamespace
-
-    from pydantic_ai import ModelMessagesTypeAdapter
-    from pydantic_ai.messages import (
-        ModelRequest,
-        ModelResponse,
-        ToolCallPart,
-        ToolReturnPart,
-        UserPromptPart,
-    )
-
-    from rsc.extract.runner import ContextBudget, tokens
-
-    def exchange(text, call_id):
-        return [
-            ModelRequest(parts=[UserPromptPart(text)]),
-            ModelResponse(parts=[ToolCallPart("list_entities", {}, call_id)]),
-            ModelRequest(parts=[ToolReturnPart("list_entities", {}, call_id)]),
-        ]
-
-    old = exchange("old " * 400, "previous")
-    current = exchange("current", "active")
-    context = SimpleNamespace(messages=old + current)
-    state = SimpleNamespace(
-        rows=[{"messages": old, "decision": "Client alias confirmed in RFC 959"}],
-        discarded=0,
-        summary="",
-        summary_tokens=128,
-        limit=tokens(ModelMessagesTypeAdapter.dump_json(current).decode()) + 100,
-    )
-    result = asyncio.run(
-        ContextBudget().before_model_request(
-            SimpleNamespace(deps=state),
-            context,
-        )
-    )
-    assert result.messages[1:] == current
-    assert "alias confirmed" in result.messages[0].parts[0].content
-    assert state.discarded == 1
 
 
 def test_party_alias_projection_preserves_only_declared_party_links(sources):
@@ -994,7 +960,8 @@ def test_sixth_global_validation_can_publish(sources, tmp_path, monkeypatch):
         if r["phase"] == "global-validation"
     ]
     assert [len(issues) for issues in reviewed] == [10] * 5
-    assert checks == [strip_suggestions(rows) for rows in reviewed] + [[]]
+    assert [len(rows) for rows in checks] == [10] * 5 + [0]
+    assert all(rows[0]["type"] == "test" for rows in checks[:-1])
     assert len(list((tmp_path / "llm" / "global").glob("global-fix-*.jsonl"))) == 5
     assert read_json(tmp_path / "protocol.json")["meta"]["complete"]
 
@@ -1032,7 +999,8 @@ def test_global_fix_rechecks_tracked_coverage_and_unresolved_after_resume(
             check_details(prompt["validation_errors"])
             assert prompt["repairable_categories"] == list(ORDER)
             reviewed.extend(row["id"] for row in prompt["unresolved"])
-            assert set(prompt["entities"]) == {"E1", "E6"}
+            assert "E6" in prompt["entities"]
+            assert set(prompt["entities"]) <= {"E1", "E6"}
             assert prompt["unresolved"][-1]["check_refs"] == [check_ref]
             return ModelResponse(
                 parts=[
@@ -1354,10 +1322,23 @@ def test_advisory_step_without_processing_is_visible_but_not_blocking(sources):
             assert report["error_count"] == 0
             assert report["advisory_count"] == 1
             assert report["rows"] == []
-            assert [row["check_ref"] for row in report["advisory"]] == [
+            assert report["current_group"] is None
+            # Advisory rows never block, and their detail is a separate page.
+            advisory = (
+                await client.call_tool(
+                    "validate_entities", {"view": "issues", "include_advisory": True}
+                )
+            ).data
+            assert [row["check_ref"] for row in advisory["issues"]] == [
                 "step_without_processing:E4"
             ]
-            assert report["advisory"][0]["suggestion"]
+            detail = (
+                await client.call_tool(
+                    "validate_entities",
+                    {"view": "issue", "issue_id": advisory["issues"][0]["id"]},
+                )
+            ).data
+            assert detail["issue"]["suggestion"]
 
     asyncio.run(check())
 
@@ -1418,30 +1399,67 @@ def test_completion_tools_return_repairable_categories(sources, phase, kind, cat
                 assert rejected.data["accepted"] is False
                 assert rejected.data["repair_start_count"] == work.repair_start_count
                 assert rejected.data["error_count"] == len(work.issues())
+                assert rejected.data["group_count"] == len(work.issues())
                 assert len(rejected.data["errors"]) == len(work.issues())
-                assert all("suggestion" in row for row in rejected.data["errors"])
+                # Diagnostics are paged: a row carries the id, the site and locators,
+                # and the suggestion is one call away.
+                assert all(row["id"] and row["group_id"] for row in rejected.data["errors"])
+                detail = (
+                    await client.call_tool(
+                        "validate_entities",
+                        {"view": "issue", "issue_id": rejected.data["errors"][0]["id"]},
+                    )
+                ).data["issue"]
+                assert detail["suggestion"]
             result = await client.call_tool(expected, args)
-            scope = {
-                "repairable_categories": list(categories),
-            }
+            assert result.data["accepted"] is True
+            assert result.data["repairable_categories"] == list(categories)
+            assert result.data["error_count"] == len(work.issues())
+            assert result.data["repair_start_count"] == work.repair_start_count
+            repeated = await client.call_tool(expected, args)
+            assert repeated.data["accepted"] is True
+            assert repeated.data["repairable_categories"] == list(categories)
+            if phase != "global":
+                assert result.data["error_count"] == 0
+                assert "group_count" not in result.data
             if phase == "global":
                 validation = (await client.call_tool("validate_entities", {})).data
                 assert validation["error_count"] == 1
-                assert strip_suggestions(validation["rows"]) == [
+                assert [
+                    {
+                        "type": row["type"],
+                        "check_ref": row["check_ref"],
+                        "records": row["records"],
+                        "path": row["path"],
+                        "description": row["description"],
+                        "evidence": row["evidence"],
+                    }
+                    for row in validation["rows"]
+                ] == [
                     {
                         "type": "party_without_channel",
                         "check_ref": "party_without_channel:E1",
                         "records": ["E1"],
                         "path": [],
                         "description": "Party 'Client' is not a channel endpoint",
-                        "evidence": seed.records["E1"]["evidence"],
+                        "evidence": [
+                            {
+                                "document_id": cite["document_id"],
+                                "block_id": cite["block_id"],
+                            }
+                            for cite in seed.records["E1"]["evidence"][:3]
+                        ],
                     }
                 ]
-                assert validation["unresolved"] == [seed.data["unresolved"]["U1"]]
-                scope.update(validation)
-            assert result.data == {"accepted": True, "assignment": "test", **scope}
-            repeated = await client.call_tool(expected, args)
-            assert repeated.data == {"accepted": True, **scope}
+                assert validation["unresolved"] == [
+                    {
+                        "id": seed.data["unresolved"]["U1"]["id"],
+                        "description": seed.data["unresolved"]["U1"]["description"],
+                        "check_refs": seed.data["unresolved"]["U1"]["check_refs"],
+                    }
+                ]
+                assert validation["group_count"] == 1
+                assert validation["current_group"]["group_id"] == "E1"
 
     asyncio.run(check())
 
@@ -1478,30 +1496,51 @@ def test_entity_tools_return_full_evidence_blocks_and_references(sources):
         async with Client(make_server(lambda: work)) as client:
             assert len(await client.list_tools()) == 15
             result = await client.call_tool("get_entity", {"id": "E2"})
-            assert result.data["references"] == [
+            detail = result.data["entities"]["E2"]
+            assert detail["references"] == [
                 *[
                     {"from": f"E{i}", "field": ["channel_name"], "to": "E2"}
                     for i in [4, *range(6, 16)]
                 ],
                 {"from": "E2", "field": ["endpoint_party_names", 0], "to": "E1"},
             ]
-            assert result.data["evidence"] == [
-                {**cite, "text": sources.blocks[doc, block_id]["text"]}
+            # Evidence arrives as locators; the text stays in read_source.
+            assert detail["evidence"] == [
+                {
+                    "document_id": cite["document_id"],
+                    "block_id": cite["block_id"],
+                    "section_path": cite["section_path"],
+                    "field": cite["field"],
+                    "note": cite["note"],
+                }
                 for cite in work.records["E2"]["evidence"]
             ]
-            assert len(result.data["evidence"]) == 10
-            assert result.data["mentions"] == work.records["E2"]["mentions"]
+            assert len(detail["evidence"]) == 10
+            assert detail["mentions"] == work.records["E2"]["mentions"]
+            assert result.data["snapshot"] == work.snapshot
             found = await client.call_tool("search_entities", {"queries": ["Datagrams"]})
-            assert found.data["rows"] == [result.data]
+            assert [row["id"] for row in found.data["rows"]] == ["E2"]
             batch = await client.call_tool(
                 "get_entity",
                 {"ids": ["E1", "E2", "E2", "E999"]},
             )
-            assert list(batch.data["entities"]) == ["E1", "E2"]
-            assert batch.data["entities"]["E2"] == result.data
-            assert "unknown active entity" in batch.data["errors"]["E999"]
+            # The second detail does not fit what is left of this turn's reply budget,
+            # so the first page names where to continue and the rest arrives after it.
+            assert list(batch.data["entities"]) == ["E1"]
+            assert batch.data["next_ids"] == ["E2"]
+            rest = await client.call_tool(
+                "get_entity",
+                {
+                    "ids": ["E1", "E2", "E2", "E999"],
+                    "offset": batch.data["next_offset"],
+                },
+            )
+            assert list(rest.data["entities"]) == ["E2"]
+            assert rest.data["entities"]["E2"] == detail
+            assert rest.data["next_offset"] is None
+            assert "unknown active entity" in rest.data["errors"]["E999"]
             empty = await client.call_tool("get_entity", {"ids": []})
-            assert empty.data == {"entities": {}, "errors": {}}
+            assert empty.data["entities"] == {} and empty.data["errors"] == {}
             missing = await client.call_tool(
                 "read_source",
                 {"document_id": location["document_id"], "section_path": ["99"]},
@@ -1548,11 +1587,15 @@ def test_search_entities_returns_paged_union_of_name_and_alias_matches(sources):
             single = await client.call_tool("search_entities", {"query": "client"})
             assert [row["id"] for row in single.data["rows"]] == ["E3", "E4", "E1"]
             listed = await client.call_tool("list_entities", {"kind": "parties", "limit": 1})
-            assert listed.data["rows"] == [
-                {"id": "E1", "kind": "parties", "name": "Client Proxy", "aliases": []}
-            ]
+            assert [
+                (row["id"], row["kind"], row["name"], row["aliases"])
+                for row in listed.data["rows"]
+            ] == [("E1", "parties", "Client Proxy", [])]
+            assert listed.data["rows"][0]["evidence"][0]["block_id"]
             empty = await client.call_tool("search_entities", {"queries": []})
-            assert empty.data == {"rows": [], "next_offset": None}
+            assert empty.data["rows"] == []
+            assert empty.data["next_offset"] is None
+            assert empty.data["count"] == 0
 
     asyncio.run(check())
 
@@ -1577,18 +1620,28 @@ def test_category_review_and_tool_return_all_issues(sources, tmp_path, repair_ro
             assert prompt["repairable_categories"] == list(ORDER[:2])
             assert [item["id"] for item in prompt["unresolved"]] == ["U1"]
             ids = {i for issue in reviewed[-1] for i in issue["records"]}
-            assert set(prompt["entities"]) == ids
+            # Only the current repair site travels whole; the rest of the catalog is
+            # one validate_entities call away.
+            assert set(prompt["entities"]) <= ids
+            assert prompt["current_group"]["group_id"] in prompt["entities"]
             assert all(
-                row["id"] == i and row["value"]["name"] and row["evidence"]
-                and "revision" not in row
+                row["id"] == i and row["name"] and row["evidence"] and "revision" not in row
                 for i, row in prompt["entities"].items()
             )
-            return ModelResponse(parts=[ToolCallPart("validate_entities", {})])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "validate_entities",
+                        {"view": "issues", "max_tokens": 20000},
+                    )
+                ]
+            )
         if isinstance(latest, ToolReturnPart) and latest.tool_name == "validate_entities":
-            assert latest.content["rows"] == reviewed[-1]
+            # One bounded page still lists every blocking row here.
             assert latest.content["error_count"] == len(reviewed[-1])
+            assert latest.content["issues"] == reviewed[-1]
             assert "blocking_count" not in latest.content
-            errors = reviewed[-1][:13]
+            errors = latest.content["issues"][:13]
             return ModelResponse(
                 parts=[
                     ToolCallPart(
@@ -1650,90 +1703,226 @@ def test_category_review_and_tool_return_all_issues(sources, tmp_path, repair_ro
     ] == [25, 12, 0][:repair_rounds + 1]
 
 
-def test_large_tool_results_are_stubbed_with_readable_blocks():
-    pytest.importorskip("pydantic_ai")
-    from pydantic_ai.messages import ModelRequest, ToolReturnPart
-
-    from rsc.extract.runner import compact_json_messages, compact_messages
+def test_condensed_rows_keep_the_handle_that_rereads_them():
+    from rsc.extract.runner import condense_messages
 
     big = "blk-000129 " + "RFC text " * 600
     small = {"text": "ok"}
-
-    messages, changed = compact_messages(
-        [ModelRequest(parts=[ToolReturnPart("read_source", {"text": big}, "call-1")])], 1200
-    )
-    assert changed == 1
-    stub = messages[0].parts[0].content
-    assert stub["omitted"] is True and stub["blocks"] == ["blk-000129"]
-    assert messages[0].parts[0].tool_call_id == "call-1"
-
-    rows = [
+    messages = [
         {
             "parts": [
-                {"part_kind": "tool-return", "tool_name": "read_source", "content": {"text": big}},
-                {"part_kind": "tool-return", "tool_name": "get_entity", "content": small},
+                {"part_kind": "thinking", "content": "reasoning " * 100},
+                {
+                    "part_kind": "tool-call",
+                    "tool_name": "read_source",
+                    "tool_call_id": "c1",
+                    "args": {"block_id": "blk-000129", "padding": "x" * 900},
+                },
+                {
+                    "part_kind": "tool-return",
+                    "tool_name": "read_source",
+                    "tool_call_id": "c1",
+                    "content": {"text": big},
+                },
+                {
+                    "part_kind": "tool-return",
+                    "tool_name": "get_entity",
+                    "tool_call_id": "c2",
+                    "content": small,
+                },
             ]
         }
     ]
-    stubs, thinking = compact_json_messages(rows, 1200)
-    assert (stubs, thinking) == (1, 0)
-    assert rows[0]["parts"][0]["content"]["omitted"] is True
-    assert rows[0]["parts"][1]["content"] == small
+    condensed, stubs, thinking = condense_messages(messages, 1200)
+    assert (stubs, thinking) == (1, 1)
+    parts = condensed[0]["parts"]
+    assert [part["part_kind"] for part in parts] == ["tool-call", "tool-return", "tool-return"]
+    # The call keeps its id, name and argument shape...
+    assert parts[0]["tool_call_id"] == "c1"
+    assert parts[0]["args"]["block_id"] == "blk-000129"
+    assert parts[0]["args"]["padding"].endswith("…")
+    # ...and the result keeps the locator that re-reads it.
+    assert parts[1]["tool_call_id"] == "c1"
+    assert parts[1]["tool_name"] == "read_source"
+    assert parts[1]["content"]["condensed"] is True
+    assert parts[1]["content"]["blocks"] == ["blk-000129"]
+    assert parts[2]["content"] == small
+    # The stored row is untouched: only the planned copy is condensed.
+    assert messages[0]["parts"][0]["part_kind"] == "thinking"
 
 
-def test_context_budget_stubs_before_dropping_rows():
-    pytest.importorskip("pydantic_ai")
-    from types import SimpleNamespace
+def test_history_compaction_drops_then_condenses_a_quarter_each():
+    from rsc.extract.runner import plan_history
 
+    def row(index):
+        return {
+            "messages": [
+                {
+                    "parts": [
+                        {
+                            "part_kind": "tool-return",
+                            "tool_name": "read_source",
+                            "tool_call_id": f"c{index}",
+                            "content": {"text": "x" * 4000},
+                        }
+                    ]
+                }
+            ],
+            "tokens": 2000,
+            "decision": f"decision {index}",
+            "assignment_id": f"batch-{index}",
+        }
+
+    rows = [row(index) for index in range(8)]
+    kept, dropped, stats = plan_history(rows, aim=6000, floor=5000, max_chars=200)
+
+    # Phase one removes whole oldest rows and covers at least a quarter of the window.
+    assert stats["dropped_tokens"] >= 5000
+    assert [item["assignment_id"] for item in dropped] == ["batch-0", "batch-1", "batch-2"]
+    # Phase two condenses the rows right after them and covers another quarter.
+    assert stats["condensed_before_tokens"] >= 5000
+    assert stats["condensed_after_tokens"] < stats["condensed_before_tokens"]
+    condensed_ids = [item["assignment_id"] for item in kept if item.get("condensed")]
+    assert condensed_ids == ["batch-3", "batch-4", "batch-5"]
+    # The two sets are disjoint and the rest of the history is untouched.
+    assert not set(condensed_ids) & {item["assignment_id"] for item in dropped}
+    assert [item["assignment_id"] for item in kept if not item.get("condensed")] == [
+        "batch-6",
+        "batch-7",
+    ]
+    assert stats["retained_tokens"] <= 6000
+
+
+def test_history_compaction_keeps_the_checkpoint_when_a_floor_is_unreachable():
+    from rsc.extract.runner import plan_history
+
+    rows = [
+        {"messages": [], "tokens": 100, "decision": f"decision {index}"} for index in range(3)
+    ]
+    # 300 tokens of history cannot cover two floors of 5000 tokens.
+    kept, dropped, stats = plan_history(rows, aim=10_000, floor=5000, max_chars=1200)
+    assert (kept, dropped) == (None, None)
+    assert stats["insufficient"] is True
+
+
+def test_history_compaction_reports_an_unfittable_request_instead_of_dropping_more():
+    from rsc.extract.runner import plan_history
+
+    def row(index):
+        return {
+            "messages": [
+                {
+                    "parts": [
+                        {
+                            "part_kind": "text",
+                            "content": "y" * 400,
+                        }
+                    ]
+                }
+            ],
+            "tokens": 3000,
+            "decision": f"decision {index}",
+        }
+
+    rows = [row(index) for index in range(8)]
+    kept, dropped, stats = plan_history(rows, aim=1000, floor=3000, max_chars=40)
+    # Both floors are met, but the untouched remainder alone still exceeds the aim;
+    # the caller keeps its checkpoint instead of shrinking history further.
+    assert (kept, dropped) == (None, None)
+    assert stats["over_budget"] is True
+    assert stats["dropped_rows"] == 1 and stats["condensed_rows"] == 1
+
+
+def test_context_budget_leaves_history_alone_without_pressure():
     from pydantic_ai import ModelMessagesTypeAdapter
     from pydantic_ai.messages import ModelRequest, ToolReturnPart
 
-    from rsc.extract.runner import ContextBudget, tokens
+    from rsc.extract.runner import ContextBudget, HistoryBudget
 
     old = [
         ModelRequest(
             parts=[ToolReturnPart("read_source", {"text": "blk-000001 " + "x" * 8000}, "c1")]
-        ),
-        ModelRequest(
-            parts=[ToolReturnPart("read_source", {"text": "blk-000002 " + "y" * 8000}, "c2")]
-        ),
+        )
     ]
-    current = [ModelRequest(parts=[ToolReturnPart("get_entity", {"id": "E1"}, "c3")])]
-    context = SimpleNamespace(messages=old + current)
-    state = SimpleNamespace(
-        rows=[{"messages": old, "decision": "earlier decision"}],
-        discarded=0,
+    current = [ModelRequest(parts=[ToolReturnPart("get_entity", {"id": "E1"}, "c2")])]
+    budget = HistoryBudget(
+        kept=[
+            {
+                "messages": json.loads(ModelMessagesTypeAdapter.dump_json(old)),
+                "tokens": 100,
+                "decision": "earlier decision",
+            }
+        ],
+        dropped=[],
+        offset=1,
+        limit=200_000,
+        floor=1000,
+        max_chars=1200,
         summary="",
         summary_tokens=128,
-        keep_full_turns=1,
-        tool_chars=1200,
-        stub_before_drop=True,
-        limit=tokens(ModelMessagesTypeAdapter.dump_json(current).decode()) + 400,
     )
-    result = asyncio.run(ContextBudget().before_model_request(SimpleNamespace(deps=state), context))
-    # The old tool results shrink to stubs, so no row has to be discarded.
-    assert state.discarded == 0
-    assert result.messages[0].parts[0].content["omitted"] is True
+    context = SimpleNamespace(messages=old + current)
+    result = asyncio.run(
+        ContextBudget().before_model_request(SimpleNamespace(deps=budget), context)
+    )
+    # Nothing is stubbed or dropped: the request already fits.
+    assert budget.stats == []
     assert result.messages[-1].parts[0].content == {"id": "E1"}
+    assert result.messages[0].parts[0].content["text"].startswith("blk-000001")
 
 
-def test_history_compaction_is_recorded(sources, tmp_path):
-    pytest.importorskip("pydantic_ai")
-    pytest.importorskip("fastmcp")
+def test_context_budget_compacts_completed_rows_only_on_pressure():
+    from pydantic_ai import ModelMessagesTypeAdapter
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
 
-    from rsc.extract.cli import ExtractConfig
-    from rsc.extract.runner import Runner
+    from rsc.extract.runner import ContextBudget, HistoryBudget, tokens
 
-    config = ExtractConfig(context_tokens=6000, output_tokens=1024, tool_result_reserve_tokens=1024)
-    runner = Runner(tmp_path, sources, "test", config, review_model=no_review())
-    rows = [{"messages": [], "tokens": 4000, "decision": f"decision {index}"} for index in range(3)]
-    runner.save(history=rows)
-    runner.history('{"batch_id": "batch-00001"}')
-    assert runner.compactions, "compaction must be recorded"
-    record = runner.compactions[-1]
-    assert record["trigger"] == "history"
-    assert record["discarded_rows"] >= 1
-    assert record["retained_rows"] < len(rows)
+    def exchange(block):
+        return [
+            ModelRequest(
+                parts=[ToolReturnPart("read_source", {"text": block * 4000}, f"c{block}")]
+            )
+        ]
+
+    def stored(messages):
+        return json.loads(ModelMessagesTypeAdapter.dump_json(messages))
+
+    old, middle = exchange("a"), exchange("b")
+    current = [ModelRequest(parts=[ToolReturnPart("get_entity", {"id": "E1"}, "c9")])]
+    kept = [
+        {
+            "messages": stored(old),
+            "tokens": tokens(dumps(stored(old))),
+            "decision": "first decision",
+        },
+        {
+            "messages": stored(middle),
+            "tokens": tokens(dumps(stored(middle))),
+            "decision": "second decision",
+        },
+    ]
+    floor = kept[0]["tokens"]
+    budget = HistoryBudget(
+        kept=[dict(row) for row in kept],
+        dropped=[],
+        offset=2,
+        # Tight enough to force one compaction, large enough that the compacted
+        # request fits afterwards.
+        limit=800,
+        floor=floor,
+        max_chars=120,
+        summary="",
+        summary_tokens=512,
+    )
+    context = SimpleNamespace(messages=old + middle + current)
+    result = asyncio.run(
+        ContextBudget().before_model_request(SimpleNamespace(deps=budget), context)
+    )
+    # The active tool exchange is intact and the completed rows were compacted.
+    assert result.messages[-1].parts[0].content == {"id": "E1"}
+    assert budget.stats and budget.stats[-1]["dropped_rows"] == 1
+    assert budget.stats[-1]["condensed_rows"] >= 1
+    assert "decision" in result.messages[0].parts[0].content
 
 
 def test_repairs_start_without_scan_history(sources, tmp_path):
@@ -1760,23 +1949,448 @@ def test_repairs_start_without_scan_history(sources, tmp_path):
     assert runner.state["compact_summary"] == ""
 
 
-def test_history_rows_drop_stored_reasoning():
-    from rsc.extract.runner import compact_json_messages
+def test_category_fix_rounds_keep_their_own_history(sources, tmp_path, monkeypatch):
+    pytest.importorskip("pydantic_ai")
+    from rsc.extract.registry import Workspace
+    from rsc.extract.runner import Runner
 
-    rows = [
-        {
-            "parts": [
-                {"part_kind": "thinking", "content": "long reasoning " * 100},
-                {"part_kind": "tool-call", "tool_name": "get_entity", "args": {"id": "E1"}},
-                {"part_kind": "tool-return", "tool_name": "get_entity", "content": {"id": "E1"}},
+    runner = Runner(tmp_path, sources, "test", ExtractConfig())
+    rounds = {}
+    started = set()
+    real = Workspace.structural_issues
+
+    def fail_twice(work):
+        # Two repair rounds per category, enough to see whether rounds replay.
+        if work.assignment.phase != "category":
+            return real(work)
+        if work.assignment.id not in started:
+            started.add(work.assignment.id)
+            rounds[work.assignment.kind] = rounds.get(work.assignment.kind, 0) + 1
+        if rounds[work.assignment.kind] <= 2:
+            return [
+                {"type": "structure", "records": [], "path": [], "description": "round"}
             ]
-        }
+        return real(work)
+
+    seen = []
+    row = {
+        "phase": "category",
+        "kind": "basics",
+        "assignment_id": "validate-basics",
+        "messages": [],
+        "tokens": 5,
+        "decision": "round",
+    }
+
+    async def fake_retry(work, issues=()):
+        seen.append((work.assignment.kind, [r.get("phase") for r in runner.state["history"]]))
+        return (
+            [{**row, "kind": work.assignment.kind, "assignment_id": work.assignment.id}],
+            {
+                "phase": "category",
+                "kind": work.assignment.kind,
+                "id": work.assignment.id,
+                "status": "completed",
+                "summary": "done",
+                "unresolved_ids": [],
+                "changed_entities": [],
+                "elapsed_seconds": 0.0,
+                "usage": {},
+                "tool_calls": 0,
+                "repeated_tool_calls": 0,
+                "compactions": [],
+                "mutations": [],
+            },
+        )
+
+    monkeypatch.setattr(Workspace, "structural_issues", fail_twice)
+    monkeypatch.setattr(runner, "retry", fake_retry)
+
+    async def check():
+        async with runner.toolset:
+            # A scan conversation is still in the checkpoint when repairs begin.
+            runner.save(
+                category=0,
+                batch=2,
+                history=[{**row, "phase": "scan", "decision": "scan"}],
+                compact_summary="scan summary",
+            )
+            await runner.validate_category(0, "basics")
+            await runner.validate_category(1, "steps")
+
+    asyncio.run(check())
+    # Repairs never replay scan rows, each Fix round replays the previous round of its
+    # own kind, and switching kind starts that history over.
+    assert seen == [
+        ("basics", []),
+        ("basics", ["category"]),
+        ("steps", []),
+        ("steps", ["category"]),
     ]
-    stubs, thinking = compact_json_messages(rows, 1200)
-    assert (stubs, thinking) == (0, 1)
-    assert [part["part_kind"] for part in rows[0]["parts"]] == ["tool-call", "tool-return"]
 
 
+def test_oversized_entity_pages_its_fields(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+    fixture = entity(
+        sources,
+        "messages",
+        name="Packet",
+        associated_fields=[
+            {"name": f"field-{index} " + "long source field name " * 6} for index in range(120)
+        ],
+    )
+    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([fixture]))
+    expected = [str(index) for index in range(len(fixture["value"]["associated_fields"]))]
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            seen = []
+            offset = 0
+            pages = 0
+            while True:
+                page = (
+                    await client.call_tool(
+                        "get_entity",
+                        {"id": "E1", "max_tokens": 900, "field_offset": offset},
+                    )
+                ).data
+                assert page["page_tokens"] <= page["page_limit"]
+                body = page["entities"]["E1"]
+                assert body["evidence"]
+                seen.extend(body["value"].get("associated_fields") or {})
+                pages += 1
+                if page["next_field_offset"] is None:
+                    assert page["fields_truncated"] is False
+                    break
+                offset = page["next_field_offset"]
+                assert page["remaining_fields"]
+                assert pages < 40
+            # No page ever exceeded its budget, and together they cover every field.
+            assert sorted(seen, key=int) == expected
+            assert pages > 1
+
+    asyncio.run(check())
+
+
+def test_read_source_rejects_malformed_block_lists(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
+    block_id = sources.batches[batch_id]["segments"][0]["block_id"]
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            for blocks in (
+                [{"block_id": block_id}],
+                [{"document_id": sources.batches[batch_id]["doc_id"]}],
+            ):
+                with pytest.raises(Exception, match="document_id and block_id"):
+                    await client.call_tool("read_source", {"blocks": blocks})
+            # A non-dict item is rejected by argument validation instead.
+            with pytest.raises(Exception, match="valid dictionary"):
+                await client.call_tool("read_source", {"blocks": [block_id]})
+            ok = (
+                await client.call_tool(
+                    "read_source",
+                    {
+                        "blocks": [
+                            {
+                                "document_id": sources.batches[batch_id]["doc_id"],
+                                "block_id": block_id,
+                            }
+                        ]
+                    },
+                )
+            ).data
+            assert ok["count"] == 1 and ok["blocks"][0]["block_id"] == block_id
+
+    asyncio.run(check())
+
+
+def test_retried_assignment_records_each_compaction_once(sources, tmp_path, monkeypatch):
+    pytest.importorskip("pydantic_ai")
+    from dataclasses import asdict
+
+    from rsc.extract.registry import Assignment
+    from rsc.extract.runner import Runner
+
+    runner = Runner(
+        tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review()
+    )
+    stats = {
+        "dropped_rows": 2,
+        "dropped_tokens": 70000,
+        "condensed_rows": 2,
+        "condensed_before_tokens": 70000,
+        "condensed_after_tokens": 20000,
+        "floor_tokens": 64600,
+    }
+    attempts = []
+
+    async def flaky(work, issues=(), *, assignment_attempt=1):
+        attempts.append(assignment_attempt)
+        if assignment_attempt == 1:
+            # The failed attempt compacted history before giving up.
+            runner.compactions.append(dict(stats))
+            raise ValueError("simulated model error")
+        record = {
+            **asdict(work.assignment),
+            "status": "completed",
+            "summary": "done",
+            "unresolved_ids": [],
+            "changed_entities": [],
+            "elapsed_seconds": 0.0,
+            "usage": {},
+            "tool_calls": 0,
+            "repeated_tool_calls": 0,
+            "compactions": [],
+            "mutations": [],
+        }
+        return [], record
+
+    monkeypatch.setattr(runner, "execute", flaky)
+    work = runner.workspace(Assignment("batch-00001", "scan", "basics"))
+    asyncio.run(runner.retry(work))
+    assert attempts == [1, 2]
+
+
+def test_read_source_pages_by_real_tokens_and_dedups_blocks(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
+    batch = sources.batches[batch_id]
+    keys = [
+        {"document_id": batch["doc_id"], "block_id": part["block_id"]}
+        for part in batch["segments"]
+    ] * 3
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            first = (
+                await client.call_tool(
+                    "read_source", {"blocks": keys, "max_tokens": 256}
+                )
+            ).data
+            # Repeated locators are read once.
+            assert first["count"] == len(batch["segments"])
+            assert len(first["blocks"]) <= first["count"]
+            assert first["page_tokens"] <= first["page_limit"] + 200
+            if first["next_offset"] is not None:
+                rest = (
+                    await client.call_tool(
+                        "read_source",
+                        {
+                            "blocks": keys,
+                            "max_tokens": 4000,
+                            "offset": first["next_offset"],
+                        },
+                    )
+                ).data
+                assert rest["next_offset"] is None
+            story = (
+                await client.call_tool(
+                    "read_source",
+                    {
+                        "document_id": batch["doc_id"],
+                        "section_path": list(
+                            sources.blocks[
+                                (batch["doc_id"], keys[0]["block_id"])
+                            ]["section_path"]
+                        ),
+                        "max_tokens": 200,
+                    },
+                )
+            ).data
+            assert story["page_tokens"] <= story["page_limit"]
+            assert story["text"]
+            if story["next_offset"] is not None:
+                assert len(story["text"]) < 10000
+
+    asyncio.run(check())
+
+
+def test_parallel_reads_share_one_turn_budget_and_writes_stay_whole(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.paging import MINIMUM_PAGE_TOKENS, TurnBudget
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    for start in range(0, 60, 20):
+        work.add_entities(
+            add([party(sources, f"Role {index}") for index in range(start, start + 20)])
+        )
+    budget = TurnBudget(3000)
+
+    async def check():
+        async with Client(
+            make_server(lambda: work, turn_budget=budget)
+        ) as client:
+            pages = await asyncio.gather(
+                *(
+                    client.call_tool(
+                        "list_entities", {"kind": "parties", "max_tokens": 2000}
+                    )
+                    for _ in range(6)
+                )
+            )
+            spent = sum(page.data["page_tokens"] for page in pages)
+            limit = 3000 + MINIMUM_PAGE_TOKENS * len(pages)
+            assert spent <= limit, (spent, limit)
+            # Every reply that could not hold the whole index says where to continue.
+            partial = [page.data for page in pages if page.data["next_offset"] is not None]
+            assert partial
+            for page in partial:
+                assert page["next_offset"] > 0
+            # A write and its receipt are never paged away, even with the budget spent.
+            receipt = (
+                await client.call_tool(
+                    "add_entities",
+                    {"entities": [party(sources, "Late party")]},
+                )
+            ).data
+            assert receipt[0]["id"]
+            assert "E" in receipt[0]["id"]
+
+    asyncio.run(check())
+
+
+def test_snapshot_cursors_report_staleness_and_changes(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            first = (await client.call_tool("validate_entities", {})).data
+            assert first["snapshot"] == 0
+            before = first["error_count"]
+            work.add_entities(add([party(sources, "Client")]))
+            # A party without a channel is a new blocking issue at the next snapshot.
+            stale = (await client.call_tool("list_entities", {"snapshot": 0})).data
+            assert stale["stale"] is True
+            assert stale["snapshot"] == work.snapshot == 1
+            fresh = (await client.call_tool("list_entities", {"snapshot": 1})).data
+            assert fresh["rows"] and "stale" not in fresh
+            grown = (await client.call_tool("validate_entities", {})).data
+            assert grown["snapshot"] == 1
+            assert grown["error_count"] >= before
+            assert "changed_since" not in grown
+            new_ids = [
+                row["id"] for row in grown["rows"] if row["type"] == "party_without_channel"
+            ]
+            assert new_ids
+            assert grown["group_count"] >= 1
+            assert grown["current_group"]["group_id"] == grown["rows"][0]["group_id"]
+            # Fix the row, then ask again with the snapshot the caller already saw.
+            work.add_entities(add([channel(sources, "Datagrams", connected=False)]))
+            after = (
+                await client.call_tool("validate_entities", {"snapshot": 1})
+            ).data
+            assert after["stale"] is True
+            assert after["snapshot"] == 2
+            assert set(after["changed_since"]["gone"]) == set(new_ids)
+            assert after["changed_since"]["snapshot"] == 1
+
+    asyncio.run(check())
+
+
+def test_validate_entities_pages_groups_and_issues(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(add([party(sources, f"Role {index}") for index in range(15)]))
+    assert len(work.issues()) == 15
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            catalog = (
+                await client.call_tool(
+                    "validate_entities", {"view": "groups", "max_tokens": 200}
+                )
+            ).data
+            assert catalog["group_count"] == 15
+            assert catalog["next_offset"] is not None
+            assert len(catalog["groups"]) < 15
+            group_id = catalog["groups"][0]["group_id"]
+            one = (
+                await client.call_tool(
+                    "validate_entities", {"view": "group", "group_id": group_id}
+                )
+            ).data
+            assert [row["group_id"] for row in one["issues"]] == [group_id]
+            typed = (
+                await client.call_tool(
+                    "validate_entities",
+                    {"view": "issues", "issue_type": "party_without_channel"},
+                )
+            ).data
+            assert len(typed["issues"]) == 15
+            clean = (
+                await client.call_tool(
+                    "validate_entities",
+                    {"view": "group", "group_id": "no-such-group"},
+                )
+            ).data
+            assert clean["issues"] == [] and clean["note"]
+
+    asyncio.run(check())
+
+
+def test_probe_runs_list_entities_on_an_empty_workspace(monkeypatch):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import (
+        ModelResponse,
+        TextPart,
+        ToolCallPart,
+        ToolReturnPart,
+        UserPromptPart,
+    )
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract import runner as runner_module
+
+    def respond(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            return ModelResponse(parts=[ToolCallPart("list_entities", {})])
+        assert isinstance(latest, ToolReturnPart) and latest.tool_name == "list_entities"
+        assert latest.content["rows"] == []
+        assert latest.content["snapshot"] == 0
+        return ModelResponse(parts=[TextPart("OK")])
+
+    model = FunctionModel(respond)
+    real = runner_module.make_agent
+    monkeypatch.setattr(
+        runner_module,
+        "make_agent",
+        lambda name, toolset, config: real(model, toolset, config),
+    )
+    asyncio.run(runner_module.probe(ExtractConfig()))
 
 
 def review_model(handler):
@@ -2627,11 +3241,15 @@ def test_list_entities_batch_filter_returns_full_definitions(sources):
 
     async def check():
         async with Client(make_server(lambda: work)) as client:
-            result = await client.call_tool("list_entities", {"batch_id": batch_id})
+            result = await client.call_tool(
+                "list_entities", {"batch_id": batch_id, "full": True}
+            )
             row = result.data["rows"][0]
             assert row["value"]["description"] == "Protocol endpoint"
             assert row["evidence"][0]["block_id"]
             assert "text" not in row["evidence"][0]
+            assert result.data["snapshot"] == work.snapshot
+            assert result.data["related_step_count"] == 0
 
     asyncio.run(check())
 
@@ -2702,7 +3320,19 @@ def test_validate_entities_returns_suggestions(sources):
         async with Client(make_server(lambda: work)) as client:
             report = (await client.call_tool("validate_entities", {})).data
             assert report["error_count"] >= 1
-            assert all(row["suggestion"] for row in report["rows"])
+            rows = report["rows"] or (
+                await client.call_tool("validate_entities", {"view": "issues"})
+            ).data["issues"]
+            assert all(row["id"] and row["group_id"] for row in rows)
+            details = [
+                (
+                    await client.call_tool(
+                        "validate_entities", {"view": "issue", "issue_id": row["id"]}
+                    )
+                ).data["issue"]
+                for row in rows[:3]
+            ]
+            assert all(detail["suggestion"] for detail in details)
 
     asyncio.run(check())
 
@@ -2740,7 +3370,11 @@ def test_global_fix_prompt_carries_suggestions_and_start_count(sources, tmp_path
     asyncio.run(runner.run())
     assert seen
     assert seen[0]["repair_start_count"] == 1
-    assert all("suggestion" in row for row in seen[0]["validation_errors"])
+    assert seen[0]["validation_error_count"] == 1
+    assert [row["description"] for row in seen[0]["validation_errors"]] == ["try once"]
+    assert seen[0]["validation_errors_next_offset"] is None
+    assert seen[0]["fix_groups"]
+    assert seen[0]["current_group"]["issues_in_page"] == 1
 
 
 def test_list_entities_returns_related_step_scenarios(sources):

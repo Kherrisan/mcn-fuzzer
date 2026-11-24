@@ -102,8 +102,17 @@ def cmd_validate(args: argparse.Namespace) -> int:
     if args.stage == "protocol":
         from rsc.protocol import validate_protocol_file
 
-        schemas.check_errors(validate_protocol_file(file_path, args.schemas_dir))
-        print(f"OK {file_path}: protocol schema and references verified")
+        schemas.check_errors(
+            validate_protocol_file(
+                file_path, args.schemas_dir, coverage=not args.no_coverage
+            )
+        )
+        checks = (
+            "schema and references"
+            if args.no_coverage
+            else "schema, references and coverage"
+        )
+        print(f"OK {file_path}: protocol {checks} verified")
         return 0
     validator = _validator(args.stage, _schemas_dir(args.schemas_dir))
 
@@ -209,7 +218,9 @@ def cmd_stats(args: argparse.Namespace) -> int:
 
     path, model = collect_protocol(args.path)
     if args.validate:
-        schemas.check_errors(validate_protocol_file(path, args.schemas_dir))
+        schemas.check_errors(
+            validate_protocol_file(path, args.schemas_dir, coverage=not args.no_coverage)
+        )
     stats = compute_stats(model)
     print(json.dumps(stats, indent=2, ensure_ascii=False) if args.json else format_stats(stats))
     return 0
@@ -286,7 +297,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--validate",
         action="store_true",
-        help="validate schema and graph before summarizing",
+        help="validate schema, references and coverage before summarizing",
+    )
+    p.add_argument(
+        "--no-coverage",
+        action="store_true",
+        help="with --validate, skip the extraction coverage rules",
     )
     p.add_argument("--schemas-dir", help="override the schema directory")
     p.set_defaults(func=cmd_stats)
@@ -319,6 +335,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("stage", choices=sorted(STAGE_FILES))
     p.add_argument("file")
     p.add_argument("--schemas-dir")
+    p.add_argument(
+        "--no-coverage",
+        action="store_true",
+        help="skip the extraction coverage rules for --stage protocol",
+    )
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--jsonl", action="store_true", help="force JSON Lines")
     mode.add_argument("--json", action="store_true", help="force a single JSON value")

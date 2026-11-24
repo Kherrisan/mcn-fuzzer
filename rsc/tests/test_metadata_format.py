@@ -9,6 +9,7 @@ from test_schemas_cli import SAMPLES
 from rsc.artifacts import read_json, write_json
 from rsc.index import build_structural_index, validate_index
 from rsc.ingest import IngestOptions, ingest_path, validate_document
+from rsc.protocol.contract import COLLECTIONS
 from rsc.protocol.context import load_batch
 from rsc.protocol.models import Protocol
 from rsc.protocol.validate import validate_protocol, validate_protocol_file
@@ -85,7 +86,7 @@ def test_schema_rejects_legacy_artifacts(stage):
     assert "legacy metadata" in "; ".join(validate_instance(check, sample))
 
 
-def test_source_identity_schema_and_path_validation_remain(tmp_path):
+def test_file_validation_only_checks_protocol_contents(tmp_path):
     model = published()
     doc = document()
     changed = deepcopy(doc)
@@ -98,9 +99,15 @@ def test_source_identity_schema_and_path_validation_remain(tmp_path):
     changed["meta"]["input_sha256"] = "old"
     assert "legacy metadata" in "; ".join(validate_protocol(model, {"rfc9999": changed}))
     model["meta"]["documents"][0]["path"] = "../outside.json"
-    write_json(tmp_path / "protocol.json", model)
-    assert validate_protocol_file(tmp_path / "protocol.json") == [
-        "source snapshot path escapes model directory"
+    model["unresolved"] = [{"description": "An open question", "object_names": []}]
+    for kind in COLLECTIONS:
+        model[kind] = []
+    path = tmp_path / "protocol.json"
+    write_json(path, model)
+    assert validate_protocol_file(path) == []
+    assert validate_protocol(model, {"rfc9999": doc}) == [
+        "complete model cannot contain unresolved issues",
+        "protocol model must not be empty",
     ]
 
 

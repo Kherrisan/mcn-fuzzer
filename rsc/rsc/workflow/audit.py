@@ -1,6 +1,6 @@
 """Check the accepted file chain and independent review without rerunning agents."""
 
-from rsc.protocol.validate import validate_protocol_file
+from rsc.protocol.validate import validate_protocol
 
 from .sources import validate_batches
 from .state import Workflow, WorkflowError
@@ -18,10 +18,12 @@ def audit_run(root):
         require(w.data["phase"] == "published", "not published")
         validate_batches(w.documents, w.batches, w.data["max_tokens"])
         for name, document in w.documents.items():
+            path = (w.root / f"snapshots/{name}.json").resolve()
             require(
-                read_json(w.root / f"snapshots/{name}.json") == document,
-                "exported source snapshot differs",
+                path.is_relative_to(w.root.resolve()),
+                "source snapshot path escapes model directory",
             )
+            require(read_json(path) == document, "exported source snapshot differs")
         plan = read_json(w.root / "parse-plan.json")
         assigned = [b for p in plan["partitions"] for b in p["batch_ids"]]
         require(
@@ -115,14 +117,9 @@ def audit_run(root):
             w.checkpoint(producer["output_path"]) == w.checkpoint(final["candidate_path"]),
             "candidate differs from accepted result",
         )
-        require(
-            read_json(w.root / "protocol.json") == w.publication_model(),
-            "published protocol differs",
-        )
-        require(
-            not validate_protocol_file(w.root / "protocol.json"),
-            "invalid protocol or source snapshots",
-        )
+        model = read_json(w.root / "protocol.json")
+        require(model == w.publication_model(), "published protocol differs")
+        require(not validate_protocol(model, w.documents), "invalid protocol or source snapshots")
         return {
             "verified": True,
             "complete": w.publication_model()["meta"]["complete"],

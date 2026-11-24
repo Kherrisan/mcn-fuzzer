@@ -54,7 +54,9 @@ The synthesis budget is {{ campaign.budgets.generation_secs }} seconds.
 - PYTHONPATH: {{ campaign.pythonpath }}
 - Shared helper directory (writable, campaign-scoped): {{ campaign.workspace }}/lib
 - Generator module skill (read-only): {{ campaign.generator_skill }}
-- Artifact validator: {{ campaign.generator_validator }}
+- Artifact validator script: {{ campaign.generator_validator }}
+{% if draft_mcp %}- Static draft tool: `synthesis.validate_synthesis_draft`.
+{% endif %}
 - Public API source: {{ campaign.pythonpath }}/generator_server/context.py
 - Generator scaffold (read-only): {{ campaign.pythonpath }}/generator_server/template.py
 - Empty params schema template (read-only): {{ campaign.pythonpath }}/generator_server/params.schema.json
@@ -201,8 +203,6 @@ from codec_v1 import read_frame, write_frame
 ~~~
 
 Do not add a `sys.path` bootstrap or scan parent directories from generator.py.
-The artifact validator is given the same shared-lib path through `--shared-lib`
-so its import probe sees the same modules.
 
 Reuse existing helper modules as-is. If they do not fit or need different
 behavior, use them as a reference and write a modified copy under a new versioned module name (for example
@@ -296,7 +296,7 @@ share helpers and case-local connection state via ctx; create resources inside
 the worker and clean them up in handlers. Do not perform another trace step's
 message exchange as an implicit substitute for its handler.
 
-After a handler runs correctly, audit it before moving on:
+After writing a handler, review its source and its helpers before moving on:
 
 - list the values the handler, and the helpers it calls, actually write into the
   message: fixed constants, values derived from earlier state, and values read
@@ -304,10 +304,20 @@ After a handler runs correctly, audit it before moving on:
 - for anything the proposal does not declare, decide whether an override entry
   already exists (`params.<field>`), whether one can be added cheaply, and what
   omission would mean (fall back to the baseline vs. leave the field out);
+- a send step that encodes fixed setup values still has mutable candidates. For
+  example SNI, ALPN, cipher suite lists, session ids, offered groups, extension
+  payloads and their order are usually independent of the handshake key
+  schedule, and varying them is exactly what a protocol fuzzer needs. "The
+  proposal does not declare it" or "it is not the target field" is not a reason
+  to keep such a value fixed: expose it as an adhoc field unless changing it
+  would corrupt state the following steps depend on, and say which case applies;
 - judge once per model step, not per instance: the same handler serves every
   instance of that step, including copies Rust creates later;
 - put the conclusion in the step's `reason`: what you inspected, which candidates
-  you rejected and why, or why there was no candidate.
+  you exposed or rejected and why, or why there was no candidate. When you keep a
+  send-step value fixed, name the value and the concrete reason (it must match
+  the SUT response, it is derived from the key schedule, or the trace depends on
+  it), instead of only saying that the proposal does not declare it.
 
 Implement every handler in generator.py; put reusable helpers in
 WORKSPACE/lib, including protocol-specific codecs, record framing, crypto,
@@ -481,20 +491,21 @@ wire content back to fixed valid values.
   | `override_rule` | `encoded`, `fixed`, `derived`, or `rejected` |
   | `omit` | whether the encoder can leave the field out entirely |
   | `sample` | one value of the declared kind that the encoder accepts |
-  | `verified` | true after the checks below |
-  | `verification` | one sentence saying how you checked it |
+  | `verified` | true after the static review below |
+  | `verification` | one sentence naming the relevant code path |
 
-  `reason` must state the helper or entry you inspected, whether any candidate
-  existed beyond the proposal, and for each rejected candidate its name and why
-  (fixed constant, derived from prior state, no override path, too invasive to
-  expose). When there is no candidate, say so explicitly.
+  `reason` must state the helper or entry you inspected, which candidates you
+  exposed, and for each rejected candidate its name and a concrete reason
+  (mirrors a SUT response, derived from the key schedule, the trace depends on
+  it, or no override path). A send step whose values are constants still has
+  candidates: keep one fixed only when changing it would corrupt state later
+  steps depend on, and say so. When there is truly no candidate, say so
+  explicitly.
 
-  `verified` has two independent parts: override, where a changed value changes
-  the encoded message (required for every declared field); and omission, where
-  the field disappears from the message (required only when `omit` is true). Run
-  the encoder with the baseline value and with `sample` and compare the bytes
-  your handler sends; when a step only sends to the peer you can do this with a
-  local listening socket, otherwise explain the check you performed.
+  For each declared field, read the handler and encoder to confirm the override
+  value reaches serialization. When `omit` is true, also confirm the omission
+  branch leaves the field out of the message. Record the relevant code path in
+  `verification`. This is static evidence.
 
   List every analyzed field the proposal declares for that step, plus every
   adhoc field you expose. Do not add a field to params.json that the manifest
@@ -523,42 +534,38 @@ Failure result (replace error with a specific, actionable explanation):
 
 Check step-to-code correspondence, role ownership, prerequisite conditions/field
 reuse, endpoint feasibility, bounded I/O, cleanup, and that every model step in
-the manifest has a `reason`. Use the fixed validator documented by the skill
-instead of writing ad hoc syntax/schema/parameter checks. The validator checks
-syntax, schema, parameters, and imports; it does not prove that a declared field
-reaches the wire. That is what the audit recorded in `reason` and `verified`
-covers.
-Complete the three artifacts and write the success JSON to result.draft.json,
-then run this exact command with the campaign Python:
+the manifest has a `reason`. Review the handler and helper source. Do not call
+handlers or encoding helpers, open a test socket, or run a replay. Complete
+all required artifacts, then write the success JSON to result.draft.json.
+
+If module loading is uncertain, you may run the isolated import probe from the
+skill before submitting the draft. This is optional and belongs to the agent.
+The probe runs module-level code but does not call handlers.
+{% if draft_mcp %}
+Call `synthesis.validate_synthesis_draft` with no arguments. It checks the draft
+and artifacts for the current request using the same Rust static checks as
+publication. Fix any reported error and call again.
+{% else %}
+Run the supplied static validator with the campaign Python:
 
 ~~~sh
 "{{ campaign.python }}" "{{ campaign.generator_validator }}" \
   --output-dir "{{ output_dir }}" \
   --request-id "{{ request_id }}" \
-  --proposal "{{ output_dir }}/proposal.json" \
-  --result "{{ output_dir }}/result.draft.json" \
-  --check-imports --pythonpath "{{ campaign.pythonpath }}" \
-  --shared-lib "{{ campaign.workspace }}/lib"
+  --result "{{ output_dir }}/result.draft.json"
 ~~~
 
-The command prints JSON and exits 0 on success. Fix reported errors and rerun;
-only after it passes, atomically rename result.draft.json to result.json. Do not
-publish the success signal before validation or edit artifacts after publishing.
-The checker uses the production schema subset; do not add assumptions such as
-requiring every property to be required, or guessing fixture certificate paths.
-You may add small checks of trace-specific pure parsing/encoding helpers when
-needed; the common artifact checks are already provided by the script.
-Do not launch the campaign SUT/fuzzer or claim an end-to-end replay without an
-explicit isolated harness. Rust acceptance uses the same static validator. The
-isolated import probe checks module loading and the callable interface without
-calling handlers; lazy imports, network behavior, protocol semantics
-and case cleanup are not proved by static checks.
+The command prints JSON and exits 0 on success. Fix reported errors and rerun.
+{% endif %}
+On success, atomically rename result.draft.json to result.json. Use the supplied
+validation result directly, without writing additional validators. Static
+checks do not establish module loading, wire behavior or successful replay.
 
 Optional notes/validation fields in result.json may record assumptions, actual
 checks, and missing runtime validation. Do not claim the trace executed or covered
 code solely because artifacts passed static checks.
 
-On success, complete all three artifacts first. On failure, publish the error
+On success, complete all required artifacts first. On failure, publish the error
 result directly without fabricating successful artifacts; incomplete drafts do
 not count as valid generators. Write completion JSON to a temporary file inside
 OUTPUT_DIR, then atomically rename it to result.json. Do not create result.json

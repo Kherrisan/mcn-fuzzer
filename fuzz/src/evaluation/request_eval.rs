@@ -590,6 +590,16 @@ pub fn run(options: &Options) -> Result<(), String> {
         &original
     };
     prompt = rebase_prompt(&prompt, &original, rewrite_root, &out)?;
+    let _synthesis_mcp = if matches!(options.stage, Stage::Synthesis) {
+        Some(crate::engine::synthesis::mcp::SynthesisMcp::replay(
+            &mut launch,
+            &out,
+            &options.request_id,
+            field(&source.prompt, "SESSION").unwrap_or("eval"),
+        )?)
+    } else {
+        None
+    };
     fs::write(out.join("request-prompt.md"), &prompt).map_err(error)?;
     let ready_at_ms = unix_ms(SystemTime::now());
     let turn = session::run(

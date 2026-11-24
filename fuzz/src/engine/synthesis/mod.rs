@@ -29,6 +29,7 @@ use crate::{
 
 mod agent;
 pub(crate) mod artifacts;
+pub(crate) mod mcp;
 mod prompts;
 mod queue;
 mod request;
@@ -170,6 +171,7 @@ pub struct GeneratorSynthesisStage {
     init_timeouts: u32,
     paused: bool,
     worker: Option<Client>,
+    draft_mcp: Option<mcp::SynthesisMcp>,
     closed_requests: BTreeSet<String>,
     current_request: Option<String>,
     session: String,
@@ -201,9 +203,8 @@ impl GeneratorSynthesisStage {
         stage.enabled = true;
         stage.binding = context.binding().clone();
         stage.config = campaign.generator_synthesis.clone();
-        stage.prompt_context = Some(context);
         stage.session = boot.session.clone();
-        let launched = command_line(
+        let mut launched = command_line(
             campaign
                 .agents
                 .profiles
@@ -216,6 +217,10 @@ impl GeneratorSynthesisStage {
                 })?,
             &std::path::absolute(&campaign.generator_synthesis.output)?,
         )?;
+        if launched.codex {
+            stage.draft_mcp = Some(mcp::SynthesisMcp::campaign(&mut launched).map_err(Error::unknown)?);
+        }
+        stage.prompt_context = Some(context.with_draft_mcp(stage.draft_mcp.is_some()));
         stage.secrets = launched.secrets();
         stage.launch = Some(launched);
         stage.spawn_worker(boot.socket)?;
@@ -236,6 +241,7 @@ impl GeneratorSynthesisStage {
             init_timeouts: 0,
             paused: false,
             worker: None,
+            draft_mcp: None,
             closed_requests: BTreeSet::new(),
             current_request: None,
             session: String::new(),
@@ -308,6 +314,7 @@ impl GeneratorSynthesisStage {
             self.exited = true;
         }
         self.worker.take();
+        self.draft_mcp.take();
     }
 
     fn dispatch(&mut self) -> Result<(), Error> {
@@ -360,6 +367,9 @@ impl GeneratorSynthesisStage {
             .worker
             .as_ref()
             .ok_or_else(|| Error::unknown("synthesis worker is not running".to_string()))?;
+        if let Some(mcp) = &self.draft_mcp {
+            mcp.set_request(Some(generation.clone()));
+        }
         if worker
             .send(AgentCommand::Run {
                 request: generation,
@@ -367,6 +377,9 @@ impl GeneratorSynthesisStage {
             })
             .is_err()
         {
+            if let Some(mcp) = &self.draft_mcp {
+                mcp.set_request(None);
+            }
             self.fail_request(&request);
             return Err(Error::unknown("synthesis worker stopped".to_string()));
         }
@@ -595,6 +608,9 @@ impl GeneratorSynthesisStage {
 
     fn finish_request(&mut self, pause: bool) {
         self.inflight = false;
+        if let Some(mcp) = &self.draft_mcp {
+            mcp.set_request(None);
+        }
         if pause {
             self.paused = true;
         }

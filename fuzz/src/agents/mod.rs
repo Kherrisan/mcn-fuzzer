@@ -6,6 +6,7 @@
 
 pub(crate) mod artifacts;
 mod hc;
+pub(crate) mod mcp;
 mod profile;
 mod session;
 mod worker;
@@ -78,6 +79,7 @@ use crate::runtime::{drop_privileges, prepare_owned_dir, user_home, TargetIdenti
 pub struct GenerationRequest {
     pub hc: PathBuf,
     pub output: PathBuf,
+    pub synthesis_mcp: bool,
 }
 
 static REQUEST: Mutex<Option<GenerationRequest>> = Mutex::new(None);
@@ -111,6 +113,14 @@ pub fn generation_requested() -> bool {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .is_some()
+}
+
+pub(crate) fn synthesis_mcp_requested() -> bool {
+    REQUEST
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .is_some_and(|request| request.synthesis_mcp)
 }
 
 /// Start the private core while PID 1 still has the host network.

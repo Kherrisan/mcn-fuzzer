@@ -52,7 +52,6 @@ enum Phase {
 struct CoverageInit {
     ready: SessionInit,
     model: IndexedModel,
-    binding: Binding,
     handlers_path: PathBuf,
 }
 
@@ -64,18 +63,6 @@ impl AgentInit for CoverageInit {
     fn accept(&self) -> Result<(), String> {
         accept_handlers(self, &self.ready.output_dir)
     }
-}
-
-fn inbound_messages(model: &IndexedModel, binding: &Binding) -> BTreeSet<String> {
-    model
-        .steps
-        .iter()
-        .filter(|step| {
-            step.receiver_name()
-                .is_some_and(|name| binding.role(name) == PartyRole::Sut)
-        })
-        .filter_map(|step| step.message_name().map(str::to_string))
-        .collect()
 }
 
 /// Validate the initialized mapping and freeze an accepted copy for the service.
@@ -94,13 +81,11 @@ fn accept_handlers(context: &CoverageInit, output_dir: &Path) -> Result<(), Stri
                 .map(|message| (step.name.clone(), message.to_string()))
         })
         .collect();
-    let mut covered = BTreeSet::new();
     for row in mappings {
         let message = row
             .get("message")
             .and_then(Value::as_str)
             .ok_or("handler mapping has no message")?;
-        covered.insert(message.to_string());
         let handlers = row
             .get("handlers")
             .and_then(Value::as_array)
@@ -141,13 +126,6 @@ fn accept_handlers(context: &CoverageInit, output_dir: &Path) -> Result<(), Stri
                     "handler mapping for {message} references step {step} of message {expected}"
                 ));
             }
-        }
-    }
-    for message in inbound_messages(&context.model, &context.binding) {
-        if !covered.contains(&message) {
-            return Err(format!(
-                "handlers.json does not cover inbound message {message}"
-            ));
         }
     }
     fs::copy(output_dir.join("handlers.json"), &context.handlers_path)
@@ -510,7 +488,6 @@ impl CoverageAnalysisStage {
                         session: self.session.clone(),
                     },
                     model: model.clone(),
-                    binding: self.binding.clone(),
                     handlers_path: self.handlers_path.clone(),
                 },
                 prompt,
@@ -1167,6 +1144,45 @@ pythonpath = "pp"
 "#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn handler_mapping_accepts_partial_coverage_and_checks_submitted_rows() {
+        let dir = std::env::temp_dir().join(format!("mcn-partial-handlers-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let context = CoverageInit {
+            ready: SessionInit {
+                output_dir: dir.clone(),
+                session: "test".into(),
+            },
+            model: load_model(Path::new("targets/openssl/protocol.json")).unwrap(),
+            handlers_path: dir.join("handlers.accepted.json"),
+        };
+        let step = context
+            .model
+            .steps
+            .iter()
+            .find(|step| step.message_name() == Some("ClientHello"))
+            .unwrap();
+        let mut document = json!({"session": "test", "mappings": [{
+            "message": "ClientHello", "handlers": [{"symbol": "tls_process_client_hello"}],
+            "step_names": [step.name], "reason": null,
+        }]});
+        let path = dir.join("handlers.json");
+        fs::write(&path, document.to_string()).unwrap();
+        context.accept().unwrap();
+        let accepted = fs::read(&context.handlers_path).unwrap();
+        assert_eq!(accepted, fs::read(&path).unwrap());
+
+        document["mappings"][0]["step_names"] = json!(["unknown step"]);
+        fs::write(&path, document.to_string()).unwrap();
+        assert!(context.accept().unwrap_err().contains("unknown step"));
+        document["mappings"][0]["step_names"] = json!([step.name]);
+        document["mappings"][0]["message"] = json!("HTTP certificate response");
+        fs::write(&path, document.to_string()).unwrap();
+        assert!(context.accept().unwrap_err().contains("of message ClientHello"));
+        assert_eq!(accepted, fs::read(&context.handlers_path).unwrap());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -9,6 +9,7 @@ use crate::coverage::proposal::Proposal;
 use crate::engine::input::{InstanceParams, StepInstance};
 
 /// Identity and artifact directory shared by dispatch, prompting, and validation.
+#[derive(Clone)]
 pub(super) struct GeneratorRequest {
     pub(super) id: String,
     pub(super) output_dir: PathBuf,
@@ -136,58 +137,93 @@ impl GeneratorRequest {
 
     /// Validate and publish this request's generator artifacts.
     pub(super) fn accept(&self) -> Result<ValidatedGenerator, String> {
-        super::accept_artifacts(&self.output_dir, &self.id, |result, params, manifest, generator| {
-            let proposal = Proposal::read(&self.output_dir.join("proposal.json"))?;
-            if proposal.origin != "coverage" {
-                return Err("synthesis requires a coverage proposal".into());
+        super::accept_artifacts(
+            &self.output_dir,
+            &self.id,
+            |result, params, manifest, generator| {
+                self.build_validated(result, params, manifest, generator)
+            },
+        )
+    }
+
+    /// Check the draft without importing the generator or publishing any files.
+    pub(super) fn validate_draft(&self) -> Result<(), String> {
+        use super::artifacts;
+
+        let result =
+            artifacts::check_result_file(&self.output_dir.join("result.draft.json"), &self.id)?;
+        let (params, manifest) = artifacts::check_bundle(&self.output_dir)?;
+        self.build_validated(
+            result,
+            params,
+            manifest,
+            self.output_dir.join("generator.py"),
+        )?;
+        Ok(())
+    }
+
+    fn build_validated(
+        &self,
+        result: Value,
+        params: InstanceParams,
+        manifest: Option<super::artifacts::FieldManifest>,
+        generator: PathBuf,
+    ) -> Result<ValidatedGenerator, String> {
+        let proposal = Proposal::read(&self.output_dir.join("proposal.json"))?;
+        if proposal.origin != "coverage" {
+            return Err("synthesis requires a coverage proposal".into());
+        }
+        let origins = match manifest {
+            Some(manifest) => {
+                manifest.check(&proposal, &params, &self.id)?;
+                manifest.origins()
             }
-            let origins = match manifest {
-                Some(manifest) => {
-                    manifest.check(&proposal, &params, &self.id)?;
-                    manifest.origins()
-                }
-                None => {
-                    // Legacy generator: every parameter is a proposal field.
-                    for (instance, fields) in &params {
-                        let step = proposal.trace.iter().find(|step| &step.name == instance)
-                            .ok_or_else(|| format!("params.json instance {instance} is not in the proposal"))?;
-                        for field in fields.keys() {
-                            if !step.mutable_fields.iter().any(|item| &item.field == field) {
-                                return Err(format!(
-                                    "params.json field {instance}.{field} is not declared mutable"
-                                ));
-                            }
-                        }
-                    }
-                    std::collections::BTreeMap::new()
-                }
-            };
-            let mut input = build_generator_input(&proposal, generator, params)?;
-            input.field_origin = origins;
-            let added = result
-                .get("added_steps")
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(ValidatedGenerator {
-                input,
-                origin: TraceOrigin {
-                    request_id: self.id.clone(),
-                    session: proposal.session.clone(),
-                    step_names: proposal
+            None => {
+                // Legacy generator: every parameter is a proposal field.
+                for (instance, fields) in &params {
+                    let step = proposal
                         .trace
                         .iter()
-                        .map(|step| step.name.clone())
-                        .collect(),
-                    added_steps: added,
-                },
+                        .find(|step| &step.name == instance)
+                        .ok_or_else(|| {
+                            format!("params.json instance {instance} is not in the proposal")
+                        })?;
+                    for field in fields.keys() {
+                        if !step.mutable_fields.iter().any(|item| &item.field == field) {
+                            return Err(format!(
+                                "params.json field {instance}.{field} is not declared mutable"
+                            ));
+                        }
+                    }
+                }
+                std::collections::BTreeMap::new()
+            }
+        };
+        let mut input = build_generator_input(&proposal, generator, params)?;
+        input.field_origin = origins;
+        let added = result
+            .get("added_steps")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
             })
+            .unwrap_or_default();
+        Ok(ValidatedGenerator {
+            input,
+            origin: TraceOrigin {
+                request_id: self.id.clone(),
+                session: proposal.session.clone(),
+                step_names: proposal
+                    .trace
+                    .iter()
+                    .map(|step| step.name.clone())
+                    .collect(),
+                added_steps: added,
+            },
         })
     }
 }

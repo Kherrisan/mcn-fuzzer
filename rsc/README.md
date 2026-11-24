@@ -42,6 +42,8 @@ A message step's `processing` lists ordered operations under `before_send`, `aft
 or `on_receive`. Each operation declares `reads`, `writes` and a source-backed `rule`.
 Rules describe branch applicability, computations, failure behavior and state lifetime.
 RSC validates references and checks that internally produced states have writers.
+The same coverage rules require channels to have lifecycle steps, messages to be sent,
+states to be accessed and steps to appear in a dependency.
 
 ## Agent profiles
 
@@ -228,8 +230,10 @@ under `llm/`, for example `llm/category/steps/validate-steps-2.jsonl`. The files
 contain the full model messages, settings, tool definitions, responses, and model
 errors at the Pydantic AI adapter boundary. Internal retries append to the same
 file. Pair a request with its response or error by `run_id` and `request_number`.
-Keep the source snapshots beside them so `rsc validate protocol` can
-verify the referenced sources. The checkpoint also holds the registry, citations,
+`rsc validate protocol` checks the model schema, internal references and coverage
+(channel lifecycles, sent messages, accessed states, linked steps) from
+`protocol.json` alone; pass `--no-coverage` to check schema and references only.
+Extraction applies the same rules after each scan stage. The checkpoint also holds the registry, citations,
 per-assignment timing, model usage, and the current conversation. Resume with
 `rsc extract --task-dir runs/extract-ftp`. Configuration and inputs are fixed
 for a task directory. Existing `rsc run` tasks still use their original entry point.

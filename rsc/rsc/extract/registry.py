@@ -15,7 +15,7 @@ from rsc.protocol.models import (
     StepDependency,
     StrictModel,
 )
-from rsc.protocol.references import reference_issues
+from rsc.protocol.references import duplicate_issues, reference_issues
 from rsc.protocol.validate import validate_protocol
 from rsc.workflow.store import dumps
 
@@ -285,6 +285,9 @@ class Workspace:
         self.repair_start_count = 0
         self.gaps = []
         self.reject_count = 0
+        # Bumped by every applied mutation so a paged read can tell the model when
+        # its cursor predates a change to the rows it was reading.
+        self.snapshot = 0
         self._index = None
 
     @property
@@ -385,6 +388,7 @@ class Workspace:
         updated = {i: self.records.get(i) for i in touched} if operation == "update" else {}
         self.receipts[key] = result, updated
         self.mutations.append({"operation": operation, "request": request, "result": result})
+        self.snapshot += 1
         return result
 
     def location(self, item):
@@ -648,33 +652,7 @@ class Workspace:
         ]
 
     def structural_issues(self):
-        issues = list(self.index.issues)
-        seen = {}
-        for key, row in self.records.items():
-            value = row["value"]
-            if row["kind"] == "step_dependencies":
-                duplicate = dumps(value)
-                if duplicate in seen:
-                    issues.append(
-                        {
-                            "type": "duplicate_dependency",
-                            "records": [key, seen[duplicate]],
-                            "path": [],
-                            "description": "duplicate dependency",
-                        }
-                    )
-                seen[duplicate] = key
-            if row["kind"] == "messages":
-                names = [field["name"] for field in value["associated_fields"]]
-                if len(set(names)) != len(names):
-                    issues.append(
-                        {
-                            "type": "duplicate_field",
-                            "records": [key],
-                            "path": ["associated_fields"],
-                            "description": "message field names must be unique",
-                        }
-                    )
+        issues = list(self.index.issues) + duplicate_issues(self.records)
         if self.assignment.phase != "global":
             return issues
         for key in self.data["redirects"]:
@@ -689,7 +667,11 @@ class Workspace:
                         "description": str(exc),
                     }
                 )
-        errors = validate_protocol(self.protocol_model(), self.sources.documents)
+        # Coverage rules are listed separately by ``coverage_issues`` with their own
+        # check_refs, so the publication check only adds schema and reference errors.
+        errors = validate_protocol(
+            self.protocol_model(), self.sources.documents, coverage=False
+        )
         reported = {item["description"] for item in issues}
         return issues + [
             {"type": "protocol", "records": [], "path": [], "description": error}

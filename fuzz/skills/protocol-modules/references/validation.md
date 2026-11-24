@@ -1,8 +1,10 @@
 # Fixed generator artifact checks
 
-Run `../scripts/validate_generator.py` using the campaign interpreter and the
-exact invocation rendered in the generation prompt. No third-party package is
-needed by the validator itself. It reads files and prints one JSON report.
+Use `synthesis.validate_synthesis_draft` when the generation prompt provides it.
+It applies the Rust publication checks to the current request's draft, including
+manifest and proposal consistency. For profiles without the MCP tool, follow
+the prompt's static `validate_generator.py` command. Neither static validator
+imports or executes the candidate.
 
 ## Common checks (also used by Rust acceptance)
 
@@ -10,13 +12,13 @@ needed by the validator itself. It reads files and prints one JSON report.
   `ok`; added_steps is an array of strings. Pass result.draft.json via `--result`
   before publication; the default path is OUTPUT_DIR/result.json for acceptance.
 - generator.py parses and compiles without execution. It defines a synchronous
-  top-level generate function callable with two positional arguments, without
-  an unfulfilled required argument or yield-based generator entrypoint.
+  top-level decorated step handler. Handlers and any decorated initializer
+  must accept two positional arguments and may not yield.
 - Schema root type is object. The production subset checks string names in
   required, additionalProperties=false when properties is provided, and the
   declared property types string/integer/boolean/array.
-- Params root is an object. Every value recursively is a string, boolean, signed
-  64-bit integer or list of these. Objects, floats, null and non-JSON numbers are
+- Params root is an object. Field values may be strings, booleans, signed
+  64-bit integers, lists or objects. Floats, null and non-JSON numbers are
   rejected. Boolean values do not satisfy integer properties.
 - Remote `$ref` values are rejected recursively. Local refs and other unsupported
   keywords are not resolved or enforced. Do not rely on them.
@@ -27,7 +29,17 @@ minimum/maximum, array item schemas or the full JSON Schema vocabulary. The
 generation prompt may request a narrower authoring style than this accepted
 subset. Use the fixed checker rather than inventing extra acceptance rules.
 
-## Isolated import probe (`--check-imports`)
+## Optional agent import probe
+
+When module loading is uncertain, use the campaign interpreter and the paths
+from the generation prompt. Set `VALIDATOR` to the artifact validator script
+path. Run the probe before promoting the draft to `result.json`.
+
+```sh
+"$PYTHON" "$VALIDATOR" --output-dir "$OUTPUT_DIR" --request-id "$REQUEST" \
+  --result "$OUTPUT_DIR/result.draft.json" --check-imports \
+  --pythonpath "$PYTHONPATH" --shared-lib "$WORKSPACE/lib"
+```
 
 The probe loads the module with the same Registry loader used by the runtime and
 checks its actual callable signature. It runs under the campaign Python with
@@ -52,10 +64,8 @@ existing module in place.
 ## What remains to check
 
 Review selected step order, party ownership, conditional prerequisites, endpoint
-discovery, actual field reuse, deadlines and cleanup. Small checks of pure
-protocol encoding/parsing helpers can be useful; do not duplicate the common
-checks or guess target fixture paths. Only a real execution can establish the
-observed interaction, and evaluator success is not automatic semantic coverage.
+discovery, field reuse, deadlines and cleanup in the handler and helper source.
+Only a published generator's actual execution can establish observed interaction.
 
 On success, atomically rename the checked completion draft to result.json. On
 failure, fix the reported error before publishing a success signal. Do not import

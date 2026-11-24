@@ -115,6 +115,28 @@ fn coverage_request_publishes_artifact_bundle() {
 }
 
 #[test]
+fn draft_validation_compiles_without_importing_or_publishing() {
+    let (model, _binding, dir) = fixture();
+    write_request(&dir, &model, "s", "r1", "coverage");
+    let draft = dir.join("result.draft.json");
+    fs::rename(dir.join("result.json"), &draft).unwrap();
+    fs::write(
+        dir.join("generator.py"),
+        "raise RuntimeError('import must not run')\n@step_handler('hello')\ndef handler(ctx, params): pass\n",
+    )
+    .unwrap();
+    let request = request(dir.clone(), "r1");
+    fs::write(dir.join("params.schema.json"), "{}").unwrap();
+    assert!(request.validate_draft().unwrap_err().contains("schema"));
+    fs::write(dir.join("params.schema.json"), r#"{"type":"object"}"#).unwrap();
+    request.validate_draft().unwrap();
+    assert!(draft.is_file());
+    assert!(!dir.join("result.json").exists());
+    assert!(!dir.join("published").exists());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn dependency_state_keys_become_instance_inputs() {
     let (model, _binding, dir) = fixture();
     write_request(&dir, &model, "s", "r1", "coverage");
