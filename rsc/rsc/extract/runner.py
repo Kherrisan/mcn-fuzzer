@@ -232,6 +232,56 @@ def tokens(text):
     return len(ENCODING.encode(text, disallowed_special=()))
 
 
+# Models whose provider replays encrypted reasoning: the Responses adapter sends the
+# thinking signature back as ``encrypted_content``. That signature is an opaque provider
+# artifact rather than conversation, so the budget projection leaves it out while the
+# journal and the provider still get the original message. Any other model keeps the
+# plain count.
+ENCRYPTED_REASONING_MODELS = ("gpt-6-luna",)
+
+
+def encrypted_reasoning(model_name):
+    """Whether this model carries encrypted reasoning in its thinking parts."""
+    name = (model_name or "").casefold()
+    return any(marker in name for marker in ENCRYPTED_REASONING_MODELS)
+
+
+def without_signatures(text):
+    """The same serialized messages with the thinking signatures removed."""
+    messages = json.loads(text)
+    for message in messages:
+        for part in message.get("parts") or ():
+            if part.get("part_kind") == "thinking":
+                part.pop("signature", None)
+    return json.dumps(messages, ensure_ascii=False, separators=(",", ":"))
+
+
+class ModelMeasure:
+    """The single token count a run uses for its model messages.
+
+    ``raw`` counts exactly what the journal stores and the provider receives. Calling
+    the object returns the budget projection: the same messages and the same
+    tokenizer, minus the thinking signature when the model replays encrypted
+    reasoning. Visible reasoning, prompts, tool arguments and tool results are always
+    counted, and the messages themselves are never rewritten.
+    """
+
+    def __init__(self, model_name=""):
+        self.model_name = model_name or ""
+        self.exclude_signature = encrypted_reasoning(self.model_name)
+
+    def text(self, messages):
+        typed = ModelMessagesTypeAdapter.validate_python(list(messages))
+        return ModelMessagesTypeAdapter.dump_json(typed).decode()
+
+    def raw(self, messages):
+        return tokens(self.text(messages))
+
+    def __call__(self, messages):
+        text = self.text(messages)
+        return tokens(without_signatures(text)) if self.exclude_signature else tokens(text)
+
+
 BLOCK_ID = re.compile(r"blk-\d+")
 
 
@@ -329,10 +379,12 @@ def condense_messages(messages, max_chars):
     return condensed, stubs, thinking
 
 
-def condense_row(row, max_chars):
+def condense_row(row, max_chars, measure=None):
     """Condensed copy of one completed history row."""
     messages, stubs, thinking = condense_messages(row["messages"], max_chars)
-    tokens_after = tokens(dumps(messages))
+    # Production always passes the run's measurement; the fallback keeps the plain
+    # count for callers that construct rows by hand.
+    tokens_after = measure(messages) if measure is not None else tokens(dumps(messages))
     return {
         **row,
         "messages": messages,
@@ -349,7 +401,7 @@ def history_floor(context_tokens):
     return max(1, -(-int(context_tokens) // 4))
 
 
-def plan_history(rows, aim, floor, max_chars):
+def plan_history(rows, aim, floor, max_chars, measure=None):
     """Apply the two compaction phases to completed history.
 
     Phase one removes whole oldest rows until it has freed ``floor`` tokens of
@@ -373,7 +425,7 @@ def plan_history(rows, aim, floor, max_chars):
     condensed_tokens = 0
     while index < len(rows) and condensed_tokens < floor:
         row = rows[index]
-        condensed.append(condense_row(row, max_chars))
+        condensed.append(condense_row(row, max_chars, measure))
         condensed_tokens += row.get("tokens", 0)
         index += 1
     kept = condensed + [dict(row) for row in rows[index:]]
@@ -446,6 +498,7 @@ class HistoryBudget:
         summary,
         summary_tokens,
         turn_budget=None,
+        measure=None,
         model_log_path=None,
         assignment_attempt=1,
     ):
@@ -462,6 +515,7 @@ class HistoryBudget:
         self.summary = summary
         self.summary_tokens = summary_tokens
         self.turn_budget = turn_budget
+        self.measure = measure or ModelMeasure()
         self.model_log_path = model_log_path
         self.assignment_attempt = assignment_attempt
         self.stats = []
@@ -528,7 +582,7 @@ class HistoryBudget:
     def compact(self):
         """Run the shared two-phase plan on the rows still carried."""
         kept, dropped, stats = plan_history(
-            self.kept, self.limit, self.floor, self.max_chars
+            self.kept, self.limit, self.floor, self.max_chars, self.measure
         )
         if kept is None:
             return None, stats
@@ -555,6 +609,23 @@ class ContextBudget(AbstractCapability):
     def __init__(self, limit=None):
         self.limit = limit
 
+    def reject(self, budget, live, cost, reason):
+        """Report the measurement behind a rejected request, then stop the assignment.
+
+        The raw count is only taken here: it costs one more pass over the same
+        messages, which is worth it exactly when the budget refuses to send them.
+        """
+        raw = budget.measure.raw(budget.prefix() + live)
+        kept_tokens = sum(row.get("tokens", 0) for row in budget.kept)
+        print(
+            f"context budget rejection: {reason}; raw {raw} tokens, "
+            f"projection {cost} tokens, limit {budget.limit}, "
+            f"history {len(budget.kept)} rows / {kept_tokens} tokens, "
+            f"floor {budget.floor}",
+            flush=True,
+        )
+        raise ValueError(reason)
+
     async def before_model_request(self, ctx, request_context):
         budget = ctx.deps
         if budget is None:
@@ -564,14 +635,17 @@ class ContextBudget(AbstractCapability):
         live = budget.split_live(request_context.messages)
         while True:
             payload = budget.prefix() + live
-            cost = tokens(ModelMessagesTypeAdapter.dump_json(payload).decode())
+            cost = budget.measure(payload)
             budget.last_cost = cost
             if cost <= budget.limit:
                 request_context.messages = payload
                 return request_context
             if not budget.kept:
-                raise ValueError(
-                    "active assignment exceeds model context budget after compaction"
+                self.reject(
+                    budget,
+                    live,
+                    cost,
+                    "active assignment exceeds model context budget after compaction",
                 )
             kept, stats = budget.compact()
             print(
@@ -583,8 +657,11 @@ class ContextBudget(AbstractCapability):
                 flush=True,
             )
             if kept is None:
-                raise ValueError(
-                    "active assignment exceeds model context budget after compaction"
+                self.reject(
+                    budget,
+                    live,
+                    cost,
+                    "active assignment exceeds model context budget after compaction",
                 )
 
 
@@ -737,6 +814,9 @@ class Runner:
         self.sources = sources
         self.protocol = protocol
         self.config = config
+        # The budget projection for this run's model: identical to the stored messages
+        # except that Luna High's encrypted reasoning signature is not counted.
+        self.measure = ModelMeasure(config.model)
         self.path = root / "extract-checkpoint.json"
         resumed = self.path.exists()
         self.state = (
@@ -772,6 +852,11 @@ class Runner:
                 for issue in self.state["global_errors"]
                 if issue["type"] != "deferred_entity"
             ]
+        if resumed and self.state["history"]:
+            # Rows were measured by the accounting of the model that wrote them; a
+            # resume re-measures what this run will actually carry.
+            for row in self.state["history"]:
+                row["tokens"] = self.measure(row["messages"])
         if migrate_registry(self.state["registry"]):
             self.save()
         if resumed:
@@ -1080,6 +1165,7 @@ class Runner:
                 limit,
                 history_floor(self.config.context_tokens),
                 self.config.history_tool_chars,
+                self.measure,
             )
             self.compactions.append(stats)
             if kept is None:
@@ -1134,6 +1220,7 @@ class Runner:
             summary=summary,
             summary_tokens=self.config.summary_tokens,
             turn_budget=self.turn_budget,
+            measure=self.measure,
             model_log_path=(
                 self.root / "llm" / assignment.phase / (assignment.kind or "")
                 / f"{assignment.id}.jsonl"
@@ -1249,7 +1336,7 @@ class Runner:
                 "kind": assignment.kind,
                 "assignment_id": assignment.id,
                 "messages": new_messages,
-                "tokens": tokens(dumps(new_messages)),
+                "tokens": self.measure(new_messages),
                 "decision": decision,
             }
         )
@@ -1401,6 +1488,7 @@ class Runner:
             summary="",
             summary_tokens=self.config.summary_tokens,
             turn_budget=self.turn_budget,
+            measure=self.measure,
             model_log_path=log_path,
             assignment_attempt=attempts + attempt,
         )

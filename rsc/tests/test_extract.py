@@ -1833,6 +1833,202 @@ def test_history_compaction_reports_an_unfittable_request_instead_of_dropping_mo
     assert stats["dropped_rows"] == 1 and stats["condensed_rows"] == 1
 
 
+def test_measure_projection_drops_only_the_thinking_signature():
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        TextPart,
+        ThinkingPart,
+        ToolCallPart,
+        ToolReturnPart,
+    )
+
+    from rsc.extract.runner import (
+        ModelMeasure,
+        encrypted_reasoning,
+        tokens,
+        without_signatures,
+    )
+
+    signature = "gAAAAAB" + "b" * 4000
+    messages = [
+        ModelRequest(parts=[TextPart("inspect RFC 2326")]),
+        ModelResponse(
+            parts=[
+                ThinkingPart(content="check the state table", signature=signature),
+                ToolCallPart("read_source", {"block_id": "blk-000001"}, tool_call_id="c1"),
+            ]
+        ),
+        ModelRequest(parts=[ToolReturnPart("read_source", {"text": "x" * 2000}, "c1")]),
+    ]
+    luna = ModelMeasure("openai-codex:gpt-6-luna")
+    other = ModelMeasure("openai-codex:gpt-5")
+
+    raw = luna.raw(messages)
+    projection = luna(messages)
+    # The projection is the same serialized messages minus the encrypted signature.
+    assert projection == tokens(without_signatures(luna.text(messages)))
+    assert signature in luna.text(messages)
+    assert projection < raw
+    assert raw - projection > 500
+    # Visible reasoning, prompts and tool traffic stay in the count.
+    assert projection > tokens("check the state table") + tokens("inspect RFC 2326")
+    # Models that do not replay encrypted reasoning keep the plain count.
+    assert other(messages) == other.raw(messages) == raw
+    assert encrypted_reasoning("openai-codex:gpt-6-luna")
+    assert not encrypted_reasoning("openai-codex:gpt-5")
+    assert not encrypted_reasoning("")
+
+
+def test_resume_remeasures_stored_history_for_the_current_model(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    from pydantic_ai.messages import (
+        ModelRequest,
+        ModelResponse,
+        ThinkingPart,
+        ToolReturnPart,
+    )
+
+    from rsc.extract.runner import Runner, tokens, without_signatures
+
+    messages = [
+        ModelResponse(
+            parts=[ThinkingPart(content="", signature="gAAAAAB" + "c" * 4000)],
+        ),
+        ModelRequest(parts=[ToolReturnPart("read_source", {"text": "y" * 800}, "c1")]),
+    ]
+    from pydantic_ai import ModelMessagesTypeAdapter
+
+    stored = json.loads(ModelMessagesTypeAdapter.dump_json(messages))
+    inflated = tokens(json.dumps(stored, ensure_ascii=False, separators=(",", ":")))
+    checkpoint = {
+        "scan_kinds": list(SCAN_KINDS),
+        "category": 0,
+        "batch": 0,
+        "global_checks": 0,
+        "global_errors": None,
+        "registry": {
+            "entities": {},
+            "redirects": {},
+            "withdrawn": {},
+            "unresolved": {},
+            "next_entity": 0,
+            "next_issue": 0,
+        },
+        "history": [
+            {
+                "phase": "scan",
+                "kind": "basics",
+                "assignment_id": "batch-00001",
+                "messages": stored,
+                "tokens": inflated,
+                "decision": "basics batch-00001",
+            }
+        ],
+        "compact_summary": "",
+        "records": [],
+        "published": False,
+    }
+    atomic_json(tmp_path / "extract-checkpoint.json", checkpoint)
+
+    runner = Runner(
+        tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review()
+    )
+    row = runner.state["history"][0]
+    # A checkpoint written by the old accounting is re-measured for this model.
+    assert row["tokens"] == runner.measure(row["messages"])
+    assert row["tokens"] < inflated
+    assert row["tokens"] == tokens(
+        without_signatures(runner.measure.text(row["messages"]))
+    )
+
+
+def test_rejection_reports_raw_projection_limit_and_floor(capsys):
+    pytest.importorskip("pydantic_ai")
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
+
+    from rsc.extract.runner import ContextBudget, HistoryBudget, ModelMeasure
+
+    live = [ModelRequest(parts=[ToolReturnPart("read_source", {"text": "z" * 6000}, "c1")])]
+    budget = HistoryBudget(
+        kept=[],
+        dropped=[],
+        offset=0,
+        limit=50,
+        floor=64_600,
+        max_chars=1200,
+        summary="",
+        summary_tokens=128,
+        measure=ModelMeasure("openai-codex:gpt-6-luna"),
+    )
+    context = SimpleNamespace(messages=live)
+    with pytest.raises(ValueError, match="exceeds model context budget"):
+        asyncio.run(
+            ContextBudget().before_model_request(SimpleNamespace(deps=budget), context)
+        )
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("context budget rejection:")
+    assert "raw " in line and "projection " in line
+    assert "limit 50" in line
+    assert "history 0 rows / 0 tokens" in line
+    assert "floor 64600" in line
+
+
+def test_condensed_rows_are_measured_with_the_projection():
+    from rsc.extract.runner import ModelMeasure, plan_history
+
+    measure = ModelMeasure("openai-codex:gpt-6-luna")
+    signature = "gAAAAAB" + "d" * 3000
+
+    def row(index):
+        return {
+            "messages": [
+                {
+                    "kind": "response",
+                    "parts": [
+                        {
+                            "part_kind": "thinking",
+                            "content": "",
+                            "signature": signature,
+                        }
+                    ],
+                },
+                {
+                    "kind": "request",
+                    "parts": [
+                        {
+                            "part_kind": "tool-return",
+                            "tool_name": "read_source",
+                            "tool_call_id": f"c{index}",
+                            "content": {"text": "w" * 4000},
+                        }
+                    ],
+                },
+            ],
+            "decision": f"decision {index}",
+            "assignment_id": f"batch-{index}",
+        }
+
+    rows = []
+    for index in range(6):
+        item = row(index)
+        item["tokens"] = measure(item["messages"])
+        rows.append(item)
+    kept, dropped, stats = plan_history(
+        rows, aim=6000, floor=4000, max_chars=200, measure=measure
+    )
+    assert dropped and kept
+    for item in kept:
+        assert item["tokens"] == measure(item["messages"])
+    condensed = [item for item in kept if item.get("condensed")]
+    assert condensed
+    for item in condensed:
+        assert item["tokens"] < item["original_tokens"]
+    assert stats["condensed_after_tokens"] == sum(
+        item["tokens"] for item in condensed
+    )
+
+
 def test_context_budget_leaves_history_alone_without_pressure():
     from pydantic_ai import ModelMessagesTypeAdapter
     from pydantic_ai.messages import ModelRequest, ToolReturnPart
