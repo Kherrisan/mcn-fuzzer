@@ -104,6 +104,51 @@ def select_fields(value, fields):
     return result
 
 
+def citation_location(item):
+    """The values a scan prompt needs to re-read one cited block.
+
+    Returns ``None`` for an old citation without a usable location: the caller passes
+    that item through unchanged rather than dropping or rewriting it.
+    """
+    document_id = item.get("document_id")
+    block_id = item.get("block_id")
+    if not document_id or not block_id:
+        return None
+    location = {"document_id": document_id, "block_id": block_id}
+    field = (item.get("field") or "").strip()
+    if field:
+        location["field"] = field
+    return location
+
+
+def projected_unresolved(items):
+    """Open unresolved items with only the re-read locations kept in their evidence.
+
+    Every open item is kept, in order, with its id, description, missing information,
+    entities and check refs untouched. Within one item the evidence is reduced to
+    ``document_id``, ``block_id`` and a non-empty ``field``, deduplicated on those three
+    values in first-seen order; the same block under another field, or cited by another
+    item, stays a separate entry. ``note``, ``section_path`` and offsets are dropped
+    because the block can be re-read instead.
+    """
+    projected = []
+    for item in items:
+        evidence = []
+        seen = set()
+        for citation in item.get("evidence") or ():
+            location = citation_location(citation)
+            if location is None:
+                evidence.append(citation)
+                continue
+            key = (location["document_id"], location["block_id"], location.get("field", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            evidence.append(location)
+        projected.append({**item, "evidence": evidence})
+    return projected
+
+
 def evidence_locations(row):
     return [
         {
@@ -1196,6 +1241,8 @@ def related(work):
     return {
         "entity_counts": {kind: counts[kind] for kind in ORDER},
         "candidates": candidates,
-        "unresolved": work.open_unresolved(),
+        # Only the citations are projected: every open item and its full description
+        # still reaches the prompt, and the model can re-read any block it needs.
+        "unresolved": projected_unresolved(work.open_unresolved()),
         "references": references[:20],
     }

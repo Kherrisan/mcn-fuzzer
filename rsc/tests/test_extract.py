@@ -86,6 +86,114 @@ def test_batch_registry_summary_includes_all_evidence_matches(sources):
     assert [row["name"] for row in context["candidates"]] == [f"Endpoint {i}" for i in range(24)]
 
 
+def test_scan_prompt_keeps_every_open_item_and_only_their_citations():
+    from rsc.extract.tools import projected_unresolved
+
+    items = [
+        {
+            "id": "U1",
+            "description": "Client and server disagree about who closes",
+            "entity_ids": ["E1", "E2"],
+            "missing_information": "which endpoint initiates the close",
+            "check_refs": ["coverage:1"],
+            "assignment": "batch-00001",
+            "evidence": [
+                {
+                    "document_id": "rfc2326",
+                    "block_id": "blk-000001",
+                    "start": 10,
+                    "end": 20,
+                    "field": "/steps/0/name",
+                    "note": "the state table",
+                    "section_path": ["10.4"],
+                },
+                {
+                    "document_id": "rfc2326",
+                    "block_id": "blk-000001",
+                    "start": 10,
+                    "end": 20,
+                    "field": "/steps/0/name",
+                    "note": "same citation again",
+                },
+                {"document_id": "rfc2326", "block_id": "blk-000001", "field": ""},
+                {
+                    "document_id": "rfc7826",
+                    "block_id": "blk-000002",
+                    "field": "/steps/1/name",
+                    "note": "second document",
+                },
+            ],
+        },
+        {
+            "id": "U2",
+            "description": "second issue",
+            "evidence": [
+                {
+                    "document_id": "rfc2326",
+                    "block_id": "blk-000001",
+                    "field": "/steps/0/name",
+                    "note": "cross-issue citation",
+                }
+            ],
+        },
+        {
+            "id": "U3",
+            "description": "legacy citation without a block",
+            "evidence": [{"document_id": "rfc2326", "note": "no block id"}],
+        },
+    ]
+    projected = projected_unresolved(items)
+
+    # Every open item survives, in order, with its non-evidence keys untouched.
+    assert [item["id"] for item in projected] == ["U1", "U2", "U3"]
+    for original, copy in zip(items, projected, strict=True):
+        for key, value in original.items():
+            if key != "evidence":
+                assert copy[key] == value
+
+    first = projected[0]["evidence"]
+    # Locations only: the same citation twice collapses, the empty field is kept as a
+    # separate entry, and a different field on the same block stays distinct.
+    assert first == [
+        {"document_id": "rfc2326", "block_id": "blk-000001", "field": "/steps/0/name"},
+        {"document_id": "rfc2326", "block_id": "blk-000001"},
+        {"document_id": "rfc7826", "block_id": "blk-000002", "field": "/steps/1/name"},
+    ]
+    assert all(set(item) <= {"document_id", "block_id", "field"} for item in first)
+    # A block cited by two items is kept for both.
+    assert projected[1]["evidence"] == [
+        {"document_id": "rfc2326", "block_id": "blk-000001", "field": "/steps/0/name"}
+    ]
+    # Evidence that carries no usable location is passed through unchanged.
+    assert projected[2]["evidence"] == [{"document_id": "rfc2326", "note": "no block id"}]
+    # The projection is a plain JSON list and never rewrites the registry items.
+    assert json.loads(json.dumps(projected)) == projected
+    assert items[0]["evidence"][0]["note"] == "the state table"
+    assert items[0]["evidence"][0]["start"] == 10
+
+
+def test_scan_prompt_projection_reaches_the_prompt(sources):
+    current, earlier = sources.batches
+    remote = sources.batch_context(earlier)
+    evidence = [{"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}]
+    work = Workspace(sources, "test", empty_registry(), Assignment(earlier, "scan", "parties"))
+    work.record_unresolved(
+        Unresolved(
+            description="Missing definition of the close",
+            entity_ids=[],
+            evidence=evidence,
+            missing_information="which side closes",
+        )
+    )
+    work = Workspace(sources, "test", work.data, Assignment(current, "scan", "channels"))
+    items = related(work)["unresolved"]
+    assert [item["id"] for item in items] == ["U1"]
+    assert items[0]["missing_information"] == "which side closes"
+    assert items[0]["evidence"] == [
+        {"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}
+    ]
+
+
 def test_batch_receives_all_open_unresolved_from_other_batches(sources):
     current, earlier = sources.batches
     remote = sources.batch_context(earlier)
