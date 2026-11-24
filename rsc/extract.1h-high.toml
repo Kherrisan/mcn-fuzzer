@@ -1,0 +1,5 @@
+[extract]
+model = "openai-codex:gpt-6-luna"
+effort = "high"
+run_timeout_seconds = 3600
+review_concurrency = 3
