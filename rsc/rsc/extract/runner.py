@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import re
 from contextlib import AsyncExitStack
 from contextvars import ContextVar
 from dataclasses import asdict
@@ -13,10 +12,6 @@ from pydantic_ai import Agent, ModelMessagesTypeAdapter
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import AgentRunError, ModelAPIError, UserError
 from pydantic_ai.mcp import MCPToolset
-from pydantic_ai.messages import (
-    ModelRequest,
-    UserPromptPart,
-)
 from pydantic_ai.models import infer_model
 from pydantic_ai.usage import UsageLimits
 from pydantic_core import to_jsonable_python
@@ -308,18 +303,23 @@ class ModelMeasure:
         return tokens(without_signatures(text)) if self.exclude_signature else tokens(text)
 
 
-BLOCK_ID = re.compile(r"blk-\d+")
-
-
 TEXT_CHARS = 400
 ARGS_CHARS = 240
+# One stub carries at most this much of a write summary line.
+WROTE_CHARS = 400
 # One Fix prompt carries at most this much of the validation overview; the rest is read
 # through the paged validate_entities views.
 VALIDATION_PAGE_TOKENS = 6000
 
 
 def condensed_result(content, max_chars):
-    """Short stand-in for a tool result, keeping the handle that re-reads it."""
+    """Short stand-in for a tool result, keeping the handles that re-read it.
+
+    A string keeps its first ``max_chars`` characters. A structured reply keeps its
+    top-level keys, the value field names carried by each returned entity, and one line
+    naming which entity IDs were written and which value paths changed. Entity evidence
+    is gone, so the stub extracts no source locators any more.
+    """
     if isinstance(content, str):
         if len(content) <= max_chars:
             return content
@@ -332,13 +332,27 @@ def condensed_result(content, max_chars):
     text = dumps(content)
     if len(text) <= max_chars:
         return content
-    return {
+    stub = {
         "condensed": True,
         "chars": len(text),
         "keys": sorted(content)[:20] if isinstance(content, dict) else [],
-        "blocks": sorted(set(BLOCK_ID.findall(text)))[:8],
         "note": "Re-read with the same tool and its paging parameters.",
     }
+    if isinstance(content, dict):
+        entities = content.get("entities")
+        if isinstance(entities, dict) and entities:
+            stub["entity_fields"] = {
+                key: sorted(body.get("value") or {})
+                for key, body in list(entities.items())[:20]
+                if isinstance(body, dict)
+            }
+            changed = content.get("changed_fields")
+            if isinstance(changed, dict) and changed:
+                stub["wrote"] = "; ".join(
+                    f"{key}: {', '.join(paths)}" if paths else key
+                    for key, paths in list(changed.items())[:20]
+                )[:WROTE_CHARS]
+    return stub
 
 
 def condensed_args(args):
@@ -406,68 +420,46 @@ def condense_row(row, max_chars, measure=None):
     }
 
 
-def history_floor(context_tokens):
-    """Minimum tokens each compaction phase must touch: a quarter of the window."""
-    return max(1, -(-int(context_tokens) // 4))
+def plan_history(rows, aim, max_chars, keep_full_turns=0, measure=None):
+    """Stub the earliest completed rows until the carried history fits ``aim``.
 
+    No row is dropped: a stubbed row keeps a condensed tool result, and the most recent
+    ``keep_full_turns`` rows stay verbatim. Stubbing starts at the earliest row and
+    continues until the total token count is below ``aim``; it is not limited to a
+    fraction of the context window.
 
-def plan_history(rows, aim, floor, max_chars, measure=None):
-    """Apply the two compaction phases to completed history.
-
-    Phase one removes whole oldest rows until it has freed ``floor`` tokens of
-    pre-processing history. Phase two condenses the rows that follow until it has
-    simplified another ``floor`` tokens. The sets are disjoint, only rows that already
-    completed are touched, and everything after them stays as it is.
-
-    Returns ``(kept, dropped, stats)``. When a floor cannot be reached or the result
-    still exceeds ``aim``, ``kept`` and ``dropped`` are None: the caller keeps its
-    checkpoint and reports the over-budget condition instead of shrinking history
-    further.
+    Returns ``(kept, stats)``. If even the protected tail cannot fit ``aim``, ``kept``
+    is None: the caller keeps its checkpoint and reports the over-budget condition.
     """
-    dropped = []
-    dropped_tokens = 0
+    protected = min(len(rows), max(0, int(keep_full_turns)))
+    stop = len(rows) - protected
+    kept_tokens = sum(row.get("tokens", 0) for row in rows)
+    stubbed = []
+    stubbed_before = 0
     index = 0
-    while index < len(rows) and dropped_tokens < floor:
-        dropped.append(rows[index])
-        dropped_tokens += rows[index].get("tokens", 0)
-        index += 1
-    condensed = []
-    condensed_tokens = 0
-    while index < len(rows) and condensed_tokens < floor:
+    while index < stop and kept_tokens > aim:
         row = rows[index]
-        condensed.append(condense_row(row, max_chars, measure))
-        condensed_tokens += row.get("tokens", 0)
+        stub = condense_row(row, max_chars, measure)
+        stubbed.append(stub)
+        stubbed_before += row.get("tokens", 0)
+        kept_tokens += stub["tokens"] - row.get("tokens", 0)
         index += 1
-    kept = condensed + [dict(row) for row in rows[index:]]
-    kept_tokens = sum(row.get("tokens", 0) for row in kept)
+    kept = stubbed + [dict(row) for row in rows[index:]]
     stats = {
         "trigger": "history",
-        "dropped_rows": len(dropped),
-        "dropped_tokens": dropped_tokens,
-        "condensed_rows": sum(1 for row in condensed if row.get("condensed")),
-        "condensed_before_tokens": condensed_tokens,
-        "condensed_after_tokens": sum(row.get("tokens", 0) for row in condensed),
+        "dropped_rows": 0,
+        "stubbed_rows": len(stubbed),
+        "stubbed_before_tokens": stubbed_before,
+        "stubbed_after_tokens": sum(row.get("tokens", 0) for row in stubbed),
         "retained_rows": len(kept),
         "retained_tokens": kept_tokens,
-        "floor_tokens": floor,
         "aim_tokens": aim,
+        "keep_full_turns": protected,
     }
-    if dropped_tokens < floor or condensed_tokens < floor:
-        stats["insufficient"] = True
-    elif kept_tokens > aim:
+    if kept_tokens > aim:
         stats["over_budget"] = True
-    else:
-        return kept, dropped, stats
-    return None, None, stats
-
-
-def summarize(summary, rows, limit):
-    """Keep the newest decisions from dropped rows within the summary budget."""
-    decisions = [line for line in summary.splitlines() if line]
-    decisions.extend(row["decision"] for row in rows if row.get("decision"))
-    while decisions and tokens("\n".join(decisions)) > limit:
-        decisions.pop(0)
-    return "\n".join(decisions)
+        return None, stats
+    return kept, stats
 
 
 def repeated_calls(messages):
@@ -487,42 +479,36 @@ def repeated_calls(messages):
 
 
 class HistoryBudget:
-    """What one request may send: kept completed rows, a decision summary, live messages.
+    """What one request may send: kept completed rows and the live messages.
 
-    ``kept`` holds the rows carried into this assignment and ``dropped`` the rows
-    removed from it. Mid-turn pressure re-runs the same two-phase plan on ``kept``; it
-    never reaches into the messages of the assignment being served.
+    ``kept`` holds the rows carried into this assignment; no row is ever dropped, and
+    mid-turn pressure stubs them from the earliest one while the most recent
+    ``keep_full_turns`` rows stay verbatim. It never reaches into the messages of the
+    assignment being served.
     """
 
     def __init__(
         self,
         *,
         kept,
-        dropped,
         foreign=(),
         label="",
         offset,
         limit,
-        floor,
+        keep_full_turns,
         max_chars,
-        summary,
-        summary_tokens,
         measure=None,
         model_log_path=None,
         assignment_attempt=1,
     ):
         self.kept = list(kept)
-        self.dropped = list(dropped)
         self.foreign = list(foreign)
         self.label = label
         self._replayed = None
-        self.initial_dropped = len(dropped)
         self.offset = max(0, int(offset))
         self.limit = int(limit)
-        self.floor = int(floor)
+        self.keep_full_turns = int(keep_full_turns)
         self.max_chars = int(max_chars)
-        self.summary = summary
-        self.summary_tokens = summary_tokens
         self.measure = measure or ModelMeasure()
         self.model_log_path = model_log_path
         self.assignment_attempt = assignment_attempt
@@ -533,23 +519,9 @@ class HistoryBudget:
     def prefix(self):
         if self._prefix is None:
             messages = [message for row in self.kept for message in row["messages"]]
-            expanded = (
+            self._prefix = (
                 list(ModelMessagesTypeAdapter.validate_python(messages)) if messages else []
             )
-            if self.dropped:
-                summary = summarize(self.summary, self.dropped, self.summary_tokens)
-                if summary:
-                    expanded = [
-                        ModelRequest(
-                            parts=[
-                                UserPromptPart(
-                                    "Earlier decisions (registry is authoritative):\n" + summary
-                                )
-                            ]
-                        ),
-                        *expanded,
-                    ]
-            self._prefix = expanded
         return self._prefix
 
     def replayed_parts(self):
@@ -587,21 +559,25 @@ class HistoryBudget:
             return live + list(messages[index + 1 :])
         return []
 
-    def compact(self):
-        """Run the shared two-phase plan on the rows still carried."""
-        kept, dropped, stats = plan_history(
-            self.kept, self.limit, self.floor, self.max_chars, self.measure
+    def compact(self, aim=None):
+        """Stub the earliest rows still carried until they fit ``aim``.
+
+        ``aim`` is what the rows may still use once the live messages of this request
+        are counted; it defaults to the whole request limit.
+        """
+        kept, stats = plan_history(
+            self.kept,
+            self.limit if aim is None else int(aim),
+            self.max_chars,
+            self.keep_full_turns,
+            self.measure,
         )
         if kept is None:
             return None, stats
         self.kept = kept
-        self.dropped.extend(dropped)
         self.stats.append(stats)
         self._prefix = None
         return kept, stats
-
-    def new_decisions(self):
-        return self.dropped[self.initial_dropped :]
 
 
 class ContextBudget(AbstractCapability):
@@ -629,7 +605,7 @@ class ContextBudget(AbstractCapability):
             f"context budget rejection: {reason}; raw {raw} tokens, "
             f"projection {cost} tokens, limit {budget.limit}, "
             f"history {len(budget.kept)} rows / {kept_tokens} tokens, "
-            f"floor {budget.floor}",
+            f"keep_full_turns {budget.keep_full_turns}",
             flush=True,
         )
         raise ValueError(reason)
@@ -653,16 +629,15 @@ class ContextBudget(AbstractCapability):
                     cost,
                     "active assignment exceeds model context budget after compaction",
                 )
-            kept, stats = budget.compact()
+            kept, stats = budget.compact(budget.limit - budget.measure(live))
             print(
-                "in-request history compaction: dropped "
-                f"{stats['dropped_rows']} rows / {stats['dropped_tokens']} tokens, "
-                f"condensed {stats['condensed_rows']} rows / "
-                f"{stats['condensed_before_tokens']}->{stats['condensed_after_tokens']} "
-                f"tokens, floor {stats['floor_tokens']}",
+                "in-request history compaction: dropped 0 rows, stubbed "
+                f"{stats['stubbed_rows']} rows / "
+                f"{stats['stubbed_before_tokens']}->{stats['stubbed_after_tokens']} tokens, "
+                f"keep_full_turns {stats['keep_full_turns']}",
                 flush=True,
             )
-            if kept is None:
+            if kept is None or not stats["stubbed_rows"]:
                 self.reject(
                     budget,
                     live,
@@ -1240,9 +1215,8 @@ class Runner:
         """Return the completed rows to carry and the messages they expand to.
 
         Normal requests only append. When the carried history plus this assignment
-        would overflow, the oldest completed rows are dropped and the rows after them
-        condensed, each phase covering at least a quarter of the context window. Rows
-        owned by another phase or kind are carried back untouched.
+        would overflow, the earliest completed rows are stubbed until the rows fit; no
+        row is dropped. Rows owned by another phase or kind are carried back untouched.
         """
         rows = self.owned_rows(assignment)
         foreign = [row for row in self.state["history"] if row not in rows]
@@ -1252,13 +1226,12 @@ class Runner:
         if limit < 0:
             raise ValueError("assignment context exceeds the configured model budget")
         kept = [dict(row) for row in rows]
-        dropped = []
         if sum(row.get("tokens", 0) for row in kept) > limit:
-            kept, dropped, stats = plan_history(
+            kept, stats = plan_history(
                 rows,
                 limit,
-                history_floor(self.config.context_tokens),
                 self.config.history_tool_chars,
+                self.config.keep_full_turns,
                 self.measure,
             )
             self.compactions.append(stats)
@@ -1266,22 +1239,17 @@ class Runner:
                 raise ValueError(
                     "history cannot be compacted within the configured model budget"
                 )
-            self.state["compact_summary"] = summarize(
-                self.state["compact_summary"], dropped, self.config.summary_tokens
-            )
-            stats["summary_tokens"] = tokens(self.state["compact_summary"])
             print(
-                "history compaction: dropped "
-                f"{stats['dropped_rows']} rows / {stats['dropped_tokens']} tokens, "
-                f"condensed {stats['condensed_rows']} rows / "
-                f"{stats['condensed_before_tokens']}->{stats['condensed_after_tokens']} "
-                f"tokens, floor {stats['floor_tokens']}",
+                "history compaction: dropped 0 rows, stubbed "
+                f"{stats['stubbed_rows']} rows / "
+                f"{stats['stubbed_before_tokens']}->{stats['stubbed_after_tokens']} tokens, "
+                f"keep_full_turns {stats['keep_full_turns']}",
                 flush=True,
             )
         messages = ModelMessagesTypeAdapter.validate_python(
             [message for row in kept for message in row["messages"]]
         )
-        return kept, foreign, messages, dropped
+        return kept, foreign, messages
 
     async def execute(self, work, issues=(), *, assignment_attempt=1):
         self.active = work
@@ -1290,16 +1258,13 @@ class Runner:
         self.compactions = []
         assignment = work.assignment
         prompt = self.prompt(work, issues)
-        retained, foreign, messages, dropped = [], [], [], []
-        summary = ""
+        retained, foreign, messages = [], [], []
         if assignment.phase in ("scan", "category", "global"):
-            retained, foreign, messages, dropped = self.history(prompt, assignment)
+            retained, foreign, messages = self.history(prompt, assignment)
             if assignment.phase == "scan":
                 prompt = self.prompt(work, issues)
-            summary = self.state["compact_summary"]
         budget = HistoryBudget(
             kept=retained,
-            dropped=dropped,
             foreign=foreign,
             # The live messages start right after what the agent was given, not after
             # every row in the checkpoint: rows of another phase are not replayed.
@@ -1309,10 +1274,8 @@ class Runner:
             - self.catalog_tokens
             - tokens(INSTRUCTIONS),
             label=assignment.id,
-            floor=history_floor(self.config.context_tokens),
+            keep_full_turns=self.config.keep_full_turns,
             max_chars=self.config.history_tool_chars,
-            summary=summary,
-            summary_tokens=self.config.summary_tokens,
             measure=self.measure,
             model_log_path=(
                 self.root / "llm" / assignment.phase / (assignment.kind or "")
@@ -1395,21 +1358,14 @@ class Runner:
         finally:
             self.active = None
 
-        if budget.stats:
-            self.state["compact_summary"] = summarize(
-                budget.summary,
-                budget.new_decisions(),
-                budget.summary_tokens,
+        for stats in budget.stats:
+            self.compactions.append(
+                {
+                    **stats,
+                    "trigger": "in_request",
+                    "limit_tokens": budget.limit,
+                }
             )
-            for stats in budget.stats:
-                self.compactions.append(
-                    {
-                        **stats,
-                        "trigger": "in_request",
-                        "limit_tokens": budget.limit,
-                        "summary_tokens": tokens(self.state["compact_summary"]),
-                    }
-                )
         retained = budget.foreign + budget.kept
 
         receipt = work.completion
@@ -1587,16 +1543,13 @@ class Runner:
         self.active = work
         budget = HistoryBudget(
             kept=[],
-            dropped=[],
             offset=0,
             limit=self.config.context_tokens
             - self.config.output_tokens
             - catalog
             - tokens(INSTRUCTIONS),
-            floor=history_floor(self.config.context_tokens),
+            keep_full_turns=self.config.keep_full_turns,
             max_chars=self.config.history_tool_chars,
-            summary="",
-            summary_tokens=self.config.summary_tokens,
             measure=self.measure,
             model_log_path=log_path,
             assignment_attempt=attempts + attempt,

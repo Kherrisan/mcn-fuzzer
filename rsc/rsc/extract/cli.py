@@ -25,9 +25,8 @@ class ExtractConfig(StrictModel):
     max_requests_per_assignment: int = Field(default=96, ge=1)
     max_interaction_requests_per_assignment: int = Field(default=128, ge=1)
     max_tool_calls_per_assignment: int = Field(default=256, ge=1)
-    history_tool_chars: int = Field(default=1200, ge=0)
+    history_tool_chars: int = Field(default=6000, ge=0)
     keep_full_turns: int = Field(default=2, ge=0)
-    stub_before_drop: bool = True
     review_enabled: bool = True
     review_requests_per_second: float = Field(default=5.0, gt=0)
     review_concurrency: int = Field(default=3, ge=1)

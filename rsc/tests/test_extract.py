@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -1887,17 +1888,18 @@ def test_condensed_rows_keep_the_handle_that_rereads_them():
     assert parts[0]["tool_call_id"] == "c1"
     assert parts[0]["args"]["block_id"] == "blk-000129"
     assert parts[0]["args"]["padding"].endswith("…")
-    # ...and the result keeps the locator that re-reads it.
+    # ...and the result keeps a re-read handle instead of the old locator list.
     assert parts[1]["tool_call_id"] == "c1"
     assert parts[1]["tool_name"] == "read_source"
     assert parts[1]["content"]["condensed"] is True
-    assert parts[1]["content"]["blocks"] == ["blk-000129"]
+    assert parts[1]["content"]["keys"] == ["text"]
+    assert "blocks" not in parts[1]["content"]
     assert parts[2]["content"] == small
     # The stored row is untouched: only the planned copy is condensed.
     assert messages[0]["parts"][0]["part_kind"] == "thinking"
 
 
-def test_history_compaction_drops_then_condenses_a_quarter_each():
+def test_history_compaction_stubs_the_oldest_rows_until_it_fits_the_aim():
     from rsc.extract.runner import plan_history
 
     def row(index):
@@ -1920,18 +1922,16 @@ def test_history_compaction_drops_then_condenses_a_quarter_each():
         }
 
     rows = [row(index) for index in range(8)]
-    kept, dropped, stats = plan_history(rows, aim=6000, floor=5000, max_chars=200)
+    kept, stats = plan_history(rows, aim=6000, max_chars=200, keep_full_turns=2)
 
-    # Phase one removes whole oldest rows and covers at least a quarter of the window.
-    assert stats["dropped_tokens"] >= 5000
-    assert [item["assignment_id"] for item in dropped] == ["batch-0", "batch-1", "batch-2"]
-    # Phase two condenses the rows right after them and covers another quarter.
-    assert stats["condensed_before_tokens"] >= 5000
-    assert stats["condensed_after_tokens"] < stats["condensed_before_tokens"]
-    condensed_ids = [item["assignment_id"] for item in kept if item.get("condensed")]
-    assert condensed_ids == ["batch-3", "batch-4", "batch-5"]
-    # The two sets are disjoint and the rest of the history is untouched.
-    assert not set(condensed_ids) & {item["assignment_id"] for item in dropped}
+    # No row is lost; the oldest unprotected rows are stubbed until the total fits.
+    assert stats["dropped_rows"] == 0
+    assert [item["assignment_id"] for item in kept] == [f"batch-{index}" for index in range(8)]
+    assert stats["stubbed_rows"] >= 1
+    assert stats["stubbed_before_tokens"] > stats["stubbed_after_tokens"]
+    stubbed_ids = [item["assignment_id"] for item in kept if item.get("condensed")]
+    assert stubbed_ids == [f"batch-{index}" for index in range(stats["stubbed_rows"])]
+    # The most recent keep_full_turns rows stay verbatim.
     assert [item["assignment_id"] for item in kept if not item.get("condensed")] == [
         "batch-6",
         "batch-7",
@@ -1939,19 +1939,7 @@ def test_history_compaction_drops_then_condenses_a_quarter_each():
     assert stats["retained_tokens"] <= 6000
 
 
-def test_history_compaction_keeps_the_checkpoint_when_a_floor_is_unreachable():
-    from rsc.extract.runner import plan_history
-
-    rows = [
-        {"messages": [], "tokens": 100, "decision": f"decision {index}"} for index in range(3)
-    ]
-    # 300 tokens of history cannot cover two floors of 5000 tokens.
-    kept, dropped, stats = plan_history(rows, aim=10_000, floor=5000, max_chars=1200)
-    assert (kept, dropped) == (None, None)
-    assert stats["insufficient"] is True
-
-
-def test_history_compaction_reports_an_unfittable_request_instead_of_dropping_more():
+def test_history_compaction_keeps_the_checkpoint_when_the_aim_is_unreachable():
     from rsc.extract.runner import plan_history
 
     def row(index):
@@ -1971,12 +1959,34 @@ def test_history_compaction_reports_an_unfittable_request_instead_of_dropping_mo
         }
 
     rows = [row(index) for index in range(8)]
-    kept, dropped, stats = plan_history(rows, aim=1000, floor=3000, max_chars=40)
-    # Both floors are met, but the untouched remainder alone still exceeds the aim;
-    # the caller keeps its checkpoint instead of shrinking history further.
-    assert (kept, dropped) == (None, None)
+    kept, stats = plan_history(rows, aim=1000, max_chars=40, keep_full_turns=2)
+    # Every unprotected row is stubbed, but the protected tail alone exceeds the aim;
+    # the caller keeps its checkpoint instead of shrinking or dropping more.
+    assert kept is None
     assert stats["over_budget"] is True
-    assert stats["dropped_rows"] == 1 and stats["condensed_rows"] == 1
+    assert stats["dropped_rows"] == 0
+    assert stats["stubbed_rows"] == 6
+
+
+def test_condensed_entity_reply_keeps_field_names_and_the_written_summary():
+    from rsc.extract.runner import condensed_result
+
+    content = {
+        "entities": {
+            "E1": {
+                "id": "E1",
+                "value": {"description": "enriched", "associated_fields": ["CSeq", "Session"]},
+            }
+        },
+        "changed_fields": {"E1": ["description", "associated_fields.0"]},
+        "padding": "p" * 5000,
+    }
+    stub = condensed_result(content, 200)
+    assert stub["condensed"] is True
+    assert stub["entity_fields"] == {"E1": ["associated_fields", "description"]}
+    assert stub["wrote"] == "E1: description, associated_fields.0"
+    assert "blocks" not in stub
+    assert not re.search(r"blk-\d+", dumps(stub))
 
 
 def test_measure_projection_drops_only_the_thinking_signature():
@@ -2089,7 +2099,7 @@ def test_resume_remeasures_stored_history_for_the_current_model(sources, tmp_pat
     )
 
 
-def test_rejection_reports_raw_projection_limit_and_floor(capsys):
+def test_rejection_reports_raw_projection_limit_and_keep_full(capsys):
     pytest.importorskip("pydantic_ai")
     from pydantic_ai.messages import ModelRequest, ToolReturnPart
 
@@ -2098,13 +2108,10 @@ def test_rejection_reports_raw_projection_limit_and_floor(capsys):
     live = [ModelRequest(parts=[ToolReturnPart("read_source", {"text": "z" * 6000}, "c1")])]
     budget = HistoryBudget(
         kept=[],
-        dropped=[],
         offset=0,
         limit=50,
-        floor=64_600,
+        keep_full_turns=2,
         max_chars=1200,
-        summary="",
-        summary_tokens=128,
         measure=ModelMeasure("openai-codex:gpt-6-luna"),
     )
     context = SimpleNamespace(messages=live)
@@ -2117,7 +2124,7 @@ def test_rejection_reports_raw_projection_limit_and_floor(capsys):
     assert "raw " in line and "projection " in line
     assert "limit 50" in line
     assert "history 0 rows / 0 tokens" in line
-    assert "floor 64600" in line
+    assert "keep_full_turns 2" in line
 
 
 def test_condensed_rows_are_measured_with_the_projection():
@@ -2160,19 +2167,17 @@ def test_condensed_rows_are_measured_with_the_projection():
         item = row(index)
         item["tokens"] = measure(item["messages"])
         rows.append(item)
-    kept, dropped, stats = plan_history(
-        rows, aim=6000, floor=4000, max_chars=200, measure=measure
+    kept, stats = plan_history(
+        rows, aim=6000, max_chars=200, keep_full_turns=0, measure=measure
     )
-    assert dropped and kept
+    assert kept
     for item in kept:
         assert item["tokens"] == measure(item["messages"])
-    condensed = [item for item in kept if item.get("condensed")]
-    assert condensed
-    for item in condensed:
+    stubbed = [item for item in kept if item.get("condensed")]
+    assert stubbed
+    for item in stubbed:
         assert item["tokens"] < item["original_tokens"]
-    assert stats["condensed_after_tokens"] == sum(
-        item["tokens"] for item in condensed
-    )
+    assert stats["stubbed_after_tokens"] == sum(item["tokens"] for item in stubbed)
 
 
 def test_context_budget_leaves_history_alone_without_pressure():
@@ -2195,13 +2200,10 @@ def test_context_budget_leaves_history_alone_without_pressure():
                 "decision": "earlier decision",
             }
         ],
-        dropped=[],
         offset=1,
         limit=200_000,
-        floor=1000,
+        keep_full_turns=1,
         max_chars=1200,
-        summary="",
-        summary_tokens=128,
     )
     context = SimpleNamespace(messages=old + current)
     result = asyncio.run(
@@ -2243,28 +2245,56 @@ def test_context_budget_compacts_completed_rows_only_on_pressure():
             "decision": "second decision",
         },
     ]
-    floor = kept[0]["tokens"]
     budget = HistoryBudget(
         kept=[dict(row) for row in kept],
-        dropped=[],
         offset=2,
-        # Tight enough to force one compaction, large enough that the compacted
-        # request fits afterwards.
+        # Tight enough to force stubbing, large enough that the stubbed request fits.
         limit=800,
-        floor=floor,
+        keep_full_turns=0,
         max_chars=120,
-        summary="",
-        summary_tokens=512,
     )
     context = SimpleNamespace(messages=old + middle + current)
     result = asyncio.run(
         ContextBudget().before_model_request(SimpleNamespace(deps=budget), context)
     )
-    # The active tool exchange is intact and the completed rows were compacted.
+    # The active tool exchange is intact and the completed rows were stubbed.
     assert result.messages[-1].parts[0].content == {"id": "E1"}
-    assert budget.stats and budget.stats[-1]["dropped_rows"] == 1
-    assert budget.stats[-1]["condensed_rows"] >= 1
-    assert "decision" in result.messages[0].parts[0].content
+    assert budget.stats and budget.stats[-1]["dropped_rows"] == 0
+    assert budget.stats[-1]["stubbed_rows"] >= 1
+    assert result.messages[0].parts[0].content["condensed"] is True
+
+
+def test_context_budget_stubs_rows_when_only_the_live_tail_overflows():
+    from pydantic_ai import ModelMessagesTypeAdapter
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
+
+    from rsc.extract.runner import ContextBudget, HistoryBudget, ModelMeasure
+
+    measure = ModelMeasure()
+    old = [ModelRequest(parts=[ToolReturnPart("read_source", {"text": "a" * 2000}, "c1")])]
+    current = [
+        ModelRequest(parts=[ToolReturnPart("get_entity", {"id": "E1", "x": "z" * 4000}, "c2")])
+    ]
+    budget = HistoryBudget(
+        kept=[
+            {
+                "messages": json.loads(ModelMessagesTypeAdapter.dump_json(old)),
+                "tokens": measure(old),
+            }
+        ],
+        offset=1,
+        # The completed row alone fits, but the live tail pushes the request over.
+        limit=measure(old + current) - 1,
+        keep_full_turns=0,
+        max_chars=200,
+        measure=measure,
+    )
+    context = SimpleNamespace(messages=old + current)
+    result = asyncio.run(
+        ContextBudget().before_model_request(SimpleNamespace(deps=budget), context)
+    )
+    assert budget.stats and budget.stats[-1]["stubbed_rows"] == 1
+    assert result.messages[-1].parts[0].content["id"] == "E1"
 
 
 def test_repairs_start_without_scan_history(sources, tmp_path):
@@ -2648,12 +2678,14 @@ def test_retried_assignment_records_each_compaction_once(sources, tmp_path, monk
         tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review()
     )
     stats = {
-        "dropped_rows": 2,
-        "dropped_tokens": 70000,
-        "condensed_rows": 2,
-        "condensed_before_tokens": 70000,
-        "condensed_after_tokens": 20000,
-        "floor_tokens": 64600,
+        "dropped_rows": 0,
+        "stubbed_rows": 2,
+        "stubbed_before_tokens": 70000,
+        "stubbed_after_tokens": 20000,
+        "retained_rows": 4,
+        "retained_tokens": 20000,
+        "aim_tokens": 100000,
+        "keep_full_turns": 2,
     }
     attempts = []
 

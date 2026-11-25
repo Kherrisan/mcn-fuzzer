@@ -8,10 +8,9 @@ batch_max_tokens = 12000
 max_requests_per_assignment = 96
 max_interaction_requests_per_assignment = 128
 max_tool_calls_per_assignment = 256
-# Store large tool results as block references instead of full text.
-history_tool_chars = 1200
+# Tool results larger than this many characters are stubbed in condensed history.
+history_tool_chars = 6000
 keep_full_turns = 2
-stub_before_drop = true
 max_global_validation_attempts = 6 # Includes the initial check.
 run_timeout_seconds = 7200
 # Review every batch after all scan passes, then fix gaps grouped by document.
