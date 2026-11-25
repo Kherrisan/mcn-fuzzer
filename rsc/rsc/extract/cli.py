@@ -19,7 +19,6 @@ class ExtractConfig(StrictModel):
     effort: str = "high"
     context_tokens: int = Field(default=258400, ge=4096)
     output_tokens: int = Field(default=8192, ge=256)
-    tool_result_reserve_tokens: int = Field(default=16384, ge=1024)
     summary_tokens: int = Field(default=2000, ge=128)
     batch_target_tokens: int = Field(default=8000, ge=128)
     batch_max_tokens: int = Field(default=12000, ge=128)
@@ -118,11 +117,7 @@ def command(args):
             config = config_from_file(args.config)
             maximum = min(
                 config.batch_max_tokens,
-                config.context_tokens
-                - config.output_tokens
-                - config.tool_result_reserve_tokens
-                - config.summary_tokens
-                - 12000,
+                config.context_tokens - config.output_tokens - config.summary_tokens - 12000,
             )
             if maximum < 128 or config.batch_target_tokens > config.batch_max_tokens:
                 raise ValueError("model budget cannot fit the batch configuration")

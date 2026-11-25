@@ -1681,21 +1681,12 @@ def test_entity_tools_return_full_mentions_and_references(sources):
                 "get_entity",
                 {"ids": ["E1", "E2", "E2", "E999"]},
             )
-            # The second detail does not fit what is left of this turn's reply budget,
-            # so the first page names where to continue and the rest arrives after it.
-            assert list(batch.data["entities"]) == ["E1"]
-            assert batch.data["next_ids"] == ["E2"]
-            rest = await client.call_tool(
-                "get_entity",
-                {
-                    "ids": ["E1", "E2", "E2", "E999"],
-                    "offset": batch.data["next_offset"],
-                },
-            )
-            assert list(rest.data["entities"]) == ["E2"]
-            assert rest.data["entities"]["E2"] == detail
-            assert rest.data["next_offset"] is None
-            assert "unknown active entity" in rest.data["errors"]["E999"]
+            # One turn's reply is not budgeted: both distinct entities come back and
+            # only the unknown id is reported as an error.
+            assert list(batch.data["entities"]) == ["E1", "E2"]
+            assert batch.data["next_offset"] is None
+            assert batch.data["entities"]["E2"] == detail
+            assert "unknown active entity" in batch.data["errors"]["E999"]
             empty = await client.call_tool("get_entity", {"ids": []})
             assert empty.data["entities"] == {} and empty.data["errors"] == {}
             missing = await client.call_tool(
@@ -1788,7 +1779,7 @@ def test_category_review_and_tool_return_all_issues(sources, tmp_path, repair_ro
                 parts=[
                     ToolCallPart(
                         "validate_entities",
-                        {"view": "issues", "max_tokens": 20000},
+                        {"view": "issues"},
                     )
                 ]
             )
@@ -2572,7 +2563,7 @@ def test_associated_fields_delta_replays_once_and_stays_optional(sources):
     assert "associated_fields_delta" not in work.mutations[-1]["request"][0]
 
 
-def test_oversized_entity_pages_its_fields(sources):
+def test_get_entity_returns_the_whole_wide_entity(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -2588,33 +2579,29 @@ def test_oversized_entity_pages_its_fields(sources):
         ],
     )
     work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([fixture]))
-    expected = [str(index) for index in range(len(fixture["value"]["associated_fields"]))]
+    fields = fixture["value"]["associated_fields"]
 
     async def check():
         async with Client(make_server(lambda: work)) as client:
-            seen = []
-            offset = 0
-            pages = 0
-            while True:
-                page = (
-                    await client.call_tool(
-                        "get_entity",
-                        {"id": "E1", "max_tokens": 900, "field_offset": offset},
-                    )
-                ).data
-                assert page["page_tokens"] <= page["page_limit"]
-                body = page["entities"]["E1"]
-                seen.extend(body["value"].get("associated_fields") or {})
-                pages += 1
-                if page["next_field_offset"] is None:
-                    assert page["fields_truncated"] is False
-                    break
-                offset = page["next_field_offset"]
-                assert page["remaining_fields"]
-                assert pages < 40
-            # No page ever exceeded its budget, and together they cover every field.
-            assert sorted(seen, key=int) == expected
-            assert pages > 1
+            page = (await client.call_tool("get_entity", {"id": "E1"})).data
+            # A wide entity comes back whole: no field paging, no budget fields.
+            assert page["entities"]["E1"]["value"]["associated_fields"] == fields
+            for key in ("page_tokens", "page_limit", "fields_truncated", "next_field_offset"):
+                assert key not in page
+            # The caller can still project fields and start that list at an index.
+            projected = (
+                await client.call_tool(
+                    "get_entity",
+                    {
+                        "id": "E1",
+                        "fields": ["name", "associated_fields"],
+                        "field_offset": 1,
+                    },
+                )
+            ).data
+            assert list(projected["entities"]["E1"]["value"]) == ["associated_fields"]
+            assert projected["field_count"] == 2
+            assert "page_tokens" not in projected
 
     asyncio.run(check())
 
@@ -2697,7 +2684,7 @@ def test_retried_assignment_records_each_compaction_once(sources, tmp_path, monk
     assert attempts == [1, 2]
 
 
-def test_read_source_pages_by_real_tokens_and_dedups_blocks(sources):
+def test_read_source_returns_whole_blocks_and_dedups(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -2713,27 +2700,13 @@ def test_read_source_pages_by_real_tokens_and_dedups_blocks(sources):
 
     async def check():
         async with Client(make_server(lambda: work)) as client:
-            first = (
-                await client.call_tool(
-                    "read_source", {"blocks": keys, "max_tokens": 256}
-                )
-            ).data
-            # Repeated locators are read once.
+            first = (await client.call_tool("read_source", {"blocks": keys})).data
+            # Repeated locators are read once, and the whole list comes back.
             assert first["count"] == len(batch["segments"])
-            assert len(first["blocks"]) <= first["count"]
-            assert first["page_tokens"] <= first["page_limit"] + 200
-            if first["next_offset"] is not None:
-                rest = (
-                    await client.call_tool(
-                        "read_source",
-                        {
-                            "blocks": keys,
-                            "max_tokens": 4000,
-                            "offset": first["next_offset"],
-                        },
-                    )
-                ).data
-                assert rest["next_offset"] is None
+            assert len(first["blocks"]) == first["count"]
+            assert first["next_offset"] is None
+            for key in ("page_tokens", "page_limit"):
+                assert key not in first
             story = (
                 await client.call_tool(
                     "read_source",
@@ -2744,23 +2717,23 @@ def test_read_source_pages_by_real_tokens_and_dedups_blocks(sources):
                                 (batch["doc_id"], batch["segments"][0]["block_id"])
                             ]["section_path"]
                         ),
-                        "max_tokens": 200,
+                        "limit_chars": 200,
                     },
                 )
             ).data
-            assert story["page_tokens"] <= story["page_limit"]
             assert story["text"]
+            # limit_chars is now the only text window.
+            assert len(story["text"]) <= 200
             if story["next_offset"] is not None:
-                assert len(story["text"]) < 10000
+                assert len(story["text"]) == 200
 
     asyncio.run(check())
 
 
-def test_parallel_reads_share_one_turn_budget_and_writes_stay_whole(sources):
+def test_parallel_reads_are_not_budgeted_and_writes_stay_whole(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
-    from rsc.extract.paging import MINIMUM_PAGE_TOKENS, TurnBudget
     from rsc.extract.tools import make_server
 
     work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
@@ -2769,29 +2742,29 @@ def test_parallel_reads_share_one_turn_budget_and_writes_stay_whole(sources):
         work.add_entities(
             add([party(sources, f"Role {index}") for index in range(start, start + 20)])
         )
-    budget = TurnBudget(3000)
 
     async def check():
-        async with Client(
-            make_server(lambda: work, turn_budget=budget)
-        ) as client:
+        async with Client(make_server(lambda: work)) as client:
             pages = await asyncio.gather(
                 *(
-                    client.call_tool(
-                        "list_entities", {"kind": "parties", "max_tokens": 2000}
-                    )
+                    client.call_tool("list_entities", {"kind": "parties", "limit": 10})
                     for _ in range(6)
                 )
             )
-            spent = sum(page.data["page_tokens"] for page in pages)
-            limit = 3000 + MINIMUM_PAGE_TOKENS * len(pages)
-            assert spent <= limit, (spent, limit)
-            # Every reply that could not hold the whole index says where to continue.
-            partial = [page.data for page in pages if page.data["next_offset"] is not None]
-            assert partial
-            for page in partial:
-                assert page["next_offset"] > 0
-            # A write and its receipt are never paged away, even with the budget spent.
+            # Parallel reads no longer share a turn budget: each one pages by its
+            # own limit and carries exactly that many rows, with no token fields.
+            for page in pages:
+                assert len(page.data["rows"]) == 10
+                assert page.data["next_offset"] == 10
+                for key in ("page_tokens", "page_limit", "max_tokens"):
+                    assert key not in page.data
+            # A large list reply comes back whole.
+            whole = (
+                await client.call_tool("list_entities", {"kind": "parties", "limit": 100})
+            ).data
+            assert len(whole["rows"]) == 60
+            assert whole["next_offset"] is None
+            # A write and its receipt are never paged.
             receipt = (
                 await client.call_tool(
                     "add_entities",
@@ -2800,6 +2773,41 @@ def test_parallel_reads_share_one_turn_budget_and_writes_stay_whole(sources):
             ).data
             assert list(receipt["entities"]) == ["E61"]
             assert receipt["entities"]["E61"]["id"] == "E61"
+
+    asyncio.run(check())
+
+
+def test_replies_carry_no_version_or_budget_fields(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(add([party(sources, "Role one")]))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            listed = (await client.call_tool("list_entities", {})).data
+            searched = (
+                await client.call_tool("search_entities", {"query": "Role one"})
+            ).data
+            detail = (await client.call_tool("get_entity", {"id": "E1"})).data
+            validated = (await client.call_tool("validate_entities", {})).data
+            added = (
+                await client.call_tool(
+                    "add_entities", {"entities": [party(sources, "Role two")]}
+                )
+            ).data
+            for reply in (listed, searched, detail, validated, added):
+                for key in ("snapshot", "page_limit", "page_tokens", "max_tokens"):
+                    assert key not in reply
+            # No tool accepts a budget either; paging is offset/limit/fields only.
+            properties = set()
+            for tool in await client.list_tools():
+                properties.update(tool.inputSchema.get("properties") or {})
+            assert "max_tokens" not in properties
 
     asyncio.run(check())
 
@@ -3025,16 +3033,13 @@ def test_a_21_entity_write_succeeds_without_clipping(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
-    from rsc.extract.paging import TurnBudget
     from rsc.extract.tools import make_server
 
     work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
     entities = [party(sources, f"Role {index}") for index in range(21)]
 
     async def check():
-        async with Client(
-            make_server(lambda: work, turn_budget=TurnBudget(3000))
-        ) as client:
+        async with Client(make_server(lambda: work)) as client:
             added = (await client.call_tool("add_entities", {"entities": entities})).data
             assert len(added["entities"]) == 21
             assert len(added["changed_fields"]) == 21
@@ -3068,13 +3073,13 @@ def test_validate_entities_pages_groups_and_issues(sources):
     async def check():
         async with Client(make_server(lambda: work)) as client:
             catalog = (
-                await client.call_tool(
-                    "validate_entities", {"view": "groups", "max_tokens": 200}
-                )
+                await client.call_tool("validate_entities", {"view": "groups"})
             ).data
             assert catalog["group_count"] == 15
-            assert catalog["next_offset"] is not None
-            assert len(catalog["groups"]) < 15
+            assert catalog["next_offset"] is None
+            assert len(catalog["groups"]) == 15
+            for key in ("page_tokens", "page_limit"):
+                assert key not in catalog
             group_id = catalog["groups"][0]["group_id"]
             one = (
                 await client.call_tool(
@@ -5212,7 +5217,7 @@ def test_compact_rejection_keeps_duplicate_row_suffixes(sources, monkeypatch):
     asyncio.run(check())
 
 
-def test_compact_rejection_pages_with_the_same_cursor(sources, monkeypatch):
+def test_compact_rejection_returns_every_row_without_a_cursor(sources, monkeypatch):
     pytest.importorskip("fastmcp")
 
     rows = [check_row(sources, f"E{index}") for index in range(1, 201)]
@@ -5222,8 +5227,9 @@ def test_compact_rejection_pages_with_the_same_cursor(sources, monkeypatch):
     async def check():
         full, compact = await refused_reply(work)
         assert full["error_count"] == compact["error_count"] == 200
-        assert compact["next_offset"] == full["next_offset"] > 0
-        assert len(compact["rows"]) == len(full["rows"])
+        # Neither reply is page-limited any more, so there is no cursor to continue.
+        assert compact["next_offset"] is None and full["next_offset"] is None
+        assert len(compact["rows"]) == len(full["rows"]) == 200
         assert compact["rows"] == compact_projection(full["rows"])
 
     asyncio.run(check())
@@ -5282,7 +5288,6 @@ def test_compact_rejection_detail_reads_still_answer(sources, monkeypatch):
 
     async def check():
         _, compact = await refused_reply(work)
-        assert compact["next_offset"] > 0
         issue_id = compact["rows"][0]["id"]
         async with Client(compact_rejection_server(work)) as client:
             detail = (
@@ -5291,12 +5296,8 @@ def test_compact_rejection_detail_reads_still_answer(sources, monkeypatch):
             issue = detail["issue"]
             assert issue["id"] == issue_id
             assert issue["description"] == rows[0]["description"]
-            rest = (
-                await client.call_tool(
-                    "validate_entities", {"view": "issues", "offset": compact["next_offset"]}
-                )
-            ).data
-            assert rest["issues"]
+            rest = (await client.call_tool("validate_entities", {"view": "issues"})).data
+            assert len(rest["issues"]) == 200
             open_items = (await client.call_tool("validate_entities", {"view": "unresolved"})).data
             assert open_items["unresolved_rows"] == []
             full_page = (await client.call_tool("validate_entities", {})).data

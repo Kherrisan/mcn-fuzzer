@@ -33,7 +33,7 @@ from .groups import (
 )
 from .guidance import HOOK_EVENTS, HOOK_RULES
 from .model_log import ModelJournal
-from .paging import TurnBudget, bounded_page, page_limit
+from .paging import bounded_page
 from .registry import (
     LEGACY_SCAN_KINDS,
     SCAN_KINDS,
@@ -507,7 +507,6 @@ class HistoryBudget:
         max_chars,
         summary,
         summary_tokens,
-        turn_budget=None,
         measure=None,
         model_log_path=None,
         assignment_attempt=1,
@@ -524,7 +523,6 @@ class HistoryBudget:
         self.max_chars = int(max_chars)
         self.summary = summary
         self.summary_tokens = summary_tokens
-        self.turn_budget = turn_budget
         self.measure = measure or ModelMeasure()
         self.model_log_path = model_log_path
         self.assignment_attempt = assignment_attempt
@@ -640,8 +638,6 @@ class ContextBudget(AbstractCapability):
         budget = ctx.deps
         if budget is None:
             return request_context
-        if budget.turn_budget is not None:
-            budget.turn_budget.reset()
         live = budget.split_live(request_context.messages)
         while True:
             payload = budget.prefix() + live
@@ -958,15 +954,10 @@ class Runner:
         self.catalog_tokens = 0
         self.review_catalog_tokens = 0
         self.compactions = []
-        # One budget per assignment turn: parallel tool calls share what is left, so a
-        # turn cannot return several full pages at once.
-        self.turn_budget = TurnBudget(page_limit(config.context_tokens))
         two_pass = self.scan_kinds == SCAN_KINDS
         self.toolset = MCPToolset(
             make_server(
                 lambda: self.active,
-                turn_budget=self.turn_budget,
-                context_tokens=config.context_tokens,
                 checked_basics=two_pass,
                 compact_rejection=two_pass,
             ),
@@ -1257,8 +1248,7 @@ class Runner:
         foreign = [row for row in self.state["history"] if row not in rows]
         available = self.config.context_tokens - self.config.output_tokens - self.catalog_tokens
         base = tokens(INSTRUCTIONS) + tokens(prompt)
-        # Leave room for new tool results between requests in this assignment.
-        limit = available - base - self.config.tool_result_reserve_tokens
+        limit = available - base
         if limit < 0:
             raise ValueError("assignment context exceeds the configured model budget")
         kept = [dict(row) for row in rows]
@@ -1323,7 +1313,6 @@ class Runner:
             max_chars=self.config.history_tool_chars,
             summary=summary,
             summary_tokens=self.config.summary_tokens,
-            turn_budget=self.turn_budget,
             measure=self.measure,
             model_log_path=(
                 self.root / "llm" / assignment.phase / (assignment.kind or "")
@@ -1608,7 +1597,6 @@ class Runner:
             max_chars=self.config.history_tool_chars,
             summary="",
             summary_tokens=self.config.summary_tokens,
-            turn_budget=self.turn_budget,
             measure=self.measure,
             model_log_path=log_path,
             assignment_attempt=attempts + attempt,
