@@ -24,7 +24,13 @@ from pydantic_core import to_jsonable_python
 from rsc.protocol.rules import ASSOCIATED_FIELD_RULES, SCENARIO_RULES
 from rsc.workflow.store import atomic_json, dumps, read_json
 
-from .groups import group_rows, ordered_issue_rows
+from .groups import (
+    blocked_signature,
+    fix_groups,
+    group_rows,
+    head_group,
+    ordered_issue_rows,
+)
 from .guidance import HOOK_EVENTS, HOOK_RULES
 from .model_log import ModelJournal
 from .paging import TurnBudget, bounded_page, page_limit
@@ -742,6 +748,67 @@ def merge_usage(left, right):
     return merged
 
 
+def read_group(work, group_id, refs):
+    """Whether this attempt actually opened the group its prompt pointed at."""
+    if ("group", group_id) in work.read_groups:
+        return True
+    return any(("issue", ref) in work.read_groups for ref in refs)
+
+
+class Deferral:
+    """Reschedule one category Fix repair site when an attempt leaves it untouched.
+
+    ``begin`` records the site a prompt is about to point at and its blocked signature;
+    ``end`` compares the revalidated signature and, only when the attempt also read the
+    site, moves it to the back of the next round's queue. Both are per attempt, so a
+    retry inside the same round is judged on its own head group.
+    """
+
+    def __init__(self, deferred):
+        self.deferred = deferred
+        self.token = None
+
+    def begin(self, work):
+        described = list(work.describe_issues(work.issues()))
+        unresolved = work.open_unresolved()
+        groups, rows = ordered_issue_rows(
+            described, unresolved, work.records, work.sources, self.deferred
+        )
+        chosen = head_group(groups, self.deferred)
+        if chosen is None:
+            self.token = None
+            return
+        self.token = (
+            chosen["group_id"],
+            blocked_signature(chosen, unresolved, work.sources),
+            {row["id"] for row in rows if row["group_id"] == chosen["group_id"]},
+        )
+
+    def end(self, work):
+        """Register one recorded no-progress attempt, when the signature still holds."""
+        token, self.token = self.token, None
+        if token is None:
+            return False
+        group_id, signature, refs = token
+        if not signature or not read_group(work, group_id, refs):
+            return False
+        described = list(work.describe_issues(work.issues()))
+        unresolved = work.open_unresolved()
+        current = next(
+            (
+                group
+                for group in fix_groups(described, unresolved, work.records)
+                if group["group_id"] == group_id
+            ),
+            None,
+        )
+        if current is None or blocked_signature(current, unresolved, work.sources) != signature:
+            return False
+        self.deferred[group_id] = signature
+        print(f"deferring {group_id} until its blocked signature changes", flush=True)
+        return True
+
+
 class BudgetExhausted(Exception):
     """The assignment stopped because a usage limit was reached."""
 
@@ -752,14 +819,24 @@ class BudgetExhausted(Exception):
         self.tool_calls = tool_calls
 
 
+class Incomplete(ValueError):
+    """The model ended its turn without the completion call this assignment needs."""
+
+
 class AssignmentFailed(ValueError):
     """One assignment attempt stopped without completing its work."""
 
-    def __init__(self, message, *, elapsed_seconds=0.0, usage=None, tool_calls=0):
+    def __init__(
+        self, message, *, elapsed_seconds=0.0, usage=None, tool_calls=0, incomplete=False
+    ):
         super().__init__(message)
         self.elapsed_seconds = elapsed_seconds
         self.usage = usage or {}
         self.tool_calls = tool_calls
+        # A model that ended its own turn without completing is a different signal
+        # from a timeout, a provider error or an exhausted budget: only it can mean
+        # the repair site has no source-supported change left to make.
+        self.incomplete = incomplete
 
 
 class StageFailed(ValueError):
@@ -1033,9 +1110,14 @@ class Runner:
             context["earlier_decisions"] = self.state["compact_summary"]
         else:
             unresolved = work.open_unresolved()
-            groups, rows = ordered_issue_rows(issues, unresolved, work.records)
+            groups, rows = ordered_issue_rows(
+                issues, unresolved, work.records, work.sources, work.deferred_groups
+            )
             repairable_categories = list(work.repairable_categories)
-            head = groups[0] if groups else None
+            # A group that already stalled on this exact blocked signature waits
+            # behind the others; when every group waits, the round still opens the
+            # catalog and decides for itself.
+            head = head_group(groups, work.deferred_groups)
             context["validation_error_count"] = len(issues)
             context["unresolved_count"] = len(unresolved)
             context["repair_start_count"] = work.repair_start_count
@@ -1261,7 +1343,7 @@ class Runner:
                         if last:
                             break
                     tool = "complete_batch" if assignment.phase == "scan" else "complete_fix"
-                    raise ValueError(
+                    raise Incomplete(
                         f"agent ended before successful {tool}"
                         + (f"; last message: {last!r}" if last else "")
                     )
@@ -1299,6 +1381,7 @@ class Runner:
                 elapsed_seconds=elapsed,
                 usage=usage,
                 tool_calls=tool_calls,
+                incomplete=isinstance(exc, Incomplete),
             ) from exc
         finally:
             self.active = None
@@ -1357,8 +1440,15 @@ class Runner:
             "mutations": work.mutations,
         }
 
-    async def retry(self, work, issues=()):
-        """Retry a failed assignment instead of abandoning the whole run."""
+    async def retry(self, work, issues=(), defer=None):
+        """Retry a failed assignment instead of abandoning the whole run.
+
+        ``defer`` is the category Fix hook: when an attempt ends its own turn without
+        completing and that round's repair site did not move, the site is rescheduled
+        and the next attempt goes to another group without the retry delay. A timeout,
+        a provider error, a tool rejection or an exhausted budget never gets here as a
+        reschedule.
+        """
         attempts = self.config.assignment_retries
         spent = 0.0
         usage = {}
@@ -1382,6 +1472,11 @@ class Runner:
             }
 
         for attempt in range(attempts + 1):
+            if defer is not None:
+                # One attempt reads one head group: both the read log and the blocked
+                # signature it is judged against belong to this attempt alone.
+                work.read_groups = set()
+                defer.begin(work)
             try:
                 return await self.execute(work, issues, assignment_attempt=attempt + 1)
             except BudgetExhausted as exc:
@@ -1411,6 +1506,10 @@ class Runner:
                         f"{work.assignment.id} failed; retry {attempt + 1}/{attempts}: {exc}",
                         flush=True,
                     )
+                    if getattr(exc, "incomplete", False) and defer is not None and defer.end(work):
+                        # Retrying the same repair site would replay the same refusal:
+                        # the next attempt reads the new head group instead.
+                        continue
                     await asyncio.sleep(retry_delay(attempt))
                     continue
                 # Keep the mutations that already landed and move on: a single
@@ -1809,10 +1908,16 @@ class Runner:
         )
         stalled = 0
         last_issue_count = None
+        # Repair sites that already made one recorded attempt with no progress stay
+        # here until their blocked signature changes. The table belongs to this
+        # category only: it is memory, never a checkpoint field.
+        deferred = {}
+        deferral = Deferral(deferred)
         while True:
             rounds = self.state.get("category_repairs", 0)
             suffix = f"-{rounds + 1}" if rounds else ""
             work = self.workspace(Assignment(f"validate-{kind}{suffix}", "category", kind))
+            work.deferred_groups = deferred
             started = monotonic()
             structural = list(work.describe_issues(work.structural_issues()))
             structural_seconds = monotonic() - started
@@ -1872,7 +1977,7 @@ class Runner:
                 )
                 return
             work.repair_start_count = len(issues)
-            history, record = await self.retry(work, issues)
+            history, record = await self.retry(work, issues, defer=deferral)
             current = len(work.issues())
             stalled = (
                 stalled + 1

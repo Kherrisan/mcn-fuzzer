@@ -13,7 +13,7 @@ from pydantic import Field
 
 from rsc.workflow.store import dumps
 
-from .groups import group_rows, issue_ref, ordered_issue_rows
+from .groups import group_rows, head_group, issue_ref, ordered_issue_rows
 from .guidance import with_suggestions
 from .paging import (
     DETAIL_PAGE_TOKENS,
@@ -341,7 +341,11 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
         issues = work.issues()
         advisory = work.advisory_issues()
         unresolved = work.open_unresolved()
-        groups, rows = ordered_issue_rows(issues, unresolved, work.records)
+        # Deferred repair sites are listed last and cleared here as soon as their
+        # blocked signature changes, so every view shows the same order.
+        groups, rows = ordered_issue_rows(
+            issues, unresolved, work.records, work.sources, work.deferred_groups
+        )
         return issues, advisory, unresolved, groups, rows
 
     server = FastMCP("rsc-extract")
@@ -816,7 +820,7 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
                 "gone": [item for item in remembered if item not in current_ids][:20],
             }
         if view == "summary":
-            head = groups[0] if groups else None
+            head = head_group(groups, work.deferred_groups)
             paged, allowed = page_tokens(dumps, rows, max_tokens, offset, None)
             head_rows = [
                 row for row in paged["rows"] if head and row["group_id"] == head["group_id"]
@@ -891,6 +895,9 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
                     }
                 )
                 return counts
+            # Reading the group is what a stalled attempt is judged on, so record it
+            # only when the reply actually carries the group's rows.
+            work.read_groups.add(("group", group_id))
             paged, allowed = page_tokens(dumps, selected, max_tokens, offset, None)
             counts.update(
                 {
@@ -953,6 +960,7 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
             row = by_id.get(issue_id)
             if row is None:
                 raise ValueError(f"unknown or resolved issue {issue_id}")
+            work.read_groups.add(("issue", issue_id))
             issue = next(
                 item
                 for item in issues + advisory

@@ -402,6 +402,11 @@ class Workspace:
         # Bumped by every applied mutation so a paged read can tell the model when
         # its cursor predates a change to the rows it was reading.
         self.snapshot = 0
+        # Category Fix scheduling: repair sites that stalled on an unchanged blocked
+        # signature, and the group or issue reads this attempt actually made. Both live
+        # only in memory; neither is written to the checkpoint.
+        self.deferred_groups = {}
+        self.read_groups = set()
         self._index = None
 
     @property

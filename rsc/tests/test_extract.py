@@ -2287,7 +2287,7 @@ def test_category_fix_rounds_keep_their_own_history(sources, tmp_path, monkeypat
         "decision": "round",
     }
 
-    async def fake_retry(work, issues=()):
+    async def fake_retry(work, issues=(), defer=None):
         seen.append((work.assignment.kind, [r.get("phase") for r in runner.state["history"]]))
         return (
             [{**row, "kind": work.assignment.kind, "assignment_id": work.assignment.id}],
@@ -3991,3 +3991,468 @@ def test_hook_stats_recorded_after_review(sources, tmp_path):
     records = [r for r in runner.state["records"] if r["phase"] == "review"]
     assert records and all("hook_stats" in r for r in records)
     assert set(records[0]["hook_stats"]) == {"hooks", "actions"}
+
+
+def check_row(sources, target, kind="channel_requires_connect"):
+    """One synthetic coverage row, shaped like the checks Fix rounds work on."""
+    return {
+        "type": kind,
+        "check_ref": f"{kind}:{target}",
+        "records": [target],
+        "path": [],
+        "description": f"{target} needs a {kind.rsplit('_', 1)[-1]}",
+        "evidence": [citation(sources)],
+    }
+
+
+CHANNEL_CHECKS = (
+    "channel_requires_connect",
+    "channel_requires_listen",
+    "channel_requires_close",
+)
+
+
+def unresolved_item(sources, item_id, targets, **updates):
+    """An open item that explains the given targets' checks, with a frozen location."""
+    kinds = updates.pop("kinds", CHANNEL_CHECKS)
+    item = {
+        "id": item_id,
+        "description": "The source leaves the transport lifecycle to the layers above.",
+        "missing_information": "Transport operations for this channel.",
+        "entity_ids": list(targets),
+        "evidence": [citation(sources)],
+        "check_refs": [f"{kind}:{target}" for target in targets for kind in kinds],
+    }
+    item.update(updates)
+    return item
+
+
+def fix_group(rows, unresolved=()):
+    """The single group the given rows and open items produce."""
+    from rsc.extract.groups import fix_groups
+
+    return fix_groups(rows, list(unresolved), {})[0]
+
+
+def test_blocked_signature_ignores_order_but_tracks_content(sources):
+    from rsc.extract.groups import blocked_signature
+
+    first, second = [{"document_id": doc, "block_id": block} for doc, block in
+                     list(sources.blocks)[:2]]
+    rows = [
+        check_row(sources, "E1", "channel_requires_connect"),
+        check_row(sources, "E1", "channel_requires_listen"),
+    ]
+    item = unresolved_item(sources, "U1", ["E1"])
+    item["evidence"] = [first, second]
+    group = fix_group(rows, [item])
+    signature = blocked_signature(group, [item], sources)
+    assert signature
+    # Reordering the checks or the cited evidence changes nothing.
+    reordered = deepcopy(item)
+    reordered["evidence"] = [second, first]
+    shuffled = [deepcopy(rows[1]), deepcopy(rows[0])]
+    assert blocked_signature(fix_group(shuffled, [reordered]), [reordered], sources) == signature
+    # A note, an extra check or a location that no longer resolves does change it.
+    noted = deepcopy(item)
+    noted["evidence"] = [{**first, "note": "different reading"}, second]
+    assert blocked_signature(group, [noted], sources) != signature
+    extra = [*rows, check_row(sources, "E1", "channel_requires_close")]
+    assert blocked_signature(fix_group(extra, [item]), [item], sources) != signature
+    gone = deepcopy(item)
+    gone["evidence"] = [{"document_id": "rfc5246", "block_id": "blk-999999"}]
+    assert blocked_signature(group, [gone], sources) == ""
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "item-covers-only-part-of-the-group",
+        "structural-row-without-a-check",
+        "repeated-check-ref",
+        "item-does-not-cover-every-check",
+    ],
+)
+def test_blocked_signature_needs_one_located_item_for_every_check(sources, case):
+    from rsc.extract.groups import blocked_signature
+
+    rows = [
+        check_row(sources, "E1", "channel_requires_connect"),
+        check_row(sources, "E1", "channel_requires_listen"),
+    ]
+    kinds = CHANNEL_CHECKS
+    if case == "item-covers-only-part-of-the-group":
+        kinds = ("channel_requires_connect",)
+    elif case == "structural-row-without-a-check":
+        rows = [*rows, {"type": "structure", "records": ["E1"], "path": ["x"], "description": "s"}]
+    elif case == "repeated-check-ref":
+        rows = [rows[0], {**rows[1], "check_ref": rows[0]["check_ref"]}]
+    elif case == "item-does-not-cover-every-check":
+        rows = [*rows, check_row(sources, "E1", "channel_requires_close")]
+        kinds = ("channel_requires_connect", "channel_requires_listen")
+    item = unresolved_item(sources, "U1", ["E1"], kinds=kinds)
+    group = fix_group(rows, [item])
+    assert blocked_signature(group, [item], sources) == ""
+
+
+def test_blocked_signature_rejects_two_candidates_and_missing_evidence(sources):
+    from rsc.extract.groups import blocked_signature
+
+    rows = [check_row(sources, "E1", "channel_requires_connect")]
+    first = unresolved_item(sources, "U1", ["E1"])
+    second = unresolved_item(sources, "U2", ["E1"])
+    group = fix_group(rows, [first, second])
+    # Both items explain the check, so neither one is the answer yet.
+    assert blocked_signature(group, [first, second], sources) == ""
+    alone = fix_group(rows, [first])
+    assert blocked_signature(alone, [first], sources)
+    blind = deepcopy(first)
+    blind["evidence"] = []
+    assert blocked_signature(alone, [blind], sources) == ""
+
+
+def test_deferred_groups_wait_behind_their_peers(sources):
+    from rsc.extract.groups import blocked_signature, ordered_issue_rows
+
+    rows = [
+        check_row(sources, "E1", "channel_requires_connect"),
+        check_row(sources, "E1", "channel_requires_listen"),
+        check_row(sources, "E2", "channel_requires_connect"),
+        check_row(sources, "E3", "channel_requires_connect"),
+        check_row(sources, "E3", "channel_requires_listen"),
+        check_row(sources, "E3", "channel_requires_close"),
+    ]
+    items = [unresolved_item(sources, "U1", ["E1"]), unresolved_item(sources, "U3", ["E3"])]
+    ordered, _ = ordered_issue_rows(rows, items, {}, sources, {})
+    assert [group["group_id"] for group in ordered] == ["E3", "E1", "E2"]
+    signature = blocked_signature(ordered[0], items, sources)
+    assert signature
+    deferred = {"E3": signature}
+    ordered, rows_after = ordered_issue_rows(rows, items, {}, sources, deferred)
+    # The stalled group keeps its own rank but loses priority, and the rows follow.
+    assert [group["group_id"] for group in ordered] == ["E1", "E2", "E3"]
+    assert [row["group_id"] for row in rows_after] == [
+        "E1", "E1", "E2", "E3", "E3", "E3"
+    ]
+    assert deferred == {"E3": signature}
+
+@pytest.mark.parametrize(
+    "case",
+    ["evidence-changed", "check-added", "check-removed", "item-closed", "item-replaced"],
+)
+def test_deferral_clears_when_the_signature_changes(sources, case):
+    from rsc.extract.groups import blocked_signature, ordered_issue_rows
+
+    rows = [
+        check_row(sources, "E1", "channel_requires_connect"),
+        check_row(sources, "E1", "channel_requires_listen"),
+        check_row(sources, "E2", "channel_requires_connect"),
+    ]
+    first, second = [{"document_id": doc, "block_id": block} for doc, block in
+                     list(sources.blocks)[:2]]
+    item = unresolved_item(sources, "U1", ["E1"])
+    item["evidence"] = [first]
+    items = [item]
+    deferred = {"E1": blocked_signature(fix_group(rows, items), items, sources)}
+    assert deferred["E1"]
+
+    if case == "evidence-changed":
+        items = [{**item, "evidence": [second]}]
+    elif case == "check-added":
+        rows = [*rows, check_row(sources, "E1", "channel_requires_close")]
+    elif case == "check-removed":
+        rows = rows[:1] + rows[2:]
+    elif case == "item-closed":
+        items = []
+    elif case == "item-replaced":
+        items = [{**item, "id": "U9", "description": "A different explanation."}]
+
+    ordered, _ = ordered_issue_rows(rows, items, {}, sources, deferred)
+    eligible = [group["group_id"] for group in ordered if group["count"]]
+    # The group is selectable again, so it is no longer part of the deferred set.
+    assert "E1" not in deferred
+    if rows[0]["records"] == ["E1"]:
+        assert eligible[0] == "E1" or "E1" in eligible[:2]
+    assert deferred == {}
+
+
+def test_head_group_skips_deferred_groups(sources):
+    from rsc.extract.groups import head_group, ordered_issue_rows
+
+    rows = [
+        check_row(sources, "E1", "channel_requires_connect"),
+        check_row(sources, "E3", "channel_requires_connect"),
+        check_row(sources, "E3", "channel_requires_listen"),
+        check_row(sources, "E3", "channel_requires_close"),
+    ]
+    groups, _ = ordered_issue_rows(rows, [], {}, sources, {})
+    assert head_group(groups, {})["group_id"] == "E3"
+    # A group is skipped only while its own entry holds it back.
+    assert head_group(groups, {"E1": "signature"})["group_id"] == "E3"
+    assert head_group(groups, {"E3": "signature"})["group_id"] == "E1"
+    # Everything deferred: the round opens the catalog with no preferred group.
+    assert head_group(groups, {"E1": "s", "E3": "s"}) is None
+    assert head_group([], {}) is None
+
+
+def deferrable_runner(sources, tmp_path, monkeypatch, respond, **config):
+    """A Runner whose basics Fix sees two located groups, one per entity."""
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, UserPromptPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from rsc.extract.runner import Runner
+
+    rows = [
+        check_row(sources, "E1", "channel_requires_connect"),
+        check_row(sources, "E1", "channel_requires_listen"),
+        check_row(sources, "E2", "channel_requires_connect"),
+        check_row(sources, "E2", "channel_requires_listen"),
+        check_row(sources, "E2", "channel_requires_close"),
+    ]
+    items = [
+        unresolved_item(sources, "U1", ["E1"]),
+        unresolved_item(sources, "U2", ["E2"]),
+    ]
+    seed = Workspace(sources, "test", empty_registry(), Assignment("seed", "global"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    seed.add_entities(
+        add([party(sources, "Initiator"), party(sources, "Acceptor")])
+    )
+    registry = seed.data
+    registry["unresolved"] = {item["id"]: item for item in items}
+
+    prompts = []
+    seen_calls = []
+
+    def model(messages, info):
+        latest = messages[-1].parts[-1]
+        if isinstance(latest, UserPromptPart):
+            prompt = json.loads(latest.content)
+            if prompt["assignment"]["phase"] == "category":
+                prompts.append(prompt)
+            reply = respond(prompt, latest, seen_calls)
+            if reply is not None:
+                return reply
+            head = prompt.get("current_group")
+            if head is None:
+                return ModelResponse(parts=[TextPart("Every group waits this round.")])
+            seen_calls.append(head["group_id"])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart(
+                        "validate_entities", {"view": "group", "group_id": head["group_id"]}
+                    )
+                ]
+            )
+        return ModelResponse(parts=[TextPart("This repair has no source-supported change.")])
+
+    monkeypatch.setattr(Workspace, "structural_issues", lambda work: [])
+    monkeypatch.setattr(Workspace, "coverage_issues", lambda work: [dict(row) for row in rows])
+    runner = Runner(
+        tmp_path,
+        sources,
+        "test",
+        ExtractConfig(**config),
+        FunctionModel(model),
+        no_review(),
+    )
+    runner.save(
+        registry=registry,
+        category=0,
+        batch=0,
+        history=[],
+        compact_summary="",
+        category_repairs=0,
+    )
+    return runner, prompts
+
+
+def test_category_fix_defers_a_group_without_progress(sources, tmp_path, monkeypatch, capsys):
+    runner, prompts = deferrable_runner(
+        sources, tmp_path, monkeypatch, lambda prompt, latest, calls: None, max_repair_rounds=2
+    )
+
+    async def check():
+        async with runner.toolset:
+            await runner.validate_category(0, "basics")
+
+    asyncio.run(check())
+    out = capsys.readouterr().out
+    assert "deferring E2" in out and "deferring E1" in out
+    # The largest group leads; once it stalls it keeps its rank but moves behind.
+    assert prompts[0]["current_group"]["group_id"] == "E2"
+    assert [row["group_id"] for row in prompts[0]["fix_groups"]] == ["E2", "E1"]
+    assert prompts[1]["current_group"]["group_id"] == "E1"
+    assert [row["group_id"] for row in prompts[1]["fix_groups"]] == ["E1", "E2"]
+    # Both groups stalled: the round still gets the catalog, without a preferred group.
+    assert "current_group" not in prompts[2]
+    # With every group waiting they keep their original rank.
+    assert [row["group_id"] for row in prompts[2]["fix_groups"]] == ["E2", "E1"]
+    assert prompts[2]["validation_error_count"] == 5
+    # Every attempt read its group and was sealed as unfinished, as before.
+    rounds = [record for record in runner.state["records"] if record.get("phase") == "category"]
+    assert [record["status"] for record in rounds] == ["failed", "failed"]
+    # The scheduling state is memory only: nothing about it reaches the checkpoint.
+    saved = read_json(tmp_path / "extract-checkpoint.json")
+    assert "deferred_groups" not in json.dumps(saved)
+
+
+def test_category_fix_keeps_the_group_after_other_failures(sources, tmp_path, monkeypatch, capsys):
+    from rsc.extract.runner import AssignmentFailed
+
+    runner, prompts = deferrable_runner(
+        sources, tmp_path, monkeypatch, lambda prompt, latest, calls: None, max_repair_rounds=1
+    )
+
+    async def failing(work, issues=(), defer=None, **kwargs):
+        raise AssignmentFailed(f"{work.assignment.id}: provider error", incomplete=False)
+
+    async def check():
+        async with runner.toolset:
+            monkeypatch.setattr(runner, "execute", failing)
+            await runner.validate_category(0, "basics")
+
+    asyncio.run(check())
+    out = capsys.readouterr().out
+    # A provider error, a timeout or a tool rejection is not a recorded stall.
+    assert "deferring" not in out
+    assert out.count("failed; retry") == 2
+    rounds = [record for record in runner.state["records"] if record.get("phase") == "category"]
+    assert [record["status"] for record in rounds] == ["failed"]
+
+
+def test_category_fix_keeps_the_group_when_it_was_never_read(
+    sources, tmp_path, monkeypatch, capsys
+):
+    def never_read(prompt, latest, calls):
+        from pydantic_ai.messages import ModelResponse, TextPart
+
+        return ModelResponse(parts=[TextPart("Nothing to change here.")])
+
+    runner, prompts = deferrable_runner(
+        sources, tmp_path, monkeypatch, never_read, max_repair_rounds=1
+    )
+
+    async def check():
+        async with runner.toolset:
+            await runner.validate_category(0, "basics")
+
+    asyncio.run(check())
+    out = capsys.readouterr().out
+    # An attempt that never opened the group cannot claim the group had no progress.
+    assert "deferring" not in out
+    assert [prompt["current_group"]["group_id"] for prompt in prompts] == ["E2", "E2", "E2"]
+
+
+def test_category_fix_keeps_the_group_when_its_signature_moved(
+    sources, tmp_path, monkeypatch, capsys
+):
+    runner, prompts = deferrable_runner(
+        sources, tmp_path, monkeypatch, lambda prompt, latest, calls: None, max_repair_rounds=1
+    )
+    cites = [{"document_id": doc, "block_id": block} for doc, block in list(sources.blocks)[:2]]
+    calls = []
+
+    def alternating(work):
+        # Every read sees a different citation for the same checks, so the blocked
+        # signature an attempt started with never survives to the end of it.
+        cites_turn = cites[len(calls) % 2]
+        calls.append(1)
+        return [
+            {**row, "evidence": [cites_turn]}
+            for row in [
+                check_row(sources, "E1", "channel_requires_connect"),
+                check_row(sources, "E1", "channel_requires_listen"),
+                check_row(sources, "E2", "channel_requires_connect"),
+                check_row(sources, "E2", "channel_requires_listen"),
+                check_row(sources, "E2", "channel_requires_close"),
+            ]
+        ]
+
+    async def check():
+        async with runner.toolset:
+            monkeypatch.setattr(Workspace, "coverage_issues", alternating)
+            await runner.validate_category(0, "basics")
+
+    asyncio.run(check())
+    out = capsys.readouterr().out
+    assert "deferring" not in out
+    # The group stays selectable: its signature moved, so it is ranked by size again.
+    assert [prompt["current_group"]["group_id"] for prompt in prompts[:2]] == ["E2", "E2"]
+
+
+def test_validate_entities_follows_the_deferred_order(sources, monkeypatch):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.groups import blocked_signature
+    from rsc.extract.tools import make_server
+
+    rows = [
+        check_row(sources, "E1", "channel_requires_connect"),
+        check_row(sources, "E1", "channel_requires_listen"),
+        check_row(sources, "E2", "channel_requires_connect"),
+        check_row(sources, "E2", "channel_requires_listen"),
+        check_row(sources, "E2", "channel_requires_close"),
+    ]
+    items = [unresolved_item(sources, "U1", ["E1"]), unresolved_item(sources, "U2", ["E2"])]
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "category", "channels"))
+    work.data["unresolved"] = {item["id"]: item for item in items}
+    monkeypatch.setattr(Workspace, "structural_issues", lambda self: [])
+    monkeypatch.setattr(Workspace, "coverage_issues", lambda self: [dict(row) for row in rows])
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            groups_view = {"view": "groups"}
+            catalog = (await client.call_tool("validate_entities", groups_view)).data["groups"]
+            assert [row["group_id"] for row in catalog] == ["E2", "E1"]
+            summary = (await client.call_tool("validate_entities", {})).data
+            assert summary["current_group"]["group_id"] == "E2"
+            # A read of the group is what lets a stalled attempt be rescheduled.
+            await client.call_tool("validate_entities", {"view": "group", "group_id": "E2"})
+            assert ("group", "E2") in work.read_groups
+            group = {
+                "group_id": "E2",
+                "issues": [
+                    describe
+                    for describe in work.describe_issues(rows)
+                    if (describe.get("check_ref") or "").endswith(":E2")
+                ],
+            }
+            signature = blocked_signature(group, items, sources)
+            assert signature
+            work.deferred_groups["E2"] = signature
+            catalog = (await client.call_tool("validate_entities", groups_view)).data["groups"]
+            # The same order reaches every view, and the deferred group is last.
+            assert [row["group_id"] for row in catalog] == ["E1", "E2"]
+            summary = (await client.call_tool("validate_entities", {})).data
+            assert summary["current_group"]["group_id"] == "E1"
+
+    asyncio.run(check())
+
+
+def test_category_fix_never_defers_an_exhausted_budget(sources, tmp_path, monkeypatch, capsys):
+    from rsc.extract.runner import BudgetExhausted
+
+    runner, prompts = deferrable_runner(
+        sources, tmp_path, monkeypatch, lambda prompt, latest, calls: None, max_repair_rounds=1
+    )
+
+    async def exhausted(work, issues=(), defer=None, **kwargs):
+        raise BudgetExhausted(f"{work.assignment.id}: request limit", usage={})
+
+    async def check():
+        async with runner.toolset:
+            monkeypatch.setattr(runner, "execute", exhausted)
+            await runner.validate_category(0, "basics")
+
+    asyncio.run(check())
+    out = capsys.readouterr().out
+    # A budget limit seals the attempt; it is not evidence that the group is stuck.
+    assert "deferring" not in out
+    rounds = [
+        record for record in runner.state["records"] if record.get("phase") == "category"
+    ]
+    assert [record["status"] for record in rounds] == ["budget_exhausted"]

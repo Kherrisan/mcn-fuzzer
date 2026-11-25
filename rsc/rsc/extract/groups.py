@@ -7,6 +7,8 @@ target with another row joins that group instead of becoming its own, so the age
 sees one entry per repair site rather than one per symptom.
 """
 
+import json
+
 from .registry import identity
 
 
@@ -76,13 +78,142 @@ def issue_rows(issues, records):
     return rows
 
 
-def ordered_issue_rows(issues, unresolved, records):
-    """Groups and rows in one order: largest group first, then source order."""
+def ordered_issue_rows(issues, unresolved, records, sources=None, deferred=None):
+    """Groups and rows in one order: largest group first, then source order.
+
+    ``deferred`` holds the groups one unchanged blocked signature already stalled at.
+    They keep their relative rank but move behind every eligible group, and an entry
+    whose signature changed is dropped here so the group is selectable again.
+    """
     groups = fix_groups(issues, unresolved, records)
+    if deferred is not None:
+        groups = defer_groups(groups, unresolved, sources, deferred)
     rank = {group["group_id"]: index for index, group in enumerate(groups)}
     rows = issue_rows(issues, records)
     rows.sort(key=lambda row: rank.get(row["group_id"], len(rank)))
     return groups, rows
+
+
+def head_group(groups, deferred=None):
+    """The repair site a round should open: the first eligible group with blocking rows.
+
+    A deferred group is offered again only after its signature changes, so a round does
+    not lead with it. With every group deferred the round gets the catalog instead.
+    """
+    for group in groups:
+        if not group["count"]:
+            continue
+        if deferred is not None and group["group_id"] in deferred:
+            continue
+        return group
+    if deferred:
+        return None
+    return groups[0] if groups else None
+
+
+def located(sources, document_id, block_id):
+    """Whether a frozen-source citation can still be read back."""
+    return sources is not None and (document_id, block_id) in sources.blocks
+
+
+def blocked_signature(group, unresolved, sources=None):
+    """Signature of a group when one located open item explains all of its checks.
+
+    Empty when the group cannot be deferred: a row without its own check, a repeated
+    check, an open item that only covers part of the group, several candidate items,
+    or an item whose frozen location no longer resolves. The signature holds the sorted
+    checks and the covering item, and the evidence lists are sorted too, so a change in
+    order alone does not invalidate it.
+    """
+    checks = []
+    for issue in group["issues"]:
+        ref = issue.get("check_ref")
+        if not ref or ref in checks:
+            return ""
+        checks.append(ref)
+    if not checks:
+        return ""
+    wanted = set(checks)
+    covering = [
+        item
+        for item in unresolved
+        if wanted <= set(item.get("check_refs") or ())
+    ]
+    if len(covering) != 1:
+        return ""
+    item = covering[0]
+    locations = sorted(
+        (cite["document_id"], cite["block_id"])
+        for cite in item.get("evidence") or ()
+        if cite.get("block_id")
+    )
+    if not locations or not all(located(sources, *pair) for pair in locations):
+        return ""
+    rows = sorted(
+        (
+            issue["check_ref"],
+            issue["type"],
+            tuple(sorted(issue.get("records") or ())),
+            tuple(str(part) for part in issue.get("path") or ()),
+            tuple(
+                sorted(
+                    (cite["document_id"], cite["block_id"])
+                    for cite in issue.get("evidence") or ()
+                    if cite.get("block_id")
+                )
+            ),
+        )
+        for issue in group["issues"]
+    )
+    listed = sorted(
+        (
+            cite["document_id"],
+            cite["block_id"],
+            cite.get("start") or 0,
+            cite.get("end") or 0,
+            cite.get("field") or "",
+            cite.get("note") or "",
+        )
+        for cite in item.get("evidence") or ()
+        if cite.get("block_id")
+    )
+    return json.dumps(
+        {
+            "checks": rows,
+            "item": [
+                item["id"],
+                item.get("description") or "",
+                item.get("missing_information") or "",
+                tuple(sorted(item.get("entity_ids") or ())),
+                listed,
+            ],
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+
+def defer_groups(groups, unresolved, sources, deferred):
+    """Eligible groups first: deferred groups keep their rank but lose priority.
+
+    Entries whose signature changed, or whose group is gone, are cleared here, so the
+    next prompt or catalog query already offers those repair sites again.
+    """
+    live, waiting = [], []
+    present = set()
+    for group in groups:
+        group_id = group["group_id"]
+        present.add(group_id)
+        if group_id in deferred:
+            signature = blocked_signature(group, unresolved, sources)
+            if signature and signature == deferred[group_id]:
+                waiting.append(group)
+                continue
+            del deferred[group_id]
+        live.append(group)
+    for group_id in [key for key in deferred if key not in present]:
+        del deferred[group_id]
+    return live + waiting
 
 
 def fix_groups(issues, unresolved, records):
