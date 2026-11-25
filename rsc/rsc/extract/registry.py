@@ -205,6 +205,57 @@ def normalized(kind, value):
     )
 
 
+def leaf_paths(value, prefix=""):
+    """Dotted paths of every value written, keeping one path per list element.
+
+    Nested objects contribute their own leaves (``extensions.cookie``); a list is
+    reported at its element paths (``associated_fields.3``) instead of descending into
+    each element, which matches the paths a delta edit names.
+    """
+    if isinstance(value, dict) and value:
+        result = []
+        for key, item in value.items():
+            result.extend(leaf_paths(item, f"{prefix}.{key}" if prefix else key))
+        return result
+    if isinstance(value, list) and value:
+        return [
+            f"{prefix}.{index}" if prefix else str(index) for index in range(len(value))
+        ]
+    return [prefix] if prefix else []
+
+
+def changed_paths(before, after, prefix=""):
+    """Dotted paths where two entity values differ, keeping array element paths.
+
+    Objects are compared key by key so ``extensions.cookie`` names the changed leaf, but
+    a changed list element is reported as its index (``associated_fields.3``) because the
+    whole element is the unit the write path replaced.
+    """
+    if isinstance(before, dict) and isinstance(after, dict):
+        result = []
+        for key in dict.fromkeys((*before, *after)):
+            path = f"{prefix}.{key}" if prefix else key
+            if key not in before:
+                result.extend(leaf_paths(after[key], path) or [path])
+            elif key not in after:
+                result.append(path)
+            else:
+                result.extend(changed_paths(before[key], after[key], path))
+        return result
+    if isinstance(before, list) and isinstance(after, list):
+        result = []
+        for index in range(max(len(before), len(after))):
+            path = f"{prefix}.{index}" if prefix else str(index)
+            if (
+                index >= len(before)
+                or index >= len(after)
+                or before[index] != after[index]
+            ):
+                result.append(path)
+        return result
+    return [] if before == after else ([prefix] if prefix else [])
+
+
 def delta_fields(fields, delta):
     """Rebuild one message's full ordered field list from a name-based delta.
 
@@ -630,7 +681,7 @@ class Workspace:
                     "mentions": [self.location(loc) for loc in item.mentions],
                 }
                 self.records[entity_id] = row
-                result.append(summary(row))
+                result.append({**summary(row), "changed_fields": leaf_paths(value)})
             return result
 
         return self.mutate("add", [entity.model_dump(mode="json") for entity in entities], apply)
@@ -715,7 +766,16 @@ class Workspace:
                     if item_location not in locations:
                         locations.append(item_location)
             changed.update(rewrite_references(before, self.records, {}))
-            return [summary(self.records[key]) for key in self.records if key in changed]
+            return [
+                {
+                    **summary(self.records[key]),
+                    "changed_fields": changed_paths(
+                        before[key]["value"], self.records[key]["value"]
+                    ),
+                }
+                for key in self.records
+                if key in changed
+            ]
 
         raw = [entity.model_dump(mode="json") for entity in entities]
         return self.mutate("update", expanded, apply, touched=changed, key_request=raw)
@@ -739,6 +799,7 @@ class Workspace:
                 raise ValueError("merge requires distinct source IDs, a reason and evidence")
             target = self.records[keep]
             self.allowed(target["kind"])
+            before_value = deepcopy(target["value"])
             before = deepcopy(self.records)
             if any(self.records[key]["kind"] != target["kind"] for key in others):
                 raise ValueError("only entities in the same category can be merged")
@@ -769,7 +830,11 @@ class Workspace:
                 }
             changed.update([keep, *others])
             changed.update(rewrite_references(before, self.records, dict.fromkeys(others, keep)))
-            return summary(target)
+            return {
+                **summary(target),
+                "changed_fields": changed_paths(before_value, target["value"]),
+                "absorbed_ids": others,
+            }
 
         request = [keep_id, ids, reason, [item.model_dump() for item in evidence], value]
         return self.mutate("merge", request, apply, touched=changed)

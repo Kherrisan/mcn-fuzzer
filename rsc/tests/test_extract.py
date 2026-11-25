@@ -1105,7 +1105,7 @@ def test_global_fix_rechecks_tracked_coverage_and_unresolved_after_resume(
             assert latest.content == {"id": "U1", "resolved": True}
             return ModelResponse(parts=[ToolCallPart("validate_entities", {})])
         if isinstance(latest, ToolReturnPart) and latest.tool_name == "update_entities":
-            assert latest.content[0]["id"] == "E4"
+            assert list(latest.content["entities"]) == ["E4"]
             return ModelResponse(parts=[ToolCallPart("complete_fix", {"summary": "Repaired flag"})])
         assert isinstance(latest, ToolReturnPart) and latest.tool_name == "validate_entities"
         assert latest.content["error_count"] == 1
@@ -2781,8 +2781,8 @@ def test_parallel_reads_share_one_turn_budget_and_writes_stay_whole(sources):
                     {"entities": [party(sources, "Late party")]},
                 )
             ).data
-            assert receipt[0]["id"]
-            assert "E" in receipt[0]["id"]
+            assert list(receipt["entities"]) == ["E61"]
+            assert receipt["entities"]["E61"]["id"] == "E61"
 
     asyncio.run(check())
 
@@ -2820,6 +2820,141 @@ def test_reads_always_report_current_state(sources):
             after = (await client.call_tool("validate_entities", {})).data
             assert "stale" not in after and "changed_since" not in after
             assert not set(new_ids) & {row["id"] for row in after["rows"]}
+
+    asyncio.run(check())
+
+
+def test_mutation_replies_return_full_entities_matching_get_entity(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            added = (
+                await client.call_tool(
+                    "add_entities",
+                    {"entities": [party(sources, "Client"), party(sources, "Server")]},
+                )
+            ).data
+            assert set(added) == {"entities", "changed_fields"}
+            assert "snapshot" not in added and "evidence" not in added
+            assert set(added["entities"]) == {"E1", "E2"}
+            assert added["changed_fields"]["E1"] == ["name", "description", "alias"]
+            detail = (await client.call_tool("get_entity", {"ids": ["E1", "E2"]})).data
+            assert added["entities"] == detail["entities"]
+            merged = (
+                await client.call_tool(
+                    "merge_entities",
+                    {
+                        "keep_id": "E1",
+                        "ids": ["E2"],
+                        "reason": "same role",
+                        "evidence": [citation(sources)],
+                    },
+                )
+            ).data
+            assert merged["absorbed_ids"] == ["E2"]
+            assert "E2" not in work.records
+            assert merged["entities"]["E1"] == (
+                await client.call_tool("get_entity", {"id": "E1"})
+            ).data["entities"]["E1"]
+            assert merged["entities"]["E1"]["aliases"] == ["Server"]
+            updated = (
+                await client.call_tool(
+                    "update_entities",
+                    {
+                        "entities": [
+                            {
+                                "id": "E1",
+                                "evidence": [citation(sources)],
+                                "patch": {"description": "Initiator"},
+                            }
+                        ]
+                    },
+                )
+            ).data
+            assert updated["changed_fields"] == {"E1": ["description"]}
+            assert updated["entities"]["E1"] == (
+                await client.call_tool("get_entity", {"id": "E1"})
+            ).data["entities"]["E1"]
+            assert updated["entities"]["E1"]["value"]["description"] == "Initiator"
+
+    asyncio.run(check())
+
+
+def test_update_reply_reports_changed_associated_field_paths(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            await client.call_tool(
+                "add_entities",
+                {"entities": [message_with_fields(sources, ["A", "B"])]},
+            )
+            reply = (
+                await client.call_tool(
+                    "update_entities",
+                    {
+                        "entities": [
+                            {
+                                "id": "E1",
+                                "evidence": [citation(sources)],
+                                "patch": {
+                                    "associated_fields": [{"name": "A"}, {"name": "C"}]
+                                },
+                            }
+                        ]
+                    },
+                )
+            ).data
+            assert reply["changed_fields"] == {"E1": ["associated_fields.1"]}
+            assert reply["entities"]["E1"]["value"]["associated_fields"] == [
+                {"name": "A"},
+                {"name": "C"},
+            ]
+
+    asyncio.run(check())
+
+
+def test_a_21_entity_write_succeeds_without_clipping(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.paging import TurnBudget
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+    entities = [party(sources, f"Role {index}") for index in range(21)]
+
+    async def check():
+        async with Client(
+            make_server(lambda: work, turn_budget=TurnBudget(3000))
+        ) as client:
+            added = (await client.call_tool("add_entities", {"entities": entities})).data
+            assert len(added["entities"]) == 21
+            assert len(added["changed_fields"]) == 21
+            updates = [
+                {
+                    "id": f"E{index}",
+                    "evidence": [citation(sources)],
+                    "patch": {"description": f"Role {index} endpoint"},
+                }
+                for index in range(1, 22)
+            ]
+            updated = (await client.call_tool("update_entities", {"entities": updates})).data
+            assert len(updated["entities"]) == 21
+            assert all(
+                paths == ["description"] for paths in updated["changed_fields"].values()
+            )
 
     asyncio.run(check())
 

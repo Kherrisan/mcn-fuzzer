@@ -215,6 +215,24 @@ def projected(work, row, fields=None):
     return detail_body(work, row, fields, lists=False)
 
 
+def changed_entities(work, rows):
+    """Mutation reply: each changed entity rendered exactly like ``get_entity``.
+
+    ``rows`` are the registry results (id plus the value paths the call changed), so a
+    write reply and a later detail read of the same entity are identical. No budget
+    clipping is applied; a large batch is allowed to produce a large reply.
+    """
+    entities = {}
+    changed_fields = {}
+    for item in rows:
+        row = work.records.get(item["id"])
+        if row is None:
+            continue
+        entities[row["id"]] = detail_body(work, row)
+        changed_fields[row["id"]] = list(item.get("changed_fields") or [])
+    return {"entities": entities, "changed_fields": changed_fields}
+
+
 def step_scenarios(work, rows, covered):
     """Summarize steps for the same message in other batches and scenarios.
 
@@ -691,26 +709,32 @@ def make_server(
 
     async def add_entities(
         entities: Annotated[list[EntityAddition], Field(min_length=1)],
-    ) -> list[dict]:
-        """Add entities atomically with block evidence for every entity.
+    ) -> dict:
+        """Add entities atomically; every created entity is returned in full.
 
-        Query existing names and aliases first. Enrich an existing concept with update_entities.
+        Query existing names and aliases first. Enrich an existing concept with
+        update_entities. The reply carries each created entity exactly as get_entity
+        renders it, plus changed_fields with the value paths this call wrote.
         """
-        return await mutate(lambda: current().add_entities(entities))
+        result = await mutate(lambda: current().add_entities(entities))
+        return changed_entities(current(), result)
 
     async def update_entities(
         entities: Annotated[list[EntityUpdate], Field(min_length=1)],
-    ) -> list[dict]:
-        """Update entities by ID, citing each changed top-level field.
+    ) -> dict:
+        """Update entities by ID; every changed entity is returned in full.
 
         Read current entities first. Each patched list is a full replacement: combine new
         details with all still-valid existing fields, operations and evidence. Use stable names.
         When exactly one field changes, unqualified citations apply to that field.
         For multiple changed fields, cite every field explicitly. For a small change to one
         message's associated_fields, send associated_fields_delta (add, replace or remove by
-        exact field name) instead of the whole list.
+        exact field name) instead of the whole list. The reply carries each changed entity
+        exactly as get_entity renders it, plus changed_fields with the value paths this
+        call changed.
         """
-        return await mutate(lambda: current().update_entities(entities))
+        result = await mutate(lambda: current().update_entities(entities))
+        return changed_entities(current(), result)
 
     async def merge_entities(
         keep_id: str,
@@ -719,8 +743,13 @@ def make_server(
         evidence: list[Evidence],
         value: dict | None = None,
     ) -> dict:
-        """Merge equivalent entities, providing a final value when attributes differ."""
-        return await mutate(lambda: current().merge_entities(keep_id, ids, reason, evidence, value))
+        """Merge equivalent entities, returning the survivor in full and absorbed IDs."""
+        result = await mutate(
+            lambda: current().merge_entities(keep_id, ids, reason, evidence, value)
+        )
+        reply = changed_entities(current(), [result])
+        reply["absorbed_ids"] = list(result.get("absorbed_ids") or [])
+        return reply
 
     async def record_unresolved(issue: Unresolved) -> dict:
         """Record a new unresolved issue with source evidence.
