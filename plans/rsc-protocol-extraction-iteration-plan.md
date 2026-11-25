@@ -119,7 +119,7 @@
 - **提交**：每个 worktree 内的实现独立提交，报告写明 worktree 名、分支、基线提交、本轮提交号。
 - **运行目录**：一律写到主仓库的 `rsc/runs/...` 绝对路径（用 `--task-dir`），不得落在工作树内；RFC 输入引用主仓库的 fixtures 绝对路径，避免重复拷贝。
 - **执行方式**：在容器内以该工作树的 `rsc` 为工作目录，用主仓库 venv 的 Python 加载该工作树的包（`PYTHONPATH=.` 加 `from rsc.cli import main; main()`），确保跑的是工作树代码而不是主仓库代码。
-- **并发上限**：同一时刻运行中的 `rsc extract` 进程合计不超过 **4 个**（含诊断运行）；因此并行方案必须各自只跑与方案相关的协议/阶段，由设计文档写清楚复测矩阵。
+- **并发上限**：同一时刻运行中的 `rsc extract` 进程数 = **要跑的 worktree 个数 × 3**（每个 worktree 各跑 RTSP、SIP、TLS 三个协议，每协议一个进程）；不在跑方案的 worktree 不占额度，额外诊断运行单独计数并在任务文档里写明。设计文档必须给出本次并发的 worktree 数与总进程数。
 - **收尾**：每轮分析比较各 worktree 的复测结果，选出胜出方案合入 `main`；未胜出的工作树**保留**（不删除），可在其上继续改进并从该树派生新的工作树；在任何树上的新方案同样最多 3 个并行。阶段总结必须列出本阶段创建过的所有 worktree 及其去向（合入/保留/淘汰）。
 
 ## 3. 并行复测
@@ -127,7 +127,7 @@
 **由 mcn-dsh 完成。** 硬超时监控、主动终止、必要时强制终止本轮 `rsc` 进程、退出核验与证据留存，均由 mcn-dsh 在既有会话 `4090/t13q` 中具体实施。grok bot 只调度、检查状态并核验报告，不亲自执行进程终止。不得关闭、kill 或 rm 该 hc 会话。
 
 - 输入固定为数据集中的 RTSP（2326、7826）、SIP（3261、3262、3264、3311、3326）和 TLS（5246、6066、7301、8446）HTML。保留固定输入清单和顺序，以便新旧结果可比。报告中无需填写输入哈希或摘要。[RFC 数据集](/data/exp/dkzou/atropos-libafl-nyx/mcn-fuzzer/rsc/tests/fixtures/profuzzbench-rfc/README.md)
-- 同时启动 **3 个 `rsc extract` 进程**，每个协议一个。沿用 `extract.1h-high.toml`，使用 `gpt-6-luna`、`effort = "high"` 和每个进程的 `review_concurrency = 3`。在容器内执行，每个 `rsc` 进程独立从各自启动时刻计时，**到 3600 秒硬上限须由 mcn-dsh 主动停止该进程**，不得只停止等待或仅记录超时。[测试配置](/data/exp/dkzou/atropos-libafl-nyx/mcn-fuzzer/rsc/extract.1h-high.toml)
+- 每个 worktree 同时启动 **3 个 `rsc extract` 进程**（每协议一个）；总进程数 = 参与本轮复测的 worktree 数 × 3。沿用 `extract.1h-high.toml`，使用 `gpt-6-luna`、`effort = "high"` 和每个进程的 `review_concurrency = 3`。在容器内执行，每个 `rsc` 进程独立从各自启动时刻计时，**到 3600 秒硬上限须由 mcn-dsh 主动停止该进程**，不得只停止等待或仅记录超时。[测试配置](/data/exp/dkzou/atropos-libafl-nyx/mcn-fuzzer/rsc/extract.1h-high.toml)
 - 达硬上限时，由 mcn-dsh 先向该协议本轮对应的 `rsc` 测试进程发送终止信号；若仍未退出，再升级为强制终止。须核验属于本轮的该进程及其子进程均已退出，并记录退出码或信号、留存证据。仅结束 `docker exec` 客户端、未确认容器内 `rsc` 进程及其子进程退出，不得视为已停止。终止对象仅限本轮 `rsc` 测试进程及其子进程，不得误杀其他测试或服务，也不得关闭、kill 或 rm 承载 mcn-dsh 或 mcn-codex 的 hc 会话（`4090/t13q`、`4090/t13x`）。grok bot 不亲自执行上述终止。本文不另设宽限秒数作为已定标准；若发出终止信号后仍有等待，只记录实际等待事实。
 - 每轮为三个协议在本轮约定目录下创建新的运行目录（`retest/<protocol>/`）。保存命令、配置、起止时间、退出原因、checkpoint、会话日志和生成文件，用运行目录与报告路径关联本轮代码和输入，无需在报告中填写提交 SHA 或文件摘要。续跑仅用于诊断，单独标记。每个成功输出再执行 `rsc validate protocol <运行目录>/protocol.json`，随后逐条核对 RFC。
 - 三个协议退出后汇总同一提交的结果。可在复测过程中预读日志和 RFC，但本轮三协议使用同一份代码。模型服务或环境故障单独记录，复测时使用新目录并保留原记录。
