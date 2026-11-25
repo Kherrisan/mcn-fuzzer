@@ -4863,3 +4863,365 @@ def test_only_a_basics_prompt_asks_for_the_checked_submission(sources, tmp_path)
     legacy = runner.workspace(Assignment(batch_id, "scan", "parties"))
     rule = json.loads(runner.prompt(legacy, []))["rule"]
     assert "check_first" not in rule
+
+
+def compact_rejection_server(work):
+    """The runner's two-pass server: checked submissions answer with the short page."""
+    from rsc.extract.tools import make_server
+
+    return make_server(lambda: work, checked_basics=True, compact_rejection=True)
+
+
+def full_rejection_server(work):
+    from rsc.extract.tools import make_server
+
+    return make_server(lambda: work, checked_basics=True)
+
+
+async def refused_reply(work, summary="Wrote a party"):
+    """Run a checked submission on a fresh server and return its refusal."""
+    from fastmcp import Client
+
+    async with Client(full_rejection_server(work)) as client:
+        full = (
+            await client.call_tool(
+                "complete_batch", {"summary": summary, "check_first": True}
+            )
+        ).data
+    async with Client(compact_rejection_server(work)) as client:
+        compact = (
+            await client.call_tool(
+                "complete_batch", {"summary": summary, "check_first": True}
+            )
+        ).data
+    return full, compact
+
+
+def compact_projection(rows):
+    return [
+        {
+            "id": row["id"],
+            "check_ref": row["check_ref"],
+            "group_id": row["group_id"],
+            "evidence": [
+                {"document_id": cite["document_id"], "block_id": cite["block_id"]}
+                for cite in row["evidence"][:1]
+            ],
+        }
+        for row in rows
+    ]
+
+
+def test_compact_rejection_keeps_the_queryable_page(sources):
+    pytest.importorskip("fastmcp")
+
+    work, _ = basics_batch(sources)
+    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([party(sources, "Client")]))
+    before = json.loads(dumps(work.data))
+
+    async def check():
+        full, compact = await refused_reply(work)
+        assert full["accepted"] is False and compact["accepted"] is False
+        # The state descriptors are the ones the full reply carried.
+        for key in (
+            "checked",
+            "assignment",
+            "snapshot",
+            "error_count",
+            "advisory_count",
+            "unresolved_count",
+            "deferred_checks",
+            "next_offset",
+        ):
+            assert compact[key] == full[key], key
+        # Every row keeps its id, handle, group and one locator, in the same order.
+        assert compact["rows"] == compact_projection(full["rows"])
+        assert [row["id"] for row in compact["rows"]] == [row["id"] for row in full["rows"]]
+        # What moved to the detail read is gone from the first page.
+        for key in ("groups", "current_group", "unresolved", "page_tokens", "page_limit"):
+            assert key not in compact
+        assert "issue_id" in compact["message"]
+        assert "offset=next_offset" in compact["message"]
+        assert "view='unresolved'" in compact["message"]
+        assert "view='summary'" in compact["message"]
+        # A refusal still changes nothing.
+        assert work.completion is None
+        assert json.loads(dumps(work.data)) == before
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_keeps_one_locator_or_none(sources, monkeypatch):
+    pytest.importorskip("fastmcp")
+
+    with_locator = {**check_row(sources, "E1"), "check_ref": "channel_requires_connect:E1"}
+    without = dict(with_locator, evidence=[])
+    work, _ = basics_batch(sources)
+    monkeypatch.setattr(Workspace, "issues", lambda self: [dict(with_locator), dict(without)])
+
+    async def check():
+        full, compact = await refused_reply(work)
+        assert compact["error_count"] == full["error_count"] == 2
+        assert [len(row["evidence"]) for row in compact["rows"]] == [1, 0]
+        assert compact["rows"][0]["evidence"] == [
+            {
+                "document_id": full["rows"][0]["evidence"][0]["document_id"],
+                "block_id": full["rows"][0]["evidence"][0]["block_id"],
+            }
+        ]
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_keeps_duplicate_row_suffixes(sources, monkeypatch):
+    pytest.importorskip("fastmcp")
+
+    row = check_row(sources, "E1")
+    work, _ = basics_batch(sources)
+    monkeypatch.setattr(Workspace, "issues", lambda self: [dict(row), dict(row)])
+
+    async def check():
+        full, compact = await refused_reply(work)
+        assert [row["id"] for row in compact["rows"]] == [row["id"] for row in full["rows"]]
+        assert compact["rows"][0]["id"] != compact["rows"][1]["id"]
+        assert compact["rows"][1]["id"].endswith("#2")
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_pages_with_the_same_cursor(sources, monkeypatch):
+    pytest.importorskip("fastmcp")
+
+    rows = [check_row(sources, f"E{index}") for index in range(1, 201)]
+    work, _ = basics_batch(sources)
+    monkeypatch.setattr(Workspace, "issues", lambda self: [dict(row) for row in rows])
+
+    async def check():
+        full, compact = await refused_reply(work)
+        assert full["error_count"] == compact["error_count"] == 200
+        assert compact["next_offset"] == full["next_offset"] > 0
+        assert len(compact["rows"]) == len(full["rows"])
+        assert compact["rows"] == compact_projection(full["rows"])
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_names_the_advisory_rows(sources, monkeypatch):
+    pytest.importorskip("fastmcp")
+
+    advisory = {**check_row(sources, "E9", "step_without_processing"), "advisory": True}
+    work, _ = basics_batch(sources)
+    add_channeled_party(work, sources)
+    monkeypatch.setattr(Workspace, "issues", lambda self: [])
+    monkeypatch.setattr(Workspace, "advisory_issues", lambda self: [dict(advisory)])
+
+    async def check():
+        full, compact = await refused_reply(work, "Wrote basics")
+        assert compact["error_count"] == 0
+        assert compact["advisory_count"] == full["advisory_count"] == 1
+        assert compact["advisory"] == [
+            {"id": full["advisory"][0]["id"], "type": "step_without_processing"}
+        ]
+        assert "include_advisory" in compact["advisory_hint"]
+        assert work.completion is None
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_points_at_advisory_detail_when_both_exist(sources, monkeypatch):
+    pytest.importorskip("fastmcp")
+
+    blocking = check_row(sources, "E1")
+    advisory = {**check_row(sources, "E9", "step_without_processing"), "advisory": True}
+    work, _ = basics_batch(sources)
+    monkeypatch.setattr(Workspace, "issues", lambda self: [dict(blocking)])
+    monkeypatch.setattr(Workspace, "advisory_issues", lambda self: [dict(advisory)])
+
+    async def check():
+        _, compact = await refused_reply(work)
+        assert compact["error_count"] == 1
+        assert compact["advisory_count"] == 1
+        # Both counts survive; the advisory ids are read, not copied into this page.
+        assert "advisory" not in compact
+        assert "include_advisory=true" in compact["message"]
+        assert work.completion is None
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_detail_reads_still_answer(sources, monkeypatch):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    rows = [check_row(sources, f"E{index}") for index in range(1, 201)]
+    work, _ = basics_batch(sources)
+    monkeypatch.setattr(Workspace, "issues", lambda self: [dict(row) for row in rows])
+
+    async def check():
+        _, compact = await refused_reply(work)
+        assert compact["next_offset"] > 0
+        issue_id = compact["rows"][0]["id"]
+        async with Client(compact_rejection_server(work)) as client:
+            detail = (
+                await client.call_tool("validate_entities", {"view": "issue", "issue_id": issue_id})
+            ).data
+            issue = detail["issue"]
+            assert issue["id"] == issue_id
+            assert issue["description"] == rows[0]["description"]
+            assert issue["evidence"]
+            rest = (
+                await client.call_tool(
+                    "validate_entities", {"view": "issues", "offset": compact["next_offset"]}
+                )
+            ).data
+            assert rest["issues"]
+            open_items = (await client.call_tool("validate_entities", {"view": "unresolved"})).data
+            assert open_items["unresolved_rows"] == []
+            full_page = (await client.call_tool("validate_entities", {})).data
+            assert len(full_page["rows"]) == len(compact["rows"])
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_validates_after_an_in_flight_write(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    add = TypeAdapter(list[EntityAddition]).validate_python
+
+    async def check():
+        work, _ = basics_batch(sources)
+        async with Client(compact_rejection_server(work)) as client:
+            _, reply = await asyncio.gather(
+                client.call_tool("add_entities", {"entities": [party(sources, "Client")]}),
+                client.call_tool(
+                    "complete_batch", {"summary": "Wrote a party", "check_first": True}
+                ),
+            )
+            assert reply.data["accepted"] is False
+            assert reply.data["error_count"] == 1
+            assert reply.data["rows"][0]["id"].startswith("issue:")
+        assert len(work.data["entities"]) == 1
+        assert add  # the helper above is deliberate: the write is what introduced the row
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_repairs_from_the_row_id_then_submits(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    work, _ = basics_batch(sources)
+
+    async def check():
+        async with Client(compact_rejection_server(work)) as client:
+            (
+                await client.call_tool("add_entities", {"entities": [party(sources, "Client")]})
+            )
+            refused = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote a party", "check_first": True}
+                )
+            ).data
+            assert refused["accepted"] is False
+            issue_id = refused["rows"][0]["id"]
+            detail = (
+                await client.call_tool("validate_entities", {"view": "issue", "issue_id": issue_id})
+            ).data
+            # The row id leads to the actionable detail the short page no longer carries.
+            assert detail["issue"]["suggestion"]
+            (
+                await client.call_tool(
+                    "add_entities", {"entities": [channel(sources, "Client channel")]}
+                )
+            )
+            sealed = (
+                await client.call_tool("complete_batch", {"summary": "Wrote a party"})
+            ).data
+            assert sealed["accepted"] is True
+            assert work.completion["status"] == "completed"
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_is_only_on_the_flagged_server(sources):
+    pytest.importorskip("fastmcp")
+
+    work, _ = basics_batch(sources)
+    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([party(sources, "Client")]))
+
+    async def check():
+        full, compact = await refused_reply(work)
+        # Direct MCP callers and the old tests keep the full reply.
+        assert "current_group" in full and full["groups"]
+        assert "current_group" not in compact and "groups" not in compact
+        assert len(full["rows"]) == len(compact["rows"])
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_keeps_a_clean_batch_receipt(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    work, _ = basics_batch(sources)
+    add_channeled_party(work, sources)
+
+    async def check():
+        async with Client(compact_rejection_server(work)) as client:
+            sealed = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote basics", "check_first": True}
+                )
+            ).data
+        plain, _ = basics_batch(sources)
+        add_channeled_party(plain, sources)
+        async with Client(compact_rejection_server(plain)) as client:
+            legacy = (
+                await client.call_tool("complete_batch", {"summary": "Wrote basics"})
+            ).data
+        assert sealed == legacy
+        assert work.completion == {
+            "status": "completed",
+            "summary": "Wrote basics",
+            "unresolved_ids": [],
+        }
+
+    asyncio.run(check())
+
+
+def test_compact_rejection_on_a_resumed_checkpoint(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    work, batch_id = basics_batch(sources)
+    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([party(sources, "Client")]))
+    state = json.loads(dumps(work.data))
+    # A checkpoint written by the old shape, complete with a full refusal in history.
+    state["records"] = [
+        {
+            "id": "batch-00001",
+            "phase": "scan",
+            "kind": "basics",
+            "status": "completed",
+            "summary": "Wrote a party",
+            "rows": [{"id": "issue:x", "description": "old full row"}],
+            "current_group": {"group_id": "E1", "issues": []},
+        }
+    ]
+    resumed = Workspace(sources, "test", state, Assignment(batch_id, "scan", "basics"))
+
+    async def check():
+        async with Client(compact_rejection_server(resumed)) as client:
+            reply = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote a party", "check_first": True}
+                )
+            ).data
+            assert reply["accepted"] is False
+            assert "current_group" not in reply
+        saved = dumps(resumed.data)
+        assert "compact_rejection" not in saved
+        assert "checked" not in saved
+
+    asyncio.run(check())

@@ -254,12 +254,22 @@ def step_scenarios(work, rows, covered):
 
 
 def make_server(
-    current, *, readonly=False, turn_budget=None, context_tokens=None, checked_basics=False
+    current,
+    *,
+    readonly=False,
+    turn_budget=None,
+    context_tokens=None,
+    checked_basics=False,
+    compact_rejection=False,
 ):
     """MCP server for one workspace; readonly exposes the reviewer's seven tools.
 
     ``checked_basics`` marks a run whose scan layout is the two-pass one, so its basics
     batches may ask ``complete_batch(check_first=true)`` to validate and seal in one call.
+    ``compact_rejection`` shortens what that refused call returns: the counts, the cursor
+    and one queryable line per row instead of a copy of the head group and the open-item
+    text. Detail reads still go through ``validate_entities``, so callers that leave the
+    flag alone keep the full reply.
     """
     from fastmcp import FastMCP
 
@@ -1084,6 +1094,8 @@ def make_server(
 
     def checked_rejection(work, validated):
         """The summary view of the state that just stopped a checked submission."""
+        if compact_rejection:
+            return compact_checked_rejection(work, validated)
         issues, advisory, unresolved, groups, rows = validated
         payload = {
             "accepted": False,
@@ -1121,6 +1133,65 @@ def make_server(
             "Repair them, then submit again with complete_batch(summary). That check "
             "already counted as this batch's validation, so do not repeat check_first "
             "on rows you have already seen."
+        )
+        return payload
+
+    def compact_checked_rejection(work, validated):
+        """A refused checked submission as counts, a cursor and one line per row.
+
+        The page boundary and the row order are the ones the full reply would have
+        used, so ``next_offset`` and every ``id`` mean the same thing in both. What is
+        dropped is only what a row-level detail read can reproduce: the head group's
+        problems, the group catalog and the open-item descriptions.
+        """
+        issues, advisory, unresolved, _, rows = validated
+        paged, _ = page_tokens(dumps, rows, INDEX_PAGE_TOKENS, 0, None)
+        payload = {
+            "accepted": False,
+            "checked": True,
+            "assignment": work.assignment.id,
+            "snapshot": work.snapshot,
+            "error_count": len(issues),
+            "advisory_count": len(advisory),
+            "unresolved_count": len(unresolved),
+            "deferred_checks": work.deferred_checks(),
+            "next_offset": paged["next_offset"],
+            "rows": [
+                {
+                    "id": row["id"],
+                    "check_ref": row["check_ref"],
+                    "group_id": row["group_id"],
+                    "evidence": [
+                        {"document_id": cite["document_id"], "block_id": cite["block_id"]}
+                        for cite in row["evidence"][:1]
+                    ],
+                }
+                for row in paged["rows"]
+            ],
+        }
+        if advisory and not issues:
+            # Nothing blocking, so the advisory rows are what stopped the seal: name the
+            # ones in this page by id and type and point at the detail read.
+            advisory_rows = ordered_issue_rows(advisory, (), work.records)[1]
+            payload["advisory"] = [
+                {"id": row["id"], "type": row["type"]} for row in advisory_rows[:5]
+            ]
+            payload["advisory_hint"] = (
+                "Read one with validate_entities(view='issue', issue_id=...), or all of "
+                "them with view='issues', include_advisory=true."
+            )
+        counts = f"{len(issues)} blocking and {len(advisory)} advisory row(s)"
+        advisory_hint = (
+            " Add include_advisory=true to view='issues' to see the advisory rows."
+            if advisory and issues
+            else ""
+        )
+        payload["message"] = (
+            f"This call validated the whole registry and did not seal the batch: {counts}."
+            f"{advisory_hint} Fix the rows you have evidence for, then submit again with "
+            "complete_batch(summary). Details: view='issue', issue_id=<row id>; more rows: "
+            "view='issues', offset=next_offset; open items: view='unresolved'; the old "
+            "full first page: view='summary'."
         )
         return payload
 

@@ -940,12 +940,14 @@ class Runner:
         # One budget per assignment turn: parallel tool calls share what is left, so a
         # turn cannot return several full pages at once.
         self.turn_budget = TurnBudget(page_limit(config.context_tokens))
+        two_pass = self.scan_kinds == SCAN_KINDS
         self.toolset = MCPToolset(
             make_server(
                 lambda: self.active,
                 turn_budget=self.turn_budget,
                 context_tokens=config.context_tokens,
-                checked_basics=self.scan_kinds == SCAN_KINDS,
+                checked_basics=two_pass,
+                compact_rejection=two_pass,
             ),
             max_retries=config.max_tool_retries,
         )
