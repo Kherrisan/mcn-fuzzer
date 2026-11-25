@@ -253,8 +253,14 @@ def step_scenarios(work, rows, covered):
     return result[:20]
 
 
-def make_server(current, *, readonly=False, turn_budget=None, context_tokens=None):
-    """MCP server for one workspace; readonly exposes the reviewer's seven tools."""
+def make_server(
+    current, *, readonly=False, turn_budget=None, context_tokens=None, checked_basics=False
+):
+    """MCP server for one workspace; readonly exposes the reviewer's seven tools.
+
+    ``checked_basics`` marks a run whose scan layout is the two-pass one, so its basics
+    batches may ask ``complete_batch(check_first=true)`` to validate and seal in one call.
+    """
     from fastmcp import FastMCP
 
     # Read-only tools may run concurrently; registry mutations are serialized so a
@@ -761,6 +767,67 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
         """
         return await mutate(lambda: current().solve_unresolved(unresolved_id, reason, evidence))
 
+    def unresolved_page(work, unresolved, budget):
+        """One bounded page of open items, the same shape the prompt carries."""
+        paged = bounded_page(
+            unresolved,
+            lambda item: dumps(
+                {
+                    "id": item["id"],
+                    "description": item["description"][:200],
+                    "check_refs": item.get("check_refs") or [],
+                }
+            ),
+            budget,
+        )
+        return {
+            "unresolved": [
+                {
+                    "id": item["id"],
+                    "description": item["description"][:200],
+                    "check_refs": item.get("check_refs") or [],
+                }
+                for item in paged["rows"]
+            ],
+            "unresolved_next_offset": paged["next_offset"],
+        }
+
+    def summary_page(work, unresolved, groups, rows, offset, max_tokens):
+        """Counts, head group and one page: the summary view and a checked submission
+        describe the same state the same way, from sets that were computed once."""
+        head = head_group(groups, work.deferred_groups)
+        paged, allowed = page_tokens(dumps, rows, max_tokens, offset, None)
+        head_rows = [
+            row for row in paged["rows"] if head and row["group_id"] == head["group_id"]
+        ]
+        page = unresolved_page(
+            work, unresolved, max(MINIMUM_PAGE_TOKENS, allowed // 2)
+        )
+        return {
+            "rows": paged["rows"],
+            "next_offset": paged["next_offset"],
+            "current_group": (
+                {
+                    "group_id": head["group_id"],
+                    "count": head["count"],
+                    "unresolved_ids": head["unresolved_ids"][:10],
+                    "issues": head_rows,
+                    "issues_in_page": len(head_rows),
+                }
+                if head
+                else None
+            ),
+            **page,
+            "page_tokens": paged["tokens"],
+            "page_limit": allowed,
+            "hint": (
+                "view=groups pages the catalog; view=group with group_id pages one "
+                "group; view=issues filters by type or entity; view=issue with "
+                "issue_id returns suggestions and evidence; view=unresolved pages "
+                "open items."
+            ),
+        }
+
     @server.tool
     def validate_entities(
         view: str = "summary",
@@ -820,55 +887,8 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
                 "gone": [item for item in remembered if item not in current_ids][:20],
             }
         if view == "summary":
-            head = head_group(groups, work.deferred_groups)
-            paged, allowed = page_tokens(dumps, rows, max_tokens, offset, None)
-            head_rows = [
-                row for row in paged["rows"] if head and row["group_id"] == head["group_id"]
-            ]
-            unresolved_page = bounded_page(
-                unresolved,
-                lambda item: dumps(
-                    {
-                        "id": item["id"],
-                        "description": item["description"][:200],
-                        "check_refs": item.get("check_refs") or [],
-                    }
-                ),
-                max(MINIMUM_PAGE_TOKENS, allowed // 2),
-            )
             counts.update(
-                {
-                    "rows": paged["rows"],
-                    "next_offset": paged["next_offset"],
-                    "current_group": (
-                        {
-                            "group_id": head["group_id"],
-                            "count": head["count"],
-                            "unresolved_ids": head["unresolved_ids"][:10],
-                            "issues": head_rows,
-                            "issues_in_page": len(head_rows),
-                        }
-                        if head
-                        else None
-                    ),
-                    "unresolved": [
-                        {
-                            "id": item["id"],
-                            "description": item["description"][:200],
-                            "check_refs": item.get("check_refs") or [],
-                        }
-                        for item in unresolved_page["rows"]
-                    ],
-                    "unresolved_next_offset": unresolved_page["next_offset"],
-                    "page_tokens": paged["tokens"],
-                    "page_limit": allowed,
-                    "hint": (
-                        "view=groups pages the catalog; view=group with group_id pages one "
-                        "group; view=issues filters by type or entity; view=issue with "
-                        "issue_id returns suggestions and evidence; view=unresolved pages "
-                        "open items."
-                    ),
-                }
+                summary_page(work, unresolved, groups, rows, offset, max_tokens)
             )
             return counts
         if view == "groups":
@@ -987,9 +1007,16 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
             return counts
         raise ValueError("view must be summary, groups, group, issues, issue or unresolved")
 
-    async def complete(summary: str, phases: tuple[str, ...]) -> dict:
+    async def complete(summary: str, phases: tuple[str, ...], *, check_first=False) -> dict:
         work = current()
         phase = work.assignment.phase
+        if check_first and (
+            phase != "scan" or work.assignment.kind != "basics" or not checked_basics
+        ):
+            raise ValueError(
+                "check_first is for a basics batch of the two-pass scan layout; "
+                "submit this assignment with a plain summary"
+            )
         if phase not in phases:
             expected_tool = "complete_batch" if phase == "scan" else "complete_fix"
             raise ValueError(f"use {expected_tool} for {phase} assignments")
@@ -1010,6 +1037,14 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
                 return {"accepted": True, **scope}
             if not summary.strip() or len(summary) > 2000:
                 raise ValueError("provide a nonempty summary of at most 2000 characters")
+            issues = work.issues()
+            if check_first:
+                # The same call validates the whole registry: a batch is sealed only when
+                # nothing blocks and nothing is advisory, never on a clean-looking page.
+                validated = validation(work)
+                blocking, advisory = validated[0], validated[1]
+                if blocking or advisory:
+                    return checked_rejection(work, validated)
             expected = sorted(
                 issue["id"]
                 for issue in unresolved
@@ -1020,7 +1055,6 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
                 "summary": summary,
                 "unresolved_ids": expected,
             }
-            issues = work.issues()
             start = work.repair_start_count
             if phase == "category":
                 if issues and len(issues) >= start:
@@ -1047,6 +1081,48 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
                 "repair_start_count": start,
                 **scope,
             }
+
+    def checked_rejection(work, validated):
+        """The summary view of the state that just stopped a checked submission."""
+        issues, advisory, unresolved, groups, rows = validated
+        payload = {
+            "accepted": False,
+            "checked": True,
+            "assignment": work.assignment.id,
+            "snapshot": work.snapshot,
+            "error_count": len(issues),
+            "advisory_count": len(advisory),
+            "unresolved_count": len(unresolved),
+            "group_count": len(groups),
+            "deferred_checks": work.deferred_checks(),
+            "groups": group_rows(groups)[:5],
+            **summary_page(work, unresolved, groups, rows, 0, INDEX_PAGE_TOKENS),
+        }
+        if advisory and not issues:
+            # Blocking is empty, so the advisory rows are what stopped the seal: give
+            # their ids and the detail path rather than only a count.
+            advisory_rows = ordered_issue_rows(advisory, (), work.records)[1]
+            payload["advisory"] = [
+                {
+                    "id": row["id"],
+                    "type": row["type"],
+                    "records": row["records"],
+                    "description": row["description"],
+                }
+                for row in advisory_rows[:5]
+            ]
+            payload["advisory_hint"] = (
+                "Read them with validate_entities(view='issues', include_advisory=true) "
+                "or view='issue', issue_id=..."
+            )
+        payload["message"] = (
+            "This call validated the batch and did not seal it: "
+            f"{len(issues)} blocking and {len(advisory)} advisory row(s). "
+            "Repair them, then submit again with complete_batch(summary). That check "
+            "already counted as this batch's validation, so do not repeat check_first "
+            "on rows you have already seen."
+        )
+        return payload
 
     def rejection(work, issues, start, scope):
         """Compact diagnostics: counts, the group catalog head and one page of rows."""
@@ -1089,12 +1165,16 @@ def make_server(current, *, readonly=False, turn_budget=None, context_tokens=Non
             "deferred_checks": work.deferred_checks(),
         }
 
-    async def complete_batch(summary: str) -> dict:
+    async def complete_batch(summary: str, check_first: bool = False) -> dict:
         """Submit the current scan batch with a short summary after all writes finish.
 
-        The response includes repairable_categories for the current and earlier categories.
+        check_first asks the host to validate the whole registry in this same call. A
+        basics batch of the two-pass layout is sealed only when nothing blocks and nothing
+        is advisory; otherwise the reply carries the summary view, nothing is sealed, and
+        the next attempt submits with a plain summary. The response includes
+        repairable_categories for the current and earlier categories.
         """
-        return await complete(summary, ("scan",))
+        return await complete(summary, ("scan",), check_first=check_first)
 
     async def complete_fix(summary: str) -> dict:
         """Submit the current category or global Fix with a short summary after all writes finish.

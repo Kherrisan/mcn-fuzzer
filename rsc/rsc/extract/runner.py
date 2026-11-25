@@ -151,9 +151,15 @@ BASICS_RULES = (
     "Do not write steps, states or dependencies in this pass: transmissions, computed "
     "values and prerequisite edges belong to the interaction-unit pass. When a message "
     "needs a send step or a channel needs an action, record_unresolved with its name "
-    "and the source passage instead of adding the step here. Before complete_batch, run "
-    "validate_entities once and repair the rows this batch introduced; rows about "
-    "missing sends or channel actions are the interaction unit's work."
+    "and the source passage instead of adding the step here. Rows about missing sends or "
+    "channel actions are the interaction unit's work. When the writes are in and this "
+    "batch's open items are recorded, submit with complete_batch(summary, "
+    "check_first=true): the host validates the whole registry in that same call and "
+    "seals the batch only when nothing blocks and nothing is advisory. If the reply "
+    "lists rows, repair them (view='group' for one group, view='issue' for evidence) "
+    "and then submit again with plain complete_batch(summary); that reply already "
+    "counted as this batch's validation, so do not run a separate validate_entities "
+    "pass first and do not repeat check_first on rows you have already seen."
 )
 
 CATEGORY_RULES = {
@@ -939,6 +945,7 @@ class Runner:
                 lambda: self.active,
                 turn_budget=self.turn_budget,
                 context_tokens=config.context_tokens,
+                checked_basics=self.scan_kinds == SCAN_KINDS,
             ),
             max_retries=config.max_tool_retries,
         )

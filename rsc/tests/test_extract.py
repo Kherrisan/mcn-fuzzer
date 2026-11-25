@@ -4434,3 +4434,432 @@ def test_category_fix_never_defers_an_exhausted_budget(sources, tmp_path, monkey
         record for record in runner.state["records"] if record.get("phase") == "category"
     ]
     assert [record["status"] for record in rounds] == ["budget_exhausted"]
+
+
+def basics_batch(sources):
+    """A scan/basics workspace on the first batch, plus the additions it needs."""
+    batch_id = next(iter(sources.batches))
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "scan", "basics"))
+    return work, batch_id
+
+
+def add_channeled_party(work, sources, name="Client"):
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(
+        add(
+            [
+                party(sources, name),
+                channel(sources, f"{name} channel"),
+            ]
+        )
+    )
+
+
+def test_complete_batch_checks_and_seals_a_clean_basics_batch(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work, _ = basics_batch(sources)
+    add_channeled_party(work, sources)
+    # The old layout's two calls: validate, then submit.
+    plain, _ = basics_batch(sources)
+    add_channeled_party(plain, sources)
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            report = (await client.call_tool("validate_entities", {})).data
+            assert report["error_count"] == 0
+            assert report["advisory_count"] == 0
+            sealed = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote basics", "check_first": True}
+                )
+            ).data
+            assert sealed["accepted"] is True
+            assert work.completion == {
+                "status": "completed",
+                "summary": "Wrote basics",
+                "unresolved_ids": [],
+            }
+            # A sealed batch answers the same way to a repeat of the same summary.
+            repeated = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote basics", "check_first": True}
+                )
+            ).data
+            assert repeated == sealed
+        async with Client(make_server(lambda: plain)) as client:
+            legacy = (await client.call_tool("complete_batch", {"summary": "Wrote basics"})).data
+        # One call instead of two, and the same receipt as the old two-call path.
+        assert sealed == legacy
+
+
+def test_complete_batch_refuses_a_blocked_basics_batch(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work, _ = basics_batch(sources)
+    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([party(sources, "Client")]))
+    before = json.loads(dumps(work.data))
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            summary = (await client.call_tool("validate_entities", {})).data
+            reply = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote a party", "check_first": True}
+                )
+            ).data
+            assert reply["accepted"] is False
+            assert reply["checked"] is True
+            # The reply is the summary view of the state that refused the seal.
+            assert reply["snapshot"] == summary["snapshot"]
+            assert reply["error_count"] == summary["error_count"] == 1
+            assert reply["advisory_count"] == summary["advisory_count"] == 0
+            assert reply["unresolved_count"] == summary["unresolved_count"] == 0
+            assert [row["id"] for row in reply["rows"]] == [row["id"] for row in summary["rows"]]
+            assert reply["next_offset"] == summary["next_offset"]
+            assert reply["current_group"]["group_id"] == summary["current_group"]["group_id"]
+            assert reply["current_group"]["issues"] == summary["current_group"]["issues"]
+            assert "did not seal" in reply["message"]
+            assert "do not repeat check_first" in reply["message"]
+            # Nothing was sealed and no mutation was undone.
+            assert work.completion is None
+            assert json.loads(dumps(work.data)) == before
+
+    asyncio.run(check())
+
+
+def test_complete_batch_refuses_an_advisory_only_basics_batch(sources, monkeypatch):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    advisory = [
+        {
+            **check_row(sources, "E9", "step_without_processing"),
+            "advisory": True,
+        }
+    ]
+    work, _ = basics_batch(sources)
+    add_channeled_party(work, sources)
+    monkeypatch.setattr(Workspace, "coverage_issues", lambda self: [dict(row) for row in advisory])
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            reply = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote basics", "check_first": True}
+                )
+            ).data
+            assert reply["accepted"] is False
+            assert reply["error_count"] == 0
+            assert reply["advisory_count"] == 1
+            # Nothing blocks, so the advisory rows stop the seal and must be readable.
+            assert [row["type"] for row in reply["advisory"]] == ["step_without_processing"]
+            assert "include_advisory" in reply["advisory_hint"]
+            assert work.completion is None
+
+    asyncio.run(check())
+
+
+def test_complete_batch_seals_a_clean_basics_batch_with_open_items(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work, _ = basics_batch(sources)
+    add_channeled_party(work, sources)
+    work.record_unresolved(
+        Unresolved(
+            description="The batch does not say which side closes",
+            entity_ids=["E1"],
+            evidence=[citation(sources)],
+            missing_information="which side closes",
+        )
+    )
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            reply = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote basics", "check_first": True}
+                )
+            ).data
+            assert reply["accepted"] is True
+            assert work.completion["status"] == "completed_with_unresolved"
+            assert work.completion["unresolved_ids"] == ["U1"]
+
+    asyncio.run(check())
+
+
+def test_complete_batch_does_not_let_an_open_item_explain_a_check_away(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work, _ = basics_batch(sources)
+    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([party(sources, "Client")]))
+    check_ref = work.issues()[0]["check_ref"]
+    work.record_unresolved(
+        Unresolved(
+            description="The channel is still to be written",
+            entity_ids=["E1"],
+            evidence=[citation(sources)],
+            check_refs=[check_ref],
+        )
+    )
+    assert [row["check_ref"] for row in work.issues()] == [check_ref]
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            summary = (await client.call_tool("validate_entities", {})).data
+            reply = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote a party", "check_first": True}
+                )
+            ).data
+            # An explanation is not a repair: the host still counts the whole registry.
+            assert reply["accepted"] is False
+            assert reply["error_count"] == summary["error_count"] == 1
+            assert reply["unresolved_count"] == summary["unresolved_count"] == 1
+            assert work.completion is None
+
+    asyncio.run(check())
+
+
+def test_complete_batch_validates_after_an_in_flight_write(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work, _ = basics_batch(sources)
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            # The write and the checked submission leave in the same parallel turn.
+            _, reply = await asyncio.gather(
+                client.call_tool("add_entities", {"entities": [party(sources, "Client")]}),
+                client.call_tool(
+                    "complete_batch", {"summary": "Wrote a party", "check_first": True}
+                ),
+            )
+            assert reply.data["accepted"] is False
+            # The row the write introduced is exactly what stopped the seal.
+            assert reply.data["error_count"] == 1
+            assert {row["check_ref"] for row in reply.data["rows"]} == {
+                "party_without_channel:E1"
+            }
+            assert work.completion is None
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    ("phase", "kind", "layout"),
+    [
+        ("scan", "steps", True),
+        ("scan", "basics", False),
+        ("category", "basics", True),
+        ("global", None, True),
+    ],
+)
+def test_check_first_is_only_for_basics_of_the_two_pass_layout(sources, phase, kind, layout):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+    from fastmcp.exceptions import ToolError
+
+    from rsc.extract.tools import make_server
+
+    batch_id = next(iter(sources.batches))
+    work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, phase, kind))
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=layout)) as client:
+            with pytest.raises(ToolError, match="two-pass scan layout"):
+                await client.call_tool(
+                    "complete_batch", {"summary": "Done", "check_first": True}
+                )
+            assert work.completion is None
+
+    asyncio.run(check())
+
+
+def test_complete_batch_rejects_a_bad_summary_before_checking(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+    from fastmcp.exceptions import ToolError
+
+    from rsc.extract.tools import make_server
+
+    work, _ = basics_batch(sources)
+    add_channeled_party(work, sources)
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            with pytest.raises(ToolError, match="nonempty summary"):
+                await client.call_tool(
+                    "complete_batch", {"summary": "  ", "check_first": True}
+                )
+            with pytest.raises(ToolError, match="at most 2000"):
+                await client.call_tool(
+                    "complete_batch", {"summary": "x" * 2001, "check_first": True}
+                )
+            assert work.completion is None
+
+    asyncio.run(check())
+
+
+def test_complete_batch_keeps_a_sealed_batch_sealed(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+    from fastmcp.exceptions import ToolError
+
+    from rsc.extract.tools import make_server
+
+    work, _ = basics_batch(sources)
+    add_channeled_party(work, sources)
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            await client.call_tool(
+                "complete_batch", {"summary": "Wrote basics", "check_first": True}
+            )
+            with pytest.raises(ToolError, match="another completion"):
+                await client.call_tool(
+                    "complete_batch", {"summary": "Something else", "check_first": True}
+                )
+            # A later write cannot unseal it either.
+            with pytest.raises(ToolError, match="already sealed"):
+                await client.call_tool("add_entities", {"entities": [party(sources, "Later")]})
+            assert work.completion["summary"] == "Wrote basics"
+
+    asyncio.run(check())
+
+
+def test_complete_batch_fixes_after_the_checked_reply_and_submits(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work, _ = basics_batch(sources)
+    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([party(sources, "Client")]))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            refusal = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote a party", "check_first": True}
+                )
+            ).data
+            assert refusal["accepted"] is False
+            row = refusal["rows"][0]
+            detail = (
+                await client.call_tool(
+                    "validate_entities", {"view": "issue", "issue_id": row["id"]}
+                )
+            ).data
+            assert detail["issue"]["suggestion"]
+            work.add_entities(add([channel(sources, "Client channel")]))
+            sealed = (
+                await client.call_tool("complete_batch", {"summary": "Wrote a party"})
+            ).data
+            assert sealed["accepted"] is True
+            assert work.completion["status"] == "completed"
+            # The next attempt may also ask for the check again; it seals cleanly.
+            other, _ = basics_batch(sources)
+            add_channeled_party(other, sources)
+        async with Client(make_server(lambda: other, checked_basics=True)) as client:
+            again = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote basics", "check_first": True}
+                )
+            ).data
+            assert again["accepted"] is True
+
+    asyncio.run(check())
+
+
+def test_checked_completion_resumes_from_an_old_checkpoint(sources, tmp_path):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.runner import Runner
+    from rsc.extract.tools import make_server
+
+    work, batch_id = basics_batch(sources)
+    add_channeled_party(work, sources)
+    # A checkpoint written before this feature existed: no new keys anywhere.
+    saved = json.loads(dumps(work.data))
+    assert "check_first" not in json.dumps(saved)
+    assert "checked_basics" not in json.dumps(saved)
+    resumed = Workspace(sources, "test", saved, Assignment(batch_id, "scan", "basics"))
+
+    async def check():
+        async with Client(make_server(lambda: resumed, checked_basics=True)) as client:
+            reply = (
+                await client.call_tool(
+                    "complete_batch", {"summary": "Wrote basics", "check_first": True}
+                )
+            ).data
+            assert reply["accepted"] is True
+            assert resumed.completion["status"] == "completed"
+            # Nothing new is persisted by the checked path.
+            assert json.loads(dumps(resumed.data))["unresolved"] == saved["unresolved"]
+
+    asyncio.run(check())
+    runner = Runner(
+        tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review()
+    )
+    assert runner.scan_kinds == ("basics", "steps")
+
+
+def test_only_complete_batch_offers_check_first(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work, _ = basics_batch(sources)
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            tools = {tool.name: tool for tool in await client.list_tools()}
+            schema = tools["complete_batch"].inputSchema
+            assert "check_first" in schema["properties"]
+            # Optional, so an old call shape stays valid.
+            assert "check_first" not in (schema.get("required") or [])
+            for name in ("validate_entities", "add_entities", "complete_fix", "record_gap"):
+                assert "check_first" not in tools[name].inputSchema["properties"]
+
+    asyncio.run(check())
+
+
+def test_only_a_basics_prompt_asks_for_the_checked_submission(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from rsc.extract.runner import Runner
+
+    runner = Runner(
+        tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review()
+    )
+    batch_id = next(iter(sources.batches))
+    asked = {}
+    for kind in ("basics", "steps"):
+        work = runner.workspace(Assignment(batch_id, "scan", kind))
+        asked[kind] = "check_first=true" in json.loads(runner.prompt(work, []))["rule"]
+    assert asked == {"basics": True, "steps": False}
+    # The legacy single-kind layouts never see the checked wording.
+    legacy = runner.workspace(Assignment(batch_id, "scan", "parties"))
+    rule = json.loads(runner.prompt(legacy, []))["rule"]
+    assert "check_first" not in rule
