@@ -12,6 +12,14 @@
 - 该路径与宿主机当前目录 `/data/exp/dkzou/atropos-libafl-nyx/mcn-fuzzer` 是同一份 bind mount（`/data/exp/dkzou/atropos-libafl-nyx` → `/home/user`），两边是同一批文件。
 - 因此读写文件可以直接在宿主机上做（改完即对容器可见，无需同步）；只有构建、运行、测试需要走 `docker exec`。
 
+## 临时目录（硬性要求）
+
+- **日常临时文件一律放仓库内 `.tmp/`**：宿主路径 `/data/exp/dkzou/atropos-libafl-nyx/mcn-fuzzer/.tmp/`，容器内同一份 `/home/user/mcn-fuzzer/.tmp/`。脚本、日志、探针文件、下载中间产物、离线回放数据都放这里。
+- **每条需要临时目录的命令前设 `export TMPDIR=<repo>/.tmp`**，例如 `export TMPDIR=/data/exp/dkzou/atropos-libafl-nyx/mcn-fuzzer/.tmp`；容器内命令同样把临时目录指向 `/home/user/mcn-fuzzer/.tmp`。
+- **不要写宿主 `/tmp`**：根分区 `/` 长期接近写满，写满会让 shell 直接 `ENOSPC`，连 `mkdtemp` 都起不来（2026-11-25 已发生一次，导致实现任务停摆）。`.tmp/` 位于 `/data` 大分区、在工作区内，不受影响。
+- `.tmp/` 已在忽略规则内，不进入提交；请定期清理超过 7 天的旧文件，避免长期堆积。
+- 调度方会在每轮任务文档与派发消息中重申此要求。
+
 ## 文件、日志与分析
 
 - **读文件、读日志不必进容器**：`read`/`grep`/`glob` 直接在宿主机当前目录用即可；产物（`rsc/runs/**`、`fuzz/targets/*/runs/**`、`events.jsonl`、`extract-checkpoint.json`、`*.log`）两边看到的是同一份内容。

@@ -70,3 +70,6 @@ __pycache__/
 .env.*
 !.env.example
 .DS_Store
+
+# Agent scratch space (temp scripts, logs, probes).
+.tmp/
