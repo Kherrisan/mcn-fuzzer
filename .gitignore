@@ -73,3 +73,6 @@ __pycache__/
 
 # Agent scratch space (temp scripts, logs, probes).
 .tmp/
+
+# Parallel experiment worktrees (rsc-only sparse checkouts).
+.worktrees/
