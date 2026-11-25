@@ -78,8 +78,9 @@ Use the real protocol terms, resolve aliases by reading evidence, preserve condi
 exceptions, and avoid inventing types, roles, branches, or dependencies. Record uncertainty
 when the evidence cannot support a model item. A missing item from another category may be
 handled later; use the best source-supported name until it is available or record the issue.
-Use batched mutations of at most 20 entities. Before completing a scan batch, account for its
-definitions and requirements in the current category, including additions to earlier entities.
+Use batched mutations with as many entities as the batch needs. Before completing a scan
+batch, account for its definitions and requirements in the current category, including
+additions to earlier entities.
 If an interaction needs a missing entity or processing in another category, record the precise
 gap with record_unresolved so a later scan or Fix can address it.
 Check unresolved in the batch context before recording a problem. If a change addresses an
@@ -733,7 +734,7 @@ def add_usage(key, merged, value):
 
 
 def merge_usage(left, right):
-    """Sum the token counters of two usage snapshots."""
+    """Sum the token counters of two usage readings."""
     merged = dict(left or {})
     for key, value in (right or {}).items():
         if isinstance(value, dict):
@@ -1162,8 +1163,8 @@ class Runner:
                 "validate_entities(view='groups', offset=...) and one group's rows with "
                 "validate_entities(view='group', group_id=...), page the remaining rows with "
                 "view='issues', page open items with view='unresolved', and read a single "
-                "row's suggestion and evidence with view='issue', issue_id=.... Pass the "
-                "snapshot you were given to be told what changed. Read entity definitions "
+                "row's suggestion and evidence with view='issue', issue_id=.... Read entity "
+                "definitions "
                 "and source blocks on demand instead of assuming what they contain. Repair "
                 "related causes together, then call validate_entities again and work through "
                 "the remaining groups. Investigate every open unresolved item, including "
@@ -2104,7 +2105,6 @@ class ProbeWorkspace:
 
     def __init__(self):
         self.records = {}
-        self.snapshot = 0
         self.mutations = []
         self._index = None
 

@@ -1,8 +1,8 @@
 """MCP surface for one active extraction workspace.
 
-Every read reply is bounded: rows are chosen by a token budget, a page reports where
-to continue, and a page of mutable data carries the registry snapshot it came from so
-a cursor that predates a write is rejected instead of returning stale rows.
+Every read reply is bounded: rows are chosen by a token budget and a page reports where
+to continue. Reads always return the current registry state; writes are never rejected
+for being based on an older read.
 """
 
 import asyncio
@@ -25,7 +25,6 @@ from .paging import (
     page_limit,
 )
 from .registry import (
-    MAX_PAGE,
     ORDER,
     EntityAddition,
     EntityUpdate,
@@ -35,10 +34,6 @@ from .registry import (
     identity,
     summary,
 )
-
-# One server keeps the issue ids it served per snapshot, so a later read can report
-# what appeared and what disappeared without re-running the old validation.
-SEEN_SNAPSHOTS = 8
 
 
 def search(records, queries, kind):
@@ -278,7 +273,6 @@ def make_server(
     write_lock = asyncio.Lock()
     in_flight = 0
     budget = turn_budget or TurnBudget(page_limit(context_tokens or 258400))
-    seen = {}
 
     def require(work, *phases):
         if work.assignment.phase not in phases:
@@ -336,23 +330,6 @@ def make_server(
         paged["tokens"] = used
         return paged
 
-    def stale(work, snapshot):
-        if snapshot is not None and snapshot != work.snapshot:
-            return {
-                "stale": True,
-                "snapshot": work.snapshot,
-                "note": (
-                    "The registry changed after this cursor was issued. Re-read from "
-                    "offset 0 with the same filters and the new snapshot."
-                ),
-            }
-        return None
-
-    def remember(work, issues):
-        seen[work.snapshot] = [issue_ref(issue) for issue in issues]
-        while len(seen) > SEEN_SNAPSHOTS:
-            seen.pop(next(iter(seen)))
-
     def validation(work):
         issues = work.issues()
         advisory = work.advisory_issues()
@@ -374,20 +351,16 @@ def make_server(
         limit: int = 20,
         max_tokens: int = INDEX_PAGE_TOKENS,
         full: bool = False,
-        snapshot: int | None = None,
     ) -> dict:
         """Page through entity indexes, optionally only those linked to one batch.
 
         Rows carry the ID, category, name, aliases and the first evidence locations.
         Set full=true for whole definitions of the returned rows. With batch_id the page
-        also reports how many steps relate to the same messages. Pass the snapshot from
-        the previous page to be told when the registry changed under the cursor.
+        also reports how many steps relate to the same messages.
         """
         work = current()
         if batch_id is not None and batch_id not in work.sources.batches:
             raise ValueError(f"unknown batch {batch_id}")
-        if (changed := stale(work, snapshot)) is not None:
-            return changed
         if batch_id is None:
             candidates = search(work.records, [""], kind)
         else:
@@ -421,7 +394,6 @@ def make_server(
             )
             paged["rows"] = [compact_row(work, row) for row in paged["rows"]]
         result = {
-            "snapshot": work.snapshot,
             "rows": paged["rows"],
             "next_offset": paged["next_offset"],
             "count": paged["count"],
@@ -445,7 +417,6 @@ def make_server(
         max_tokens: int = INDEX_PAGE_TOKENS,
         full: bool = False,
         fields: list[str] | None = None,
-        snapshot: int | None = None,
     ) -> dict:
         """Search names and aliases; rows are indexes unless full=true.
 
@@ -458,8 +429,6 @@ def make_server(
         elif query is not None or queries is None:
             raise ValueError("provide either query or queries")
         work = current()
-        if (changed := stale(work, snapshot)) is not None:
-            return changed
         candidates = search(work.records, queries, kind)
 
         def serialize(row):
@@ -471,7 +440,6 @@ def make_server(
         else:
             paged["rows"] = [compact_row(work, row) for row in paged["rows"]]
         return {
-            "snapshot": work.snapshot,
             "rows": paged["rows"],
             "next_offset": paged["next_offset"],
             "count": paged["count"],
@@ -487,7 +455,6 @@ def make_server(
         offset: int = 0,
         field_offset: int = 0,
         max_tokens: int | None = None,
-        snapshot: int | None = None,
     ) -> dict:
         """Read one or more entities by id, optionally only the dotted fields you name.
 
@@ -500,8 +467,6 @@ def make_server(
         if (id is None) == (ids is None):
             raise ValueError("provide either id or ids")
         work = current()
-        if (changed := stale(work, snapshot)) is not None:
-            return changed
         requested = [id] if id is not None else list(dict.fromkeys(ids or []))
         rows = []
         errors = {}
@@ -515,7 +480,7 @@ def make_server(
             # turn's remaining budget.
             max_tokens = DETAIL_PAGE_TOKENS * max(1, len(rows))
         allowed = budget.reserve(max_tokens)
-        base = {"snapshot": work.snapshot, "errors": errors, "page_limit": allowed}
+        base = {"errors": errors, "page_limit": allowed}
         if len(rows) == 1:
             row = rows[0]
             body = detail_body(work, row, fields)
@@ -725,16 +690,16 @@ def make_server(
         }
 
     async def add_entities(
-        entities: Annotated[list[EntityAddition], Field(min_length=1, max_length=MAX_PAGE)],
+        entities: Annotated[list[EntityAddition], Field(min_length=1)],
     ) -> list[dict]:
-        """Add up to 20 entities atomically with block evidence for every entity.
+        """Add entities atomically with block evidence for every entity.
 
         Query existing names and aliases first. Enrich an existing concept with update_entities.
         """
         return await mutate(lambda: current().add_entities(entities))
 
     async def update_entities(
-        entities: Annotated[list[EntityUpdate], Field(min_length=1, max_length=MAX_PAGE)],
+        entities: Annotated[list[EntityUpdate], Field(min_length=1)],
     ) -> list[dict]:
         """Update entities by ID, citing each changed top-level field.
 
@@ -743,7 +708,7 @@ def make_server(
         When exactly one field changes, unqualified citations apply to that field.
         For multiple changed fields, cite every field explicitly. For a small change to one
         message's associated_fields, send associated_fields_delta (add, replace or remove by
-        exact field name) instead of the whole list. Submit at most 20 entities.
+        exact field name) instead of the whole list.
         """
         return await mutate(lambda: current().update_entities(entities))
 
@@ -838,13 +803,12 @@ def make_server(
         entity_id: str | None = None,
         offset: int = 0,
         max_tokens: int = INDEX_PAGE_TOKENS,
-        snapshot: int | None = None,
         include_advisory: bool = False,
     ) -> dict:
         """Read validation state in bounded pages.
 
-        view=summary (default) returns the global counts, the open-gap count, the first
-        page of the current repair group and what changed since an earlier snapshot.
+        view=summary (default) returns the global counts, the open-gap count and the first
+        page of the current repair group.
         view=groups pages the group catalog: one entry per repair site, largest first.
         view=group with group_id pages that group's rows. view=issues pages all rows,
         filtered by issue_type or entity_id. view=issue with issue_id returns one row's
@@ -856,8 +820,6 @@ def make_server(
         work = current()
         require(work, "scan", "category", "gap", "global", "review")
         issues, advisory, unresolved, groups, rows = validation(work)
-        remembered = seen.get(snapshot) if snapshot is not None else None
-        remember(work, issues)
         advisory_rows = ordered_issue_rows(advisory, (), work.records)[1] if advisory else []
         # An advisory row is never in a blocking page, but its detail is still
         # addressable by id once the caller has seen it.
@@ -866,7 +828,6 @@ def make_server(
             rows = rows + advisory_rows
         catalog = group_rows(groups)
         counts = {
-            "snapshot": work.snapshot,
             "error_count": len(issues),
             "advisory_count": len(advisory),
             "unresolved_count": len(unresolved),
@@ -874,19 +835,6 @@ def make_server(
             "deferred_checks": work.deferred_checks(),
             "groups": catalog[:5],
         }
-        if snapshot is not None and snapshot != work.snapshot:
-            counts["stale"] = True
-            counts["note"] = (
-                "The registry changed after that snapshot; rows below are current and "
-                "group ids stay stable, so re-read the group you were fixing."
-            )
-        if remembered is not None:
-            current_ids = [row["id"] for row in rows]
-            counts["changed_since"] = {
-                "snapshot": snapshot,
-                "new": [item for item in current_ids if item not in remembered][:20],
-                "gone": [item for item in remembered if item not in current_ids][:20],
-            }
         if view == "summary":
             counts.update(
                 summary_page(work, unresolved, groups, rows, offset, max_tokens)
@@ -912,7 +860,7 @@ def make_server(
                     {
                         "group_id": group_id,
                         "issues": [],
-                        "note": "this group is clean at the current snapshot",
+                        "note": "this group is clean in the current registry",
                     }
                 )
                 return counts
@@ -1091,7 +1039,7 @@ def make_server(
         """One reminder that an empty steps batch still has this batch's open items.
 
         A reminder is not a validation result: it writes no mutation, no open item and
-        no snapshot, and the next submission seals as usual. It is reported separately
+        nothing else, and the next submission seals as usual. It is reported separately
         from a ``checked`` rejection so the two can be counted apart.
         """
         rows = work.steps_recheck()
@@ -1124,7 +1072,6 @@ def make_server(
             "accepted": False,
             "checked": True,
             "assignment": work.assignment.id,
-            "snapshot": work.snapshot,
             "error_count": len(issues),
             "advisory_count": len(advisory),
             "unresolved_count": len(unresolved),
@@ -1173,7 +1120,6 @@ def make_server(
             "accepted": False,
             "checked": True,
             "assignment": work.assignment.id,
-            "snapshot": work.snapshot,
             "error_count": len(issues),
             "advisory_count": len(advisory),
             "unresolved_count": len(unresolved),
@@ -1249,7 +1195,6 @@ def make_server(
     def compact_validation(work):
         """Small validation summary attached to accepted and rejected Fix receipts."""
         issues, advisory, unresolved, groups, _ = validation(work)
-        remember(work, issues)
         return {
             "error_count": len(issues),
             "advisory_count": len(advisory),

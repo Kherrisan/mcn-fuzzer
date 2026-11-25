@@ -40,7 +40,6 @@ ADAPTERS = {
         ORDER, (Party, Channel, ProtocolMessage, State, Step, StepDependency), strict=True
     )
 }
-MAX_PAGE = 20
 
 
 class SourceBlock(StrictModel):
@@ -133,10 +132,6 @@ class AssociatedFieldsDelta(StrictModel):
     add: list[FieldAddition] = Field(
         default_factory=list, description="New names, in submission order."
     )
-    snapshot: int | None = Field(
-        default=None,
-        description="Workspace snapshot returned by the read that this edit is based on.",
-    )
 
 
 class EntityUpdate(StrictModel):
@@ -210,17 +205,13 @@ def normalized(kind, value):
     )
 
 
-def delta_fields(fields, delta, snapshot):
+def delta_fields(fields, delta):
     """Rebuild one message's full ordered field list from a name-based delta.
 
     Removals disappear, renames stay in their original position, and additions land in
     submission order before their still-existing anchor (or at the end without one). The
     caller then feeds the result through the normal full-list write path.
     """
-    if delta.snapshot is not None and delta.snapshot != snapshot:
-        raise ValueError(
-            f"stale associated_fields snapshot {delta.snapshot}; the workspace is at {snapshot}"
-        )
     if not (delta.remove or delta.replace or delta.add):
         raise ValueError("associated_fields_delta needs at least one add, replace or remove")
     names = [field["name"] for field in fields]
@@ -396,9 +387,6 @@ class Workspace:
         self.repair_start_count = 0
         self.gaps = []
         self.reject_count = 0
-        # Bumped by every applied mutation so a paged read can tell the model when
-        # its cursor predates a change to the rows it was reading.
-        self.snapshot = 0
         # Category Fix scheduling: repair sites that stalled on an unchanged blocked
         # signature, and the group or issue reads this attempt actually made. Both live
         # only in memory; neither is written to the checkpoint.
@@ -589,7 +577,6 @@ class Workspace:
         updated = {i: self.records.get(i) for i in touched} if operation == "update" else {}
         self.receipts[key] = result, updated
         self.mutations.append({"operation": operation, "request": request, "result": result})
-        self.snapshot += 1
         return result
 
     def location(self, item):
@@ -646,8 +633,6 @@ class Workspace:
                 result.append(summary(row))
             return result
 
-        if not 1 <= len(entities) <= MAX_PAGE:
-            raise ValueError(f"provide 1..{MAX_PAGE} entities")
         return self.mutate("add", [entity.model_dump(mode="json") for entity in entities], apply)
 
     def update_entities(self, entities: list[EntityUpdate]):
@@ -698,7 +683,7 @@ class Workspace:
                         )
                     if row["kind"] != "messages":
                         raise ValueError("associated_fields_delta only applies to messages")
-                    fields = delta_fields(row["value"]["associated_fields"], delta, self.snapshot)
+                    fields = delta_fields(row["value"]["associated_fields"], delta)
                     moved = moved_field_evidence(
                         row["evidence"], row["value"]["associated_fields"], fields
                     )
@@ -732,8 +717,6 @@ class Workspace:
             changed.update(rewrite_references(before, self.records, {}))
             return [summary(self.records[key]) for key in self.records if key in changed]
 
-        if not 1 <= len(entities) <= MAX_PAGE:
-            raise ValueError(f"provide 1..{MAX_PAGE} entities")
         raw = [entity.model_dump(mode="json") for entity in entities]
         return self.mutate("update", expanded, apply, touched=changed, key_request=raw)
 

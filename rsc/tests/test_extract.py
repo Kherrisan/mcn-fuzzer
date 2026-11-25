@@ -1604,7 +1604,6 @@ def test_entity_tools_return_full_evidence_blocks_and_references(sources):
             ]
             assert len(detail["evidence"]) == 10
             assert detail["mentions"] == work.records["E2"]["mentions"]
-            assert result.data["snapshot"] == work.snapshot
             found = await client.call_tool("search_entities", {"queries": ["Datagrams"]})
             assert [row["id"] for row in found.data["rows"]] == ["E2"]
             batch = await client.call_tool(
@@ -2405,7 +2404,6 @@ def test_associated_fields_delta_matches_the_full_list_path(sources):
     ]})
     assert delta_work.records == list_work.records
     assert delta_work.issues() == list_work.issues()
-    assert delta_work.snapshot == list_work.snapshot
 
 
 @pytest.mark.parametrize(
@@ -2427,18 +2425,9 @@ def test_associated_fields_delta_rejects_bad_edits(sources, delta, message):
     with pytest.raises(ValueError, match=message):
         update_with(work, sources, associated_fields_delta=delta)
     assert work.records == before
-    assert work.snapshot == 1
 
 
-def test_associated_fields_delta_rejects_stale_snapshot_and_other_kinds(sources):
-    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
-    add_message(work, sources, ["A"])
-    update_with(work, sources, associated_fields_delta={"add": [{"name": "B"}], "snapshot": 1})
-    with pytest.raises(ValueError, match="stale associated_fields snapshot"):
-        update_with(
-            work, sources, associated_fields_delta={"add": [{"name": "C"}], "snapshot": 999}
-        )
-    assert field_names(work) == ["A", "B"]
+def test_associated_fields_delta_rejects_other_kinds(sources):
     party_work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "parties"))
     party_work.add_entities(
         TypeAdapter(list[EntityAddition]).validate_python([party(sources, "C")])
@@ -2500,7 +2489,7 @@ def test_associated_fields_delta_rejects_moving_cited_indices(sources):
     assert field_names(work) == ["A", "B"]
 
 
-def test_associated_fields_delta_shares_one_snapshot_across_entities(sources):
+def test_associated_fields_delta_applies_one_call_across_entities(sources):
     work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
     work.add_entities(
         TypeAdapter(list[EntityAddition]).validate_python(
@@ -2511,21 +2500,20 @@ def test_associated_fields_delta_shares_one_snapshot_across_entities(sources):
             ]
         )
     )
-    snapshot = work.snapshot
     work.update_entities(
         [
             EntityUpdate.model_validate(
                 {
                     "id": "E1",
                     "evidence": [citation(sources)],
-                    "associated_fields_delta": {"add": [{"name": "A2"}], "snapshot": snapshot},
+                    "associated_fields_delta": {"add": [{"name": "A2"}]},
                 }
             ),
             EntityUpdate.model_validate(
                 {
                     "id": "E2",
                     "evidence": [citation(sources)],
-                    "associated_fields_delta": {"add": [{"name": "B2"}], "snapshot": snapshot},
+                    "associated_fields_delta": {"add": [{"name": "B2"}]},
                 }
             ),
         ]
@@ -2538,7 +2526,7 @@ def test_associated_fields_delta_shares_one_snapshot_across_entities(sources):
         "B",
         "B2",
     ]
-    # One mutation carried both edits, so a shared read snapshot stays valid for the call.
+    # One mutation carried both edits.
     assert len(work.mutations) == 2
 
 
@@ -2799,7 +2787,7 @@ def test_parallel_reads_share_one_turn_budget_and_writes_stay_whole(sources):
     asyncio.run(check())
 
 
-def test_snapshot_cursors_report_staleness_and_changes(sources):
+def test_reads_always_report_current_state(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -2811,34 +2799,27 @@ def test_snapshot_cursors_report_staleness_and_changes(sources):
     async def check():
         async with Client(make_server(lambda: work)) as client:
             first = (await client.call_tool("validate_entities", {})).data
-            assert first["snapshot"] == 0
+            assert "snapshot" not in first
             before = first["error_count"]
             work.add_entities(add([party(sources, "Client")]))
-            # A party without a channel is a new blocking issue at the next snapshot.
-            stale = (await client.call_tool("list_entities", {"snapshot": 0})).data
-            assert stale["stale"] is True
-            assert stale["snapshot"] == work.snapshot == 1
-            fresh = (await client.call_tool("list_entities", {"snapshot": 1})).data
-            assert fresh["rows"] and "stale" not in fresh
+            # A party without a channel is a new blocking issue, visible at once.
+            listing = (await client.call_tool("list_entities", {})).data
+            assert listing["rows"]
+            assert "snapshot" not in listing and "stale" not in listing
             grown = (await client.call_tool("validate_entities", {})).data
-            assert grown["snapshot"] == 1
             assert grown["error_count"] >= before
-            assert "changed_since" not in grown
+            assert "changed_since" not in grown and "stale" not in grown
             new_ids = [
                 row["id"] for row in grown["rows"] if row["type"] == "party_without_channel"
             ]
             assert new_ids
             assert grown["group_count"] >= 1
             assert grown["current_group"]["group_id"] == grown["rows"][0]["group_id"]
-            # Fix the row, then ask again with the snapshot the caller already saw.
+            # Fixing the row is visible on the next read without any version token.
             work.add_entities(add([channel(sources, "Datagrams", connected=False)]))
-            after = (
-                await client.call_tool("validate_entities", {"snapshot": 1})
-            ).data
-            assert after["stale"] is True
-            assert after["snapshot"] == 2
-            assert set(after["changed_since"]["gone"]) == set(new_ids)
-            assert after["changed_since"]["snapshot"] == 1
+            after = (await client.call_tool("validate_entities", {})).data
+            assert "stale" not in after and "changed_since" not in after
+            assert not set(new_ids) & {row["id"] for row in after["rows"]}
 
     asyncio.run(check())
 
@@ -2909,7 +2890,6 @@ def test_probe_runs_list_entities_on_an_empty_workspace(monkeypatch):
             return ModelResponse(parts=[ToolCallPart("list_entities", {})])
         assert isinstance(latest, ToolReturnPart) and latest.tool_name == "list_entities"
         assert latest.content["rows"] == []
-        assert latest.content["snapshot"] == 0
         return ModelResponse(parts=[TextPart("OK")])
 
     model = FunctionModel(respond)
@@ -3777,7 +3757,6 @@ def test_list_entities_batch_filter_returns_full_definitions(sources):
             assert row["value"]["description"] == "Protocol endpoint"
             assert row["evidence"][0]["block_id"]
             assert "text" not in row["evidence"][0]
-            assert result.data["snapshot"] == work.snapshot
             assert result.data["related_step_count"] == 0
 
     asyncio.run(check())
@@ -4526,7 +4505,6 @@ def test_complete_batch_refuses_a_blocked_basics_batch(sources):
             assert reply["accepted"] is False
             assert reply["checked"] is True
             # The reply is the summary view of the state that refused the seal.
-            assert reply["snapshot"] == summary["snapshot"]
             assert reply["error_count"] == summary["error_count"] == 1
             assert reply["advisory_count"] == summary["advisory_count"] == 0
             assert reply["unresolved_count"] == summary["unresolved_count"] == 0
@@ -4941,7 +4919,6 @@ def test_compact_rejection_keeps_the_queryable_page(sources):
         for key in (
             "checked",
             "assignment",
-            "snapshot",
             "error_count",
             "advisory_count",
             "unresolved_count",
@@ -5240,9 +5217,8 @@ def test_steps_recheck_names_the_open_items_of_this_batch(sources):
     rows = work.steps_recheck()
     assert [row["id"] for row in rows] == ["U1"]
     assert rows[0]["document_id"] == sources.batches[batch_id]["doc_id"]
-    # Asking is a read: no mutation, no snapshot movement, nothing recorded.
+    # Asking is a read: no mutation, nothing recorded.
     assert work.mutations == []
-    assert work.snapshot == 0
     assert work.completion is None
 
 
@@ -5360,7 +5336,6 @@ def test_complete_batch_reminds_once_on_an_empty_steps_batch(sources):
             # A reminder is not a validation and leaves no trace in the registry.
             assert "checked" not in reminded
             assert work.completion is None
-            assert work.snapshot == 0
             assert work.mutations == []
             sealed = (
                 await client.call_tool("complete_batch", {"summary": "Nothing to model"})
