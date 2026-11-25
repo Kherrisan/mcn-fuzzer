@@ -11,10 +11,6 @@ from rsc.workflow.sources import build_batches, token_count, validate_batches
 from rsc.workflow.store import atomic_json, read_json
 
 
-def file_digest(path):
-    return sha256(path.read_bytes()).hexdigest()
-
-
 class Sources:
     def __init__(self, root, manifest):
         self.manifest = manifest
@@ -29,9 +25,10 @@ class Sources:
             doc_id = source["doc_id"]
             document = read_json(root / source["path"])
             self.documents[doc_id] = document
-            if file_digest(root / source["snapshot"]) != source["sha256"]:
+            frozen = (root / source["snapshot"]).read_bytes()
+            if sha256(frozen).hexdigest() != source["sha256"]:
                 raise ValueError(f"source snapshot changed: {doc_id}")
-            self.originals[doc_id] = decode_bytes((root / source["snapshot"]).read_bytes()).text
+            self.originals[doc_id] = decode_bytes(frozen).text
             sections, by_path, _ = build_section_index(document)
             by_id = {s["section_id"]: s["path"] for s in sections}
             self.references[doc_id] = [

@@ -779,26 +779,17 @@ def make_server(
 
     def unresolved_page(work, unresolved, budget):
         """One bounded page of open items, the same shape the prompt carries."""
-        paged = bounded_page(
-            unresolved,
-            lambda item: dumps(
-                {
-                    "id": item["id"],
-                    "description": item["description"][:200],
-                    "check_refs": item.get("check_refs") or [],
-                }
-            ),
-            budget,
-        )
+
+        def row(item):
+            return {
+                "id": item["id"],
+                "description": item["description"][:200],
+                "check_refs": item.get("check_refs") or [],
+            }
+
+        paged = bounded_page(unresolved, lambda item: dumps(row(item)), budget)
         return {
-            "unresolved": [
-                {
-                    "id": item["id"],
-                    "description": item["description"][:200],
-                    "check_refs": item.get("check_refs") or [],
-                }
-                for item in paged["rows"]
-            ],
+            "unresolved": [row(item) for item in paged["rows"]],
             "unresolved_next_offset": paged["next_offset"],
         }
 

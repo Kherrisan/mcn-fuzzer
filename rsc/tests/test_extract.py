@@ -4455,7 +4455,8 @@ def add_channeled_party(work, sources, name="Client"):
     )
 
 
-def test_complete_batch_checks_and_seals_a_clean_basics_batch(sources):
+@pytest.mark.parametrize("compact", [False, True], ids=["full", "compact"])
+def test_complete_batch_checks_and_seals_a_clean_basics_batch(sources, compact):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -4463,12 +4464,19 @@ def test_complete_batch_checks_and_seals_a_clean_basics_batch(sources):
 
     work, _ = basics_batch(sources)
     add_channeled_party(work, sources)
-    # The old layout's two calls: validate, then submit.
+    # The old layout's two calls: validate, then submit, on its own workspace.
     plain, _ = basics_batch(sources)
     add_channeled_party(plain, sources)
+    sealed_receipt = {
+        "status": "completed",
+        "summary": "Wrote basics",
+        "unresolved_ids": [],
+    }
 
     async def check():
-        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+        async with Client(
+            make_server(lambda: work, checked_basics=True, compact_rejection=compact)
+        ) as client:
             report = (await client.call_tool("validate_entities", {})).data
             assert report["error_count"] == 0
             assert report["advisory_count"] == 0
@@ -4478,22 +4486,23 @@ def test_complete_batch_checks_and_seals_a_clean_basics_batch(sources):
                 )
             ).data
             assert sealed["accepted"] is True
-            assert work.completion == {
-                "status": "completed",
-                "summary": "Wrote basics",
-                "unresolved_ids": [],
-            }
-            # A sealed batch answers the same way to a repeat of the same summary.
+            assert work.completion == sealed_receipt
+            # A repeat of the same summary is idempotent: the host acknowledges it with
+            # the same write scope and leaves the sealed receipt alone.
             repeated = (
                 await client.call_tool(
                     "complete_batch", {"summary": "Wrote basics", "check_first": True}
                 )
             ).data
-            assert repeated == sealed
+            assert repeated["accepted"] is True
+            assert repeated["repairable_categories"] == sealed["repairable_categories"]
+            assert work.completion == sealed_receipt
         async with Client(make_server(lambda: plain)) as client:
             legacy = (await client.call_tool("complete_batch", {"summary": "Wrote basics"})).data
         # One call instead of two, and the same receipt as the old two-call path.
         assert sealed == legacy
+
+    asyncio.run(check())
 
 
 def test_complete_batch_refuses_a_blocked_basics_batch(sources):
@@ -4635,7 +4644,8 @@ def test_complete_batch_does_not_let_an_open_item_explain_a_check_away(sources):
     asyncio.run(check())
 
 
-def test_complete_batch_validates_after_an_in_flight_write(sources):
+@pytest.mark.parametrize("compact", [False, True], ids=["full", "compact"])
+def test_complete_batch_validates_after_an_in_flight_write(sources, compact):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -4644,7 +4654,9 @@ def test_complete_batch_validates_after_an_in_flight_write(sources):
     work, _ = basics_batch(sources)
 
     async def check():
-        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+        async with Client(
+            make_server(lambda: work, checked_basics=True, compact_rejection=compact)
+        ) as client:
             # The write and the checked submission leave in the same parallel turn.
             _, reply = await asyncio.gather(
                 client.call_tool("add_entities", {"entities": [party(sources, "Client")]}),
@@ -4652,13 +4664,16 @@ def test_complete_batch_validates_after_an_in_flight_write(sources):
                     "complete_batch", {"summary": "Wrote a party", "check_first": True}
                 ),
             )
-            assert reply.data["accepted"] is False
+            data = reply.data
+            assert data["accepted"] is False
             # The row the write introduced is exactly what stopped the seal.
-            assert reply.data["error_count"] == 1
-            assert {row["check_ref"] for row in reply.data["rows"]} == {
-                "party_without_channel:E1"
-            }
-            assert work.completion is None
+            assert data["error_count"] == 1
+            assert {row["check_ref"] for row in data["rows"]} == {"party_without_channel:E1"}
+            assert data["rows"][0]["id"].startswith("issue:")
+            # Only the full reply carries the head group that the short one drops.
+            assert ("current_group" in data) is not compact
+        assert list(work.data["entities"]) == ["E1"]
+        assert work.completion is None
 
     asyncio.run(check())
 
@@ -5083,30 +5098,6 @@ def test_compact_rejection_detail_reads_still_answer(sources, monkeypatch):
     asyncio.run(check())
 
 
-def test_compact_rejection_validates_after_an_in_flight_write(sources):
-    pytest.importorskip("fastmcp")
-    from fastmcp import Client
-
-    add = TypeAdapter(list[EntityAddition]).validate_python
-
-    async def check():
-        work, _ = basics_batch(sources)
-        async with Client(compact_rejection_server(work)) as client:
-            _, reply = await asyncio.gather(
-                client.call_tool("add_entities", {"entities": [party(sources, "Client")]}),
-                client.call_tool(
-                    "complete_batch", {"summary": "Wrote a party", "check_first": True}
-                ),
-            )
-            assert reply.data["accepted"] is False
-            assert reply.data["error_count"] == 1
-            assert reply.data["rows"][0]["id"].startswith("issue:")
-        assert len(work.data["entities"]) == 1
-        assert add  # the helper above is deliberate: the write is what introduced the row
-
-    asyncio.run(check())
-
-
 def test_compact_rejection_repairs_from_the_row_id_then_submits(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
@@ -5156,36 +5147,6 @@ def test_compact_rejection_is_only_on_the_flagged_server(sources):
         assert "current_group" in full and full["groups"]
         assert "current_group" not in compact and "groups" not in compact
         assert len(full["rows"]) == len(compact["rows"])
-
-    asyncio.run(check())
-
-
-def test_compact_rejection_keeps_a_clean_batch_receipt(sources):
-    pytest.importorskip("fastmcp")
-    from fastmcp import Client
-
-    work, _ = basics_batch(sources)
-    add_channeled_party(work, sources)
-
-    async def check():
-        async with Client(compact_rejection_server(work)) as client:
-            sealed = (
-                await client.call_tool(
-                    "complete_batch", {"summary": "Wrote basics", "check_first": True}
-                )
-            ).data
-        plain, _ = basics_batch(sources)
-        add_channeled_party(plain, sources)
-        async with Client(compact_rejection_server(plain)) as client:
-            legacy = (
-                await client.call_tool("complete_batch", {"summary": "Wrote basics"})
-            ).data
-        assert sealed == legacy
-        assert work.completion == {
-            "status": "completed",
-            "summary": "Wrote basics",
-            "unresolved_ids": [],
-        }
 
     asyncio.run(check())
 
