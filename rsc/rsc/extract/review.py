@@ -21,8 +21,8 @@ and a missing term in the source or the model is not by itself a gap.
 - State: data kept across steps, with name, party_name and source. source is processing when
   the local role produces it and external when it arrives from outside. A processing state
   must be written by some step operation as state.<name>; an external state needs no
-  producer but needs evidence for its external origin. A state is not an all-protocol
-  finite-state machine and does not itself store calculation algorithms.
+  producer, but its description should say where the value comes from. A state is not an
+  all-protocol finite-state machine and does not itself store calculation algorithms.
 - Step: a repeatable action template. Common attributes are name, action, channel_name,
   condition. A send also has message_name, sender_name, receiver_name and processing; network
   actions such as listen, connect and close carry party_name. send means transmitting a
@@ -68,9 +68,6 @@ Nested concepts:
 - field_relations: prior_field, dependent_field and derive connect transmitted fields.
   Direct reuse, derived values, and multi-input or local-state calculations belong in the
   corresponding relation or processing, not duplicated everywhere.
-- evidence: document and block locators plus section and range, with field naming the
-  supported entity attribute and note explaining what the evidence supports. Registering
-  evidence does not replace the processing or dependency the model must express.
 - names and references: parties, channels, messages, states and steps refer to each other by
   name; states are distinguished by their owning party. Registry entity IDs exist for
   management, not as RFC fields. Registry aliases and a party's alias attribute are different.
@@ -170,7 +167,7 @@ def gap_prompt(protocol, batch_id, batch, extensions, gaps, entities):
             "editing. Then enrich or correct existing entities in any of the six categories, "
             "preserve still-valid fields, processing, conditions and branches. When you add "
             "or change a state, also add its producer in the step that computes it, or mark "
-            "it source=external with evidence; when you add processing, check that its "
+            "it source=external; when you add processing, check that its "
             "inputs have earlier producers and that a later step consumes the outputs. "
             "Follow each row's missing_attributes rather than filling in an empty hook. "
             "Before calling complete_gaps, run validate_entities and repair the producer, "
@@ -216,7 +213,7 @@ def gap_backlog_prompt(
             "consistent entity, source, processing and conditions, not in several near-"
             "duplicate entities. Preserve still-valid fields, processing, conditions and "
             "branches. Any processing state needs its writer in the step that computes it "
-            "or source=external with evidence. Finish with validate_entities, repair the "
+            "or source=external. Finish with validate_entities, repair the "
             "producer, dangling reference and field-reference problems this group "
             "introduced, then call complete_gaps(summary, unresolved_gap_ids)."
         ),

@@ -28,8 +28,8 @@ from .registry import (
     ORDER,
     EntityAddition,
     EntityUpdate,
-    Evidence,
     Kind,
+    OpenBlock,
     Unresolved,
     identity,
     summary,
@@ -54,21 +54,12 @@ def search(records, queries, kind):
 
 
 def compact_row(work, row):
-    """Index-level row: identity plus evidence locations, never evidence text."""
+    """Index-level row: identity only, so a page stays small."""
     return {
         "id": row["id"],
         "kind": row["kind"],
         "name": identity(row),
         "aliases": row["aliases"],
-        "evidence": [
-            {
-                "document_id": cite["document_id"],
-                "block_id": cite["block_id"],
-                "field": cite.get("field") or "",
-            }
-            for cite in row["evidence"][:3]
-        ],
-        "field_count": len(row["evidence"]),
     }
 
 
@@ -144,19 +135,6 @@ def projected_unresolved(items):
     return projected
 
 
-def evidence_locations(row):
-    return [
-        {
-            "document_id": cite["document_id"],
-            "block_id": cite["block_id"],
-            "section_path": cite.get("section_path") or [],
-            "field": cite.get("field") or "",
-            "note": cite.get("note") or "",
-        }
-        for cite in row["evidence"]
-    ]
-
-
 def field_paths(value, prefix=""):
     """Leaf paths of one value, so an oversized entity can be read field by field."""
     paths = []
@@ -184,20 +162,17 @@ def references(work, row):
 
 
 def detail_body(work, row, fields=None, lists=True):
-    """Entity detail: projected fields, evidence locations, references and mentions.
+    """Entity detail: projected fields, references and mentions.
 
-    Evidence text is not included; read_source returns it for a block. Long lists are
-    capped and report their full count so the reply stays inside one page.
+    Entity evidence is gone, so the body carries no source locators of its own. Long
+    lists are capped and report their full count so the reply stays inside one page.
     """
     body = {
         "id": row["id"],
         "kind": row["kind"],
         "aliases": row["aliases"],
         "value": select_fields(row["value"], fields),
-        "evidence": evidence_locations(row)[:DETAIL_LIST_PAGE],
     }
-    if len(row["evidence"]) > DETAIL_LIST_PAGE:
-        body["evidence_count"] = len(row["evidence"])
     if lists:
         mentions = row.get("mentions") or []
         edges = references(work, row)
@@ -211,7 +186,7 @@ def detail_body(work, row, fields=None, lists=True):
 
 
 def projected(work, row, fields=None):
-    """Index-level definition: projected fields and evidence locations."""
+    """Index-level definition: projected fields, references and mentions."""
     return detail_body(work, row, fields, lists=False)
 
 
@@ -372,9 +347,9 @@ def make_server(
     ) -> dict:
         """Page through entity indexes, optionally only those linked to one batch.
 
-        Rows carry the ID, category, name, aliases and the first evidence locations.
-        Set full=true for whole definitions of the returned rows. With batch_id the page
-        also reports how many steps relate to the same messages.
+        Rows carry the ID, category, name and aliases. Set full=true for whole
+        definitions of the returned rows. With batch_id the page also reports how many
+        steps relate to the same messages.
         """
         work = current()
         if batch_id is not None and batch_id not in work.sources.batches:
@@ -390,7 +365,7 @@ def make_server(
                 if kind is None or row["kind"] == kind
                 if any(
                     cite["document_id"] == batch["doc_id"] and cite["block_id"] in blocks
-                    for cite in row["evidence"]
+                    for cite in row.get("mentions") or ()
                 )
             ]
         if full:
@@ -439,8 +414,7 @@ def make_server(
         """Search names and aliases; rows are indexes unless full=true.
 
         Supply exactly one of query or queries. With full=true each row carries the whole
-        definition, or only the dotted fields you pass. Evidence is returned as locations;
-        read the text with read_source.
+        definition, or only the dotted fields you pass. Read source text with read_source.
         """
         if query is not None and queries is None:
             queries = [query]
@@ -476,8 +450,7 @@ def make_server(
     ) -> dict:
         """Read one or more entities by id, optionally only the dotted fields you name.
 
-        Evidence is returned as locations and notes; use read_source for its text. A page
-        too large for the token budget reports next_offset and next_ids. Follow a
+        A page too large for the token budget reports next_offset and next_ids. Follow a
         next_offset with the same ids and fields to continue. When a single entity is
         larger than one page, the reply sets fields_truncated and next_field_offset:
         continue with the same id and field_offset to read the rest of its fields.
@@ -725,9 +698,8 @@ def make_server(
         """Update entities by ID; every changed entity is returned in full.
 
         Read current entities first. Each patched list is a full replacement: combine new
-        details with all still-valid existing fields, operations and evidence. Use stable names.
-        When exactly one field changes, unqualified citations apply to that field.
-        For multiple changed fields, cite every field explicitly. For a small change to one
+        details with all still-valid existing fields and operations. Use stable names.
+        For a small change to one
         message's associated_fields, send associated_fields_delta (add, replace or remove by
         exact field name) instead of the whole list. The reply carries each changed entity
         exactly as get_entity renders it, plus changed_fields with the value paths this
@@ -740,19 +712,18 @@ def make_server(
         keep_id: str,
         ids: list[str],
         reason: str,
-        evidence: list[Evidence],
         value: dict | None = None,
     ) -> dict:
         """Merge equivalent entities, returning the survivor in full and absorbed IDs."""
         result = await mutate(
-            lambda: current().merge_entities(keep_id, ids, reason, evidence, value)
+            lambda: current().merge_entities(keep_id, ids, reason, value)
         )
         reply = changed_entities(current(), [result])
         reply["absorbed_ids"] = list(result.get("absorbed_ids") or [])
         return reply
 
     async def record_unresolved(issue: Unresolved) -> dict:
-        """Record a new unresolved issue with source evidence.
+        """Record a new unresolved issue with its source block locators.
 
         For an issue reported by validation, include the exact check_refs and all listed
         entity IDs. Recording an issue does not remove it from validation. The basics pass
@@ -763,9 +734,9 @@ def make_server(
     async def solve_unresolved(
         unresolved_id: str,
         reason: Annotated[str, Field(min_length=1)],
-        evidence: Annotated[list[Evidence], Field(min_length=1)],
+        evidence: Annotated[list[OpenBlock], Field(min_length=1)],
     ) -> dict:
-        """Mark an existing unresolved ID as solved with a reason and source evidence.
+        """Mark an existing unresolved ID as solved with a reason and source blocks.
 
         Any linked coverage checks must already pass. Use the unresolved ID even if
         entities listed on the original issue have since been withdrawn.
@@ -819,8 +790,7 @@ def make_server(
             "hint": (
                 "view=groups pages the catalog; view=group with group_id pages one "
                 "group; view=issues filters by type or entity; view=issue with "
-                "issue_id returns suggestions and evidence; view=unresolved pages "
-                "open items."
+                "issue_id returns its suggestion; view=unresolved pages open items."
             ),
         }
 
@@ -842,7 +812,7 @@ def make_server(
         view=groups pages the group catalog: one entry per repair site, largest first.
         view=group with group_id pages that group's rows. view=issues pages all rows,
         filtered by issue_type or entity_id. view=issue with issue_id returns one row's
-        full description, suggestion and evidence notes.
+        full description and suggestion.
 
         Row ids are stable and can be passed back as issue_id. error_count counts
         blocking rows only; advisory rows appear only with include_advisory.
@@ -971,15 +941,6 @@ def make_server(
                     "issue": {
                         **row,
                         "suggestion": with_suggestions([issue])[0].get("suggestion", ""),
-                        "evidence": [
-                            {
-                                "document_id": cite["document_id"],
-                                "block_id": cite["block_id"],
-                                "path": cite.get("path") or [],
-                                "note": cite.get("note") or "",
-                            }
-                            for cite in (issue.get("evidence") or [])[:6]
-                        ],
                     }
                 }
             )
@@ -1053,7 +1014,7 @@ def make_server(
                         "This Fix made no entity change and did not reduce the error "
                         "count. Read the current groups, make a source-supported change, "
                         "or explain why these errors cannot be fixed with the available "
-                        "evidence."
+                        "source text."
                     )
                     return payload
             work.completion = receipt
@@ -1078,7 +1039,7 @@ def make_server(
         work.reconsidered = True
         return {
             "accepted": False,
-            "review": "steps-evidence",
+            "review": "steps-recheck",
             "assignment": work.assignment.id,
             "kind": "steps",
             "open_items": rows,
@@ -1160,10 +1121,6 @@ def make_server(
                     "id": row["id"],
                     "check_ref": row["check_ref"],
                     "group_id": row["group_id"],
-                    "evidence": [
-                        {"document_id": cite["document_id"], "block_id": cite["block_id"]}
-                        for cite in row["evidence"][:1]
-                    ],
                 }
                 for row in paged["rows"]
             ],
@@ -1187,7 +1144,7 @@ def make_server(
         )
         payload["message"] = (
             f"This call validated the whole registry and did not seal the batch: {counts}."
-            f"{advisory_hint} Fix the rows you have evidence for, then submit again with "
+            f"{advisory_hint} Fix the rows you can support, then submit again with "
             "complete_batch(summary). Details: view='issue', issue_id=<row id>; more rows: "
             "view='issues', offset=next_offset; open items: view='unresolved'; the old "
             "full first page: view='summary'."
@@ -1212,7 +1169,7 @@ def make_server(
             "page_limit": allowed,
             "hint": (
                 "Call validate_entities(view='group', group_id=...) for one group's rows, "
-                "or view='issue', issue_id=... for suggestions and evidence."
+                "or view='issue', issue_id=... for suggestions and details."
             ),
             "message": (
                 "Close at least one more issue than this repair introduces."
@@ -1250,8 +1207,8 @@ def make_server(
 
         A category Fix is accepted when validation is clean or the issue count drops.
         The response reports error_count before and after and the current group catalog
-        head. When rejected it lists the first page of rows; fetch suggestions and
-        evidence with validate_entities(view="issue", issue_id=...).
+        head. When rejected it lists the first page of rows; fetch a row's suggestion
+        with validate_entities(view="issue", issue_id=...).
         """
         return await complete(summary, ("category", "global"))
 
@@ -1389,7 +1346,8 @@ def related(work):
         summary(row)
         for row in work.records.values()
         if any(
-            cite["document_id"] == doc_id and cite["block_id"] in blocks for cite in row["evidence"]
+            cite["document_id"] == doc_id and cite["block_id"] in blocks
+            for cite in row.get("mentions") or ()
         )
     ]
     references = [

@@ -6,7 +6,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from rsc.artifacts import read_jsonl
 from rsc.extract.cli import ExtractConfig
@@ -18,7 +18,7 @@ from rsc.extract.registry import (
     Assignment,
     EntityAddition,
     EntityUpdate,
-    Evidence,
+    OpenBlock,
     Unresolved,
     Workspace,
     migrate_registry,
@@ -52,11 +52,10 @@ def party(sources, name):
     return {
         "kind": "parties",
         "value": {"name": name, "description": "Protocol endpoint"},
-        "evidence": [citation(sources)],
     }
 
 
-def test_batch_registry_summary_includes_all_evidence_matches(sources):
+def test_batch_registry_summary_lists_entities_mentioning_the_batch(sources):
     batch_id, next_batch_id = sources.batches
     local = sources.batch_context(batch_id)
     remote = sources.batch_context(next_batch_id)
@@ -65,7 +64,7 @@ def test_batch_registry_summary_includes_all_evidence_matches(sources):
     remote_party = {
         **party(sources, "Client"),
         "aliases": ["server"],
-        "evidence": [{"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}],
+        "mentions": [{"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}],
     }
     work.add_entities(add([remote_party]))
     assert related(work)["candidates"] == []
@@ -74,7 +73,7 @@ def test_batch_registry_summary_includes_all_evidence_matches(sources):
         {
             **party(sources, f"Endpoint {i}"),
             "aliases": [f"alias {i} " + "x" * 500],
-            "evidence": [
+            "mentions": [
                 {"document_id": local["doc_id"], "block_id": local["segments"][0]["block"]}
             ],
         }
@@ -187,7 +186,7 @@ def test_open_unresolved_reach_another_batch(sources):
                 missing_information=f"Need definition {i}",
             )
         )
-    work.solve_unresolved("U1", "Definition found", [Evidence.model_validate(located)])
+    work.solve_unresolved("U1", "Definition found", [OpenBlock.model_validate(located)])
     work = Workspace(sources, "test", work.data, Assignment(current, "scan", "channels"))
     items = related(work)["unresolved"]
     # Closed items are gone and the open ones keep their registration order.
@@ -232,17 +231,16 @@ def test_batch_writes_are_atomic_and_idempotent(sources):
     work = Workspace(sources, "test", empty_registry(), Assignment("b", "scan", "parties"))
     add = TypeAdapter(list[EntityAddition])
     first = party(sources, "Client")
-    broken = {**party(sources, "Server"), "evidence": [{"document_id": "absent", "block_id": "?"}]}
-    with pytest.raises(ValueError, match="unknown source"):
+    broken = entity(sources, "messages", name="Packet", associated_fields=[])
+    with pytest.raises(ValueError, match="this scan can only write parties"):
         work.add_entities(add.validate_python([first, broken]))
     assert not work.records
     entities = add.validate_python([first, party(sources, "Server")])
     assert [item["id"] for item in work.add_entities(entities)] == ["E1", "E2"]
     assert work.add_entities(entities) == work.add_entities(entities)
-    cite = {**citation(sources), "field": "/description"}
     update = [
-        EntityUpdate(id="E1", patch={"description": "sender"}, evidence=[citation(sources)]),
-        EntityUpdate(id="E2", patch={"description": "receiver"}, evidence=[cite]),
+        EntityUpdate(id="E1", patch={"description": "sender"}),
+        EntityUpdate(id="E2", patch={"description": "receiver"}),
     ]
     with pytest.raises(ValueError, match="duplicate update"):
         work.update_entities([update[0], update[0]])
@@ -251,12 +249,9 @@ def test_batch_writes_are_atomic_and_idempotent(sources):
     assert [row["id"] for row in work.update_entities(update)] == ["E1", "E2"]
     assert work.update_entities(update)[0]["id"] == "E1"
     assert len(work.mutations) == 2
-    work.update_entities(
-        [EntityUpdate(id="E1", patch={"description": "initiator"}, evidence=[cite])]
-    )
+    work.update_entities([EntityUpdate(id="E1", patch={"description": "initiator"})])
     work.update_entities(update)
     assert work.records["E1"]["value"]["description"] == "sender"
-    assert work.records["E1"]["evidence"][-1]["field"] == "/description"
 
 
 def test_merge_redirects_and_rewrites_channel_references(sources):
@@ -269,7 +264,6 @@ def test_merge_redirects_and_rewrites_channel_references(sources):
                 party(sources, "User"),
                 {
                     "kind": "channels",
-                    "evidence": [citation(sources)],
                     "value": {
                         "name": "c",
                         "description": "connection",
@@ -290,7 +284,6 @@ def test_merge_redirects_and_rewrites_channel_references(sources):
         "E1",
         ["E2"],
         "RFC uses interchangeable names",
-        [Evidence(**citation(sources))],
     )
     assert receipt["id"] == work.canonical("E2") == "E1"
     channel = work.records["E3"]
@@ -301,7 +294,7 @@ def test_merge_redirects_and_rewrites_channel_references(sources):
 
 
 def entity(sources, kind, **value):
-    return {"kind": kind, "value": value, "evidence": [citation(sources)]}
+    return {"kind": kind, "value": value}
 
 
 def channel(sources, name, *, connected=True):
@@ -757,7 +750,6 @@ def test_category_validation_is_visible_and_repairable(sources, tmp_path, monkey
                                     "keep_id": row["records"][0],
                                     "ids": row["records"][1:],
                                     "reason": "same concept",
-                                    "evidence": [citation(sources)],
                                 },
                             )
                             for row in duplicates
@@ -837,7 +829,6 @@ def test_lifecycle_checks_mature_and_each_channel_requires_its_own_actions(sourc
         for key in ("E2", "E3")
         for action in ("connect", "listen", "close")
     }
-    assert all(f["evidence"] for f in issues)
     with pytest.raises(ValueError, match="not an open coverage check"):
         work.record_unresolved(
             Unresolved(
@@ -920,7 +911,7 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
             check_refs=["state_without_access:E4"],
         )
     )
-    cite = Evidence.model_validate(citation(sources))
+    cite = OpenBlock.model_validate(citation(sources))
     work.solve_unresolved("U1", "Packet send has been added", [cite])
     assert {issue["check_ref"] for issue in work.issues()} == {
         "message_without_send:E5",
@@ -930,7 +921,7 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
     with pytest.raises(ValueError, match="linked coverage checks remain: state_without_access:E4"):
         work.solve_unresolved("U3", "Premature closure", [cite])
     work.update_entities(
-        [EntityUpdate(id="E5", withdraw_reason="Component is an embedded field", evidence=[cite])]
+        [EntityUpdate(id="E5", withdraw_reason="Component is an embedded field")]
     )
     assert work.solve_unresolved("U2", "Withdrew the standalone component", [cite])["resolved"]
     assert {issue["check_ref"] for issue in work.issues()} == {
@@ -955,7 +946,6 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
                         "before_send": [{"reads": [], "writes": ["state.flag"], "rule": "set"}]
                     }
                 },
-                evidence=[{**citation(sources), "field": "/processing"}],
             )
         ]
     )
@@ -998,7 +988,7 @@ def test_legacy_coverage_stays_valid_only_until_its_entity_changes(sources):
     assert [item["check_ref"] for item in work.issues()] == [
         "message_without_send:E1", "message_without_send:E2"
     ]
-    work.update_entities([EntityUpdate(id="E1", patch={"name": "Renamed A"}, evidence=[cite])])
+    work.update_entities([EntityUpdate(id="E1", patch={"name": "Renamed A"})])
     assert work.open_unresolved() == []
     assert {item["check_ref"] for item in work.issues()} == {
         "message_without_send:E1",
@@ -1075,7 +1065,6 @@ def test_global_fix_rechecks_tracked_coverage_and_unresolved_after_resume(
         assert check["check_ref"] == check_ref
         assert check["records"] == ["E6"]
         assert "Flag" in check["description"]
-        assert check["evidence"][0]["block_id"] == cite["block_id"]
 
     def respond(messages, info):
         latest = messages[-1].parts[-1]
@@ -1121,7 +1110,6 @@ def test_global_fix_rechecks_tracked_coverage_and_unresolved_after_resume(
                                 {
                                     "id": "E4",
                                     "patch": {"processing": {"before_send": [flag_hook]}},
-                                    "evidence": [{**cite, "field": "/processing"}],
                                 }
                             ]
                         },
@@ -1564,7 +1552,6 @@ def test_completion_tools_return_repairable_categories(sources, phase, kind, cat
                         "records": row["records"],
                         "path": row["path"],
                         "description": row["description"],
-                        "evidence": row["evidence"],
                     }
                     for row in validation["rows"]
                 ] == [
@@ -1574,13 +1561,6 @@ def test_completion_tools_return_repairable_categories(sources, phase, kind, cat
                         "records": ["E1"],
                         "path": [],
                         "description": "Party 'Client' is not a channel endpoint",
-                        "evidence": [
-                            {
-                                "document_id": cite["document_id"],
-                                "block_id": cite["block_id"],
-                            }
-                            for cite in seed.records["E1"]["evidence"][:3]
-                        ],
                     }
                 ]
                 assert validation["unresolved"] == [
@@ -1596,7 +1576,7 @@ def test_completion_tools_return_repairable_categories(sources, phase, kind, cat
     asyncio.run(check())
 
 
-def test_entity_tools_return_full_evidence_blocks_and_references(sources):
+def test_entity_tools_return_full_mentions_and_references(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -1607,16 +1587,14 @@ def test_entity_tools_return_full_evidence_blocks_and_references(sources):
     location = citation(sources)
     doc, block_id = location["document_id"], location["block_id"]
     span = sources.evidence(doc, block_id)
-    fixture["channels"]["evidence"] = [
+    fixture["channels"]["mentions"] = [
         {
             **location,
             "start": span["start"],
             "end": span["start"] + 1,
-            "note": f"Evidence {i}",
         }
-        for i in range(10)
+        for _ in range(10)
     ]
-    fixture["channels"]["mentions"] = [location]
     step = fixture["steps"]
     variants = [
         {**step, "value": {**step["value"], "name": f"Send variant {i}"}} for i in range(10)
@@ -1636,19 +1614,10 @@ def test_entity_tools_return_full_evidence_blocks_and_references(sources):
                 ],
                 {"from": "E2", "field": ["endpoint_party_names", 0], "to": "E1"},
             ]
-            # Evidence arrives as locators; the text stays in read_source.
-            assert detail["evidence"] == [
-                {
-                    "document_id": cite["document_id"],
-                    "block_id": cite["block_id"],
-                    "section_path": cite["section_path"],
-                    "field": cite["field"],
-                    "note": cite["note"],
-                }
-                for cite in work.records["E2"]["evidence"]
-            ]
-            assert len(detail["evidence"]) == 10
+            # Entity evidence is gone; only mentions stay as locators.
+            assert "evidence" not in detail and "evidence_count" not in detail
             assert detail["mentions"] == work.records["E2"]["mentions"]
+            assert len(detail["mentions"]) == 10
             found = await client.call_tool("search_entities", {"queries": ["Datagrams"]})
             assert [row["id"] for row in found.data["rows"]] == ["E2"]
             batch = await client.call_tool(
@@ -1722,7 +1691,6 @@ def test_search_entities_returns_paged_union_of_name_and_alias_matches(sources):
                 (row["id"], row["kind"], row["name"], row["aliases"])
                 for row in listed.data["rows"]
             ] == [("E1", "parties", "Client Proxy", [])]
-            assert listed.data["rows"][0]["evidence"][0]["block_id"]
             empty = await client.call_tool("search_entities", {"queries": []})
             assert empty.data["rows"] == []
             assert empty.data["next_offset"] is None
@@ -1756,7 +1724,7 @@ def test_category_review_and_tool_return_all_issues(sources, tmp_path, repair_ro
             assert set(prompt["entities"]) <= ids
             assert prompt["current_group"]["group_id"] in prompt["entities"]
             assert all(
-                row["id"] == i and row["name"] and row["evidence"] and "revision" not in row
+                row["id"] == i and row["name"] and "revision" not in row
                 for i, row in prompt["entities"].items()
             )
             return ModelResponse(
@@ -1782,7 +1750,6 @@ def test_category_review_and_tool_return_all_issues(sources, tmp_path, repair_ro
                                 {
                                     "id": row["records"][0],
                                     "withdraw_reason": "This object is not a channel participant",
-                                    "evidence": [cite],
                                 }
                                 for row in errors
                             ],
@@ -2376,7 +2343,7 @@ def add_message(work, sources, names):
 
 def update_with(work, sources, **fields):
     return work.update_entities(
-        [EntityUpdate.model_validate({"id": "E1", "evidence": [citation(sources)], **fields})]
+        [EntityUpdate.model_validate({"id": "E1", **fields})]
     )
 
 
@@ -2392,7 +2359,6 @@ def test_associated_fields_delta_adds_renames_and_removes_in_place(sources):
             EntityUpdate.model_validate(
                 {
                     "id": "E1",
-                    "evidence": [citation(sources)],
                     "associated_fields_delta": {
                         "remove": ["B"],
                         "replace": [{"name": "C", "new_name": "C2"}],
@@ -2419,7 +2385,6 @@ def test_associated_fields_delta_keeps_submission_order_for_one_anchor(sources):
             EntityUpdate.model_validate(
                 {
                     "id": "E1",
-                    "evidence": [citation(sources)],
                     "associated_fields_delta": {
                         "add": [
                             {"name": "X1", "before": "B"},
@@ -2483,7 +2448,6 @@ def test_associated_fields_delta_rejects_other_kinds(sources):
                 EntityUpdate.model_validate(
                     {
                         "id": "E1",
-                        "evidence": [citation(sources)],
                         "associated_fields_delta": {"add": [{"name": "X"}]},
                     }
                 )
@@ -2503,37 +2467,6 @@ def test_associated_fields_delta_cannot_mix_with_the_full_list(sources):
         )
 
 
-def test_associated_fields_delta_still_needs_field_evidence(sources):
-    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
-    add_message(work, sources, ["A"])
-    with pytest.raises(ValueError, match="missing field evidence"):
-        work.update_entities(
-            [
-                EntityUpdate.model_validate(
-                    {
-                        "id": "E1",
-                        "evidence": [
-                            {**citation(sources), "field": "/name"}
-                        ],
-                        "associated_fields_delta": {"add": [{"name": "B"}]},
-                    }
-                )
-            ]
-        )
-
-
-def test_associated_fields_delta_rejects_moving_cited_indices(sources):
-    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
-    fixture = message_with_fields(sources, ["A", "B", "C"])
-    fixture["evidence"] = [{**citation(sources), "field": "/associated_fields/1"}]
-    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([fixture]))
-    with pytest.raises(ValueError, match="/associated_fields/1"):
-        update_with(work, sources, associated_fields_delta={"remove": ["A"]})
-    # Dropping the trailing field leaves the cited index alone.
-    update_with(work, sources, associated_fields_delta={"remove": ["C"]})
-    assert field_names(work) == ["A", "B"]
-
-
 def test_associated_fields_delta_applies_one_call_across_entities(sources):
     work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
     work.add_entities(
@@ -2550,14 +2483,12 @@ def test_associated_fields_delta_applies_one_call_across_entities(sources):
             EntityUpdate.model_validate(
                 {
                     "id": "E1",
-                    "evidence": [citation(sources)],
                     "associated_fields_delta": {"add": [{"name": "A2"}]},
                 }
             ),
             EntityUpdate.model_validate(
                 {
                     "id": "E2",
-                    "evidence": [citation(sources)],
                     "associated_fields_delta": {"add": [{"name": "B2"}]},
                 }
             ),
@@ -2623,7 +2554,6 @@ def test_oversized_entity_pages_its_fields(sources):
                 ).data
                 assert page["page_tokens"] <= page["page_limit"]
                 body = page["entities"]["E1"]
-                assert body["evidence"]
                 seen.extend(body["value"].get("associated_fields") or {})
                 pages += 1
                 if page["next_field_offset"] is None:
@@ -2869,6 +2799,66 @@ def test_reads_always_report_current_state(sources):
     asyncio.run(check())
 
 
+def test_mutation_models_reject_entity_evidence(sources):
+    """Entities carry no source citations any more, so the schema refuses the field."""
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        add([{**party(sources, "Client"), "evidence": [citation(sources)]}])
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        EntityUpdate.model_validate(
+            {"id": "E1", "patch": {"description": "x"}, "evidence": [citation(sources)]}
+        )
+    import inspect
+
+    from rsc.extract.registry import Workspace as RegistryWorkspace
+
+    assert "evidence" not in inspect.signature(RegistryWorkspace.merge_entities).parameters
+
+
+def test_old_entity_evidence_is_dropped_from_a_checkpoint(sources):
+    """An old checkpoint keeps working: its entity citations are deleted on load."""
+    data = empty_registry()
+    archived = {
+        "id": "E2",
+        "kind": "parties",
+        "value": {"name": "User", "description": "Protocol endpoint"},
+        "aliases": [],
+        "evidence": [citation(sources)],
+        "mentions": [],
+    }
+    data["entities"]["E1"] = {
+        "id": "E1",
+        "kind": "parties",
+        "value": {"name": "Client", "description": "Protocol endpoint"},
+        "aliases": [],
+        "evidence": [citation(sources)],
+        "mentions": [],
+    }
+    data["redirects"]["E2"] = {
+        "to": "E1",
+        "reason": "same role",
+        "evidence": [citation(sources)],
+        "entity": archived,
+    }
+    data["withdrawn"]["E3"] = {
+        "entity": {**archived, "id": "E3"},
+        "reason": "duplicate",
+        "evidence": [citation(sources)],
+    }
+
+    assert migrate_registry(data)
+    for row in [*data["entities"].values(), *(
+        entry["entity"] for entry in (data["redirects"]["E2"], data["withdrawn"]["E3"])
+    )]:
+        assert "evidence" not in row
+    for bucket in ("redirects", "withdrawn"):
+        assert all("evidence" not in entry for entry in data[bucket].values())
+    # Loading the migrated registry through a workspace shows the same rows.
+    work = Workspace(sources, "test", data, Assignment("check", "category", "parties"))
+    assert set(work.records) == {"E1"}
+    assert "evidence" not in work.records["E1"]
+
+
 def test_mutation_replies_return_full_entities_matching_get_entity(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
@@ -2898,7 +2888,6 @@ def test_mutation_replies_return_full_entities_matching_get_entity(sources):
                         "keep_id": "E1",
                         "ids": ["E2"],
                         "reason": "same role",
-                        "evidence": [citation(sources)],
                     },
                 )
             ).data
@@ -2915,7 +2904,6 @@ def test_mutation_replies_return_full_entities_matching_get_entity(sources):
                         "entities": [
                             {
                                 "id": "E1",
-                                "evidence": [citation(sources)],
                                 "patch": {"description": "Initiator"},
                             }
                         ]
@@ -2952,7 +2940,6 @@ def test_update_reply_reports_changed_associated_field_paths(sources):
                         "entities": [
                             {
                                 "id": "E1",
-                                "evidence": [citation(sources)],
                                 "patch": {
                                     "associated_fields": [{"name": "A"}, {"name": "C"}]
                                 },
@@ -2990,7 +2977,6 @@ def test_a_21_entity_write_succeeds_without_clipping(sources):
             updates = [
                 {
                     "id": f"E{index}",
-                    "evidence": [citation(sources)],
                     "patch": {"description": f"Role {index} endpoint"},
                 }
                 for index in range(1, 22)
@@ -3117,7 +3103,7 @@ def test_review_instructions_cover_all_categories_and_nesting():
         "on_receive",
         "message_bytes",
         "field_relations",
-        "evidence",
+        "source",
     ):
         assert term in INSTRUCTIONS
     assert "FTP" not in INSTRUCTIONS and "TLS" not in INSTRUCTIONS
@@ -3924,9 +3910,25 @@ def test_list_entities_batch_filter_returns_full_definitions(sources):
     from rsc.extract.tools import make_server
 
     batch_id = next(iter(sources.batches))
+    batch = sources.batches[batch_id]
     work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
     add = TypeAdapter(list[EntityAddition]).validate_python
-    work.add_entities(add([party(sources, "Client")]))
+    work.add_entities(
+        add(
+            [
+                {
+                    **party(sources, "Client"),
+                    "mentions": [
+                        {
+                            "document_id": batch["doc_id"],
+                            "block_id": batch["segments"][0]["block_id"],
+                        }
+                    ],
+                },
+                party(sources, "Unlinked"),
+            ]
+        )
+    )
 
     async def check():
         async with Client(make_server(lambda: work)) as client:
@@ -3935,8 +3937,7 @@ def test_list_entities_batch_filter_returns_full_definitions(sources):
             )
             row = result.data["rows"][0]
             assert row["value"]["description"] == "Protocol endpoint"
-            assert row["evidence"][0]["block_id"]
-            assert "text" not in row["evidence"][0]
+            assert [item["id"] for item in result.data["rows"]] == ["E1"]
             assert result.data["related_step_count"] == 0
 
     asyncio.run(check())
@@ -4078,11 +4079,27 @@ def test_list_entities_returns_related_step_scenarios(sources):
     seed.add_entities(
         add(
             [
-                fixture["messages"],
-                fixture["steps"],
+                {
+                    **fixture["messages"],
+                    "mentions": [
+                        {
+                            "document_id": sources.batches[first]["doc_id"],
+                            "block_id": sources.batches[first]["segments"][0]["block_id"],
+                        }
+                    ],
+                },
                 {
                     **fixture["steps"],
-                    "evidence": [
+                    "mentions": [
+                        {
+                            "document_id": sources.batches[first]["doc_id"],
+                            "block_id": sources.batches[first]["segments"][0]["block_id"],
+                        }
+                    ],
+                },
+                {
+                    **fixture["steps"],
+                    "mentions": [
                         {
                             "document_id": sources.batches[second]["doc_id"],
                             "block_id": sources.batches[second]["segments"][0]["block_id"],
@@ -4138,7 +4155,6 @@ def check_row(sources, target, kind="channel_requires_connect"):
         "records": [target],
         "path": [],
         "description": f"{target} needs a {kind.rsplit('_', 1)[-1]}",
-        "evidence": [citation(sources)],
     }
 
 
@@ -5076,10 +5092,6 @@ def compact_projection(rows):
             "id": row["id"],
             "check_ref": row["check_ref"],
             "group_id": row["group_id"],
-            "evidence": [
-                {"document_id": cite["document_id"], "block_id": cite["block_id"]}
-                for cite in row["evidence"][:1]
-            ],
         }
         for row in rows
     ]
@@ -5106,7 +5118,7 @@ def test_compact_rejection_keeps_the_queryable_page(sources):
             "next_offset",
         ):
             assert compact[key] == full[key], key
-        # Every row keeps its id, handle, group and one locator, in the same order.
+        # Every row keeps its id, handle and group, in the same order.
         assert compact["rows"] == compact_projection(full["rows"])
         assert [row["id"] for row in compact["rows"]] == [row["id"] for row in full["rows"]]
         # What moved to the detail read is gone from the first page.
@@ -5119,28 +5131,6 @@ def test_compact_rejection_keeps_the_queryable_page(sources):
         # A refusal still changes nothing.
         assert work.completion is None
         assert json.loads(dumps(work.data)) == before
-
-    asyncio.run(check())
-
-
-def test_compact_rejection_keeps_one_locator_or_none(sources, monkeypatch):
-    pytest.importorskip("fastmcp")
-
-    with_locator = {**check_row(sources, "E1"), "check_ref": "channel_requires_connect:E1"}
-    without = dict(with_locator, evidence=[])
-    work, _ = basics_batch(sources)
-    monkeypatch.setattr(Workspace, "issues", lambda self: [dict(with_locator), dict(without)])
-
-    async def check():
-        full, compact = await refused_reply(work)
-        assert compact["error_count"] == full["error_count"] == 2
-        assert [len(row["evidence"]) for row in compact["rows"]] == [1, 0]
-        assert compact["rows"][0]["evidence"] == [
-            {
-                "document_id": full["rows"][0]["evidence"][0]["document_id"],
-                "block_id": full["rows"][0]["evidence"][0]["block_id"],
-            }
-        ]
 
     asyncio.run(check())
 
@@ -5240,7 +5230,6 @@ def test_compact_rejection_detail_reads_still_answer(sources, monkeypatch):
             issue = detail["issue"]
             assert issue["id"] == issue_id
             assert issue["description"] == rows[0]["description"]
-            assert issue["evidence"]
             rest = (
                 await client.call_tool(
                     "validate_entities", {"view": "issues", "offset": compact["next_offset"]}
@@ -5508,7 +5497,7 @@ def test_complete_batch_reminds_once_on_an_empty_steps_batch(sources):
                 await client.call_tool("complete_batch", {"summary": "Nothing to model"})
             ).data
             assert reminded["accepted"] is False
-            assert reminded["review"] == "steps-evidence"
+            assert reminded["review"] == "steps-recheck"
             assert reminded["assignment"] == batch_id
             assert reminded["kind"] == "steps"
             assert [row["id"] for row in reminded["open_items"]] == ["U1"]
@@ -5545,7 +5534,7 @@ def test_complete_batch_reminder_is_not_a_checked_rejection(sources):
             reminded = (
                 await client.call_tool("complete_batch", {"summary": "Nothing to model"})
             ).data
-            assert "checked" not in reminded and reminded["review"] == "steps-evidence"
+            assert "checked" not in reminded and reminded["review"] == "steps-recheck"
             # The checked entry stays a basics-only tool: steps never becomes a check.
             with pytest.raises(ToolError):
                 await client.call_tool(
@@ -5601,7 +5590,7 @@ def test_complete_batch_reminder_then_concurrent_resubmits_seal_once(sources):
             reminded = (
                 await client.call_tool("complete_batch", {"summary": "Nothing to model"})
             ).data
-            assert reminded["review"] == "steps-evidence"
+            assert reminded["review"] == "steps-recheck"
             # Two submissions of the same summary race after the reminder: the batch
             # seals once and the second one gets the idempotent receipt.
             first, second = await asyncio.gather(

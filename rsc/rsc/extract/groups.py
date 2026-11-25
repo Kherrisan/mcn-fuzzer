@@ -44,7 +44,7 @@ def group_key(issue):
 
 
 def issue_rows(issues, records):
-    """Compact, paged rows: id, description, type, owners, path, evidence locators.
+    """Compact, paged rows: id, description, type, owners and path.
 
     ``check_ref`` is kept because it is the handle an unresolved item already carries.
     Rows that would render the same id get an occurrence suffix so an id still names
@@ -53,7 +53,6 @@ def issue_rows(issues, records):
     rows = []
     used = {}
     for issue in issues:
-        evidence = issue.get("evidence") or []
         base = issue_ref(issue)
         used[base] = used.get(base, 0) + 1
         rows.append(
@@ -65,13 +64,6 @@ def issue_rows(issues, records):
                 "description": issue["description"],
                 "records": list(issue.get("records") or ()),
                 "path": list(issue.get("path") or ()),
-                "evidence": [
-                    {
-                        "document_id": cite["document_id"],
-                        "block_id": cite["block_id"],
-                    }
-                    for cite in evidence[:3]
-                ],
                 "advisory": bool(issue.get("advisory")),
             }
         )

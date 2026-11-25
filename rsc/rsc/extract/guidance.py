@@ -38,7 +38,7 @@ HOOK_RULES = (
 TYPE_HINTS = {
     "missing_reference": (
         "Match the name to an existing entity of the required category, or add the "
-        "missing entity with source evidence."
+        "missing entity with source support."
     ),
     "ambiguous_reference": (
         "Use the fully qualified or uniquely matching name, or merge the duplicates "
@@ -93,7 +93,7 @@ TYPE_HINTS = {
     ),
     "deferred_entity": (
         "Supply the missing entity or processing rule, or close the deferred issue with "
-        "source evidence."
+        "source support."
     ),
     "protocol": (
         "Repair the model so this source-supported requirement is expressed by an "
@@ -105,7 +105,7 @@ STRUCTURE_HINTS = (
     (
         "has no processing producer",
         "Either add the operation that writes state.<name> in the step that computes it, "
-        "or change this state's source to external with evidence; a processing state "
+        "or change this state's source to external; a processing state "
         "read by a step but never written fails validation.",
     ),
     (

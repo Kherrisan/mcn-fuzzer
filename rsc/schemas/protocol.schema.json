@@ -420,7 +420,7 @@
           "type": "string"
         },
         "associated_fields": {
-          "description": "Extract source-defined fields needed to construct, parse, compute or validate the message, including headers, lengths, selectors, authentication values, structured payloads and extensions. Include fields used in negotiation, state updates, branching or later exchanges. Use stable dot-separated paths for nested fields that need independent access, consistently across messages, processing and field relations. Attach each field to its transmitting message. Keep local-only values in processing or states. Preserve source-defined encoding, length, value and presence constraints in evidence notes and applicable processing rules. Use an empty field list when the source defines an empty body; otherwise revisit detailed definitions before retaining a fieldless message.",
+          "description": "Extract source-defined fields needed to construct, parse, compute or validate the message, including headers, lengths, selectors, authentication values, structured payloads and extensions. Include fields used in negotiation, state updates, branching or later exchanges. Use stable dot-separated paths for nested fields that need independent access, consistently across messages, processing and field relations. Attach each field to its transmitting message. Keep local-only values in processing or states. Preserve source-defined encoding, length, value and presence constraints in the field definitions and applicable processing rules. Use an empty field list when the source defines an empty body; otherwise revisit detailed definitions before retaining a fieldless message.",
           "items": {
             "$ref": "#/$defs/field"
           },

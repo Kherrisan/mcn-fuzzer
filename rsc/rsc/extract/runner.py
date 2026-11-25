@@ -61,22 +61,20 @@ Use only the supplied MCP tools. The registry is authoritative; old messages can
 Use the current batch's RFC requirements and cite supporting document IDs and block IDs.
 Copy block IDs exactly, including their leading zeros. A batch uses the doc_id shown in context.
 Citations outside the batch must use the document ID and exact blocks returned by read_source.
-Evidence paths are relative to the entity value, e.g. /associated_fields, without /value.
-For updates cite each changed top-level field using this syntax. The update tool takes
-{"entities":[{"id":"E1","patch":{"description":"text"},"evidence":[...]}]}.
+For updates send {"entities":[{"id":"E1","patch":{"description":"text"}}]}.
 Send patch as a JSON object.
 Overview definitions are provisional. When a detailed section supplies grammar, layouts,
-algorithms, conditions or validation rules, search existing names and aliases even if their
-evidence does not overlap this batch. Read the latest matching entities and enrich the same
+algorithms, conditions or validation rules, search existing names and aliases even when they
+were written from another batch. Read the latest matching entities and enrich the same
 concept with update_entities. Create another entity only for a distinct source-defined concept.
 Patched lists replace previous lists: retain all still-valid fields, processing operations and
-branches while adding detail, and cite the new evidence. For a small added, renamed or removed
+branches while adding detail. For a small added, renamed or removed
 set of a message's associated_fields, submit associated_fields_delta instead of the whole list.
 Resolve conflicting definitions using their stated conditions, versions and extension
 applicability; record unsupported ambiguity.
-Use the real protocol terms, resolve aliases by reading evidence, preserve conditions and
+Use the real protocol terms, resolve aliases by reading the source, preserve conditions and
 exceptions, and avoid inventing types, roles, branches, or dependencies. Record uncertainty
-when the evidence cannot support a model item. A missing item from another category may be
+when the source cannot support a model item. A missing item from another category may be
 handled later; use the best source-supported name until it is available or record the issue.
 Use batched mutations with as many entities as the batch needs. Before completing a scan
 batch, account for its definitions and requirements in the current category, including
@@ -84,14 +82,16 @@ additions to earlier entities.
 If an interaction needs a missing entity or processing in another category, record the precise
 gap with record_unresolved so a later scan or Fix can address it.
 Check unresolved in the batch context before recording a problem. If a change addresses an
-existing item, use solve_unresolved with its ID, the resolution reason, and source evidence.
+existing item, use solve_unresolved with its ID, the resolution reason, and the source block
+locators it was resolved from.
 When a scan batch is done, call complete_batch with a short summary, even if no entity changes
 are needed. During validation repairs, follow the assignment instructions and use complete_fix
 to submit the repair.
 The host records the active assignment, unresolved IDs and completion status on its own.
 Batch known IDs in one get_entity call using ids. Batch name or alias lookups in one
 search_entities call using queries to get the union of matches. Both tools return the full
-entity, references, and evidence block text. Cite evidence by its document_id and block_id.
+entity with its mentions and references. Cite an open item's source by its document_id and
+block_id.
 You may request independent read-only lookups in one turn. Call complete_batch or complete_fix
 in a separate turn after the mutation calls return.
 Do not output a full model in chat. The host advances the cursor after a successful submission.
@@ -157,7 +157,7 @@ BASICS_RULES = (
     "you were asked to write belong in record_unresolved. When several source-backed "
     "open items are already known and independent, issue up to four separate "
     "record_unresolved calls in the same response. Keep each item's own entity IDs, "
-    "evidence and missing information. End that group when the next item needs another "
+    "source blocks and missing information. End that group when the next item needs another "
     "passage read first, needs an entity that is not written yet, needs an earlier "
     "result to judge a duplicate or to name a new ID, hits a tool error, or the batch "
     "changes; a batch may hold several groups and a single fact may still go alone. "
@@ -166,7 +166,7 @@ BASICS_RULES = (
     "batch's open items are recorded, submit with complete_batch(summary, "
     "check_first=true): the host validates the whole registry in that same call and "
     "seals the batch only when nothing blocks and nothing is advisory. If the reply "
-    "lists rows, repair them (view='group' for one group, view='issue' for evidence) "
+    "lists rows, repair them (view='group' for one group, view='issue' for details) "
     "and then submit again with plain complete_batch(summary); that reply already "
     "counted as this batch's validation, so do not run a separate validate_entities "
     "pass first and do not repeat check_first on rows you have already seen."
@@ -194,9 +194,10 @@ CATEGORY_RULES = {
         "from external input. Declare a state only when a step in this batch reads or writes "
         "it. A processing state must be written by the hook that computes it; keep the "
         "state and its writer in the same assignment. A state with source=external comes "
-        "from outside the protocol and needs no producer, but needs evidence for that "
-        "external origin. Preserve initial/default values and reset or retention conditions "
-        "in evidence notes. Keep values needed across steps as endpoint-owned states; keep "
+        "from outside the protocol and needs no producer; record where that external value "
+        "comes from in its description. Preserve initial/default values and reset or "
+        "retention conditions in the description and applicable processing rules. Keep "
+        "values needed across steps as endpoint-owned states; keep "
         "temporary calculations inside processing rules. Enrich an existing state of the "
         "same owner and concept instead of adding a near-duplicate. "
         "Do not invent an all-protocol FSM or introduce a scope field. "
@@ -1045,7 +1046,7 @@ class Runner:
                 continue
             cited = any(
                 cite["document_id"] == document_id and cite["block_id"] in blocks
-                for cite in row["evidence"]
+                for cite in row.get("mentions") or ()
             )
             named = identity(row).casefold() in names or any(
                 alias.casefold() in names for alias in row["aliases"]
@@ -1067,7 +1068,7 @@ class Runner:
                     if any(
                         cite["document_id"] == batch["doc_id"]
                         and cite["block_id"] in blocks
-                        for cite in row["evidence"]
+                        for cite in row.get("mentions") or ()
                     )
                 ]
                 prompt = (
@@ -1164,7 +1165,7 @@ class Runner:
                 "validate_entities(view='groups', offset=...) and one group's rows with "
                 "validate_entities(view='group', group_id=...), page the remaining rows with "
                 "view='issues', page open items with view='unresolved', and read a single "
-                "row's suggestion and evidence with view='issue', issue_id=.... Read entity "
+                "row's suggestion with view='issue', issue_id=.... Read entity "
                 "definitions "
                 "and source blocks on demand instead of assuming what they contain. Repair "
                 "related causes together, then call validate_entities again and work through "
@@ -1181,7 +1182,7 @@ class Runner:
                 "them solved. Before calling complete_fix, investigate all remaining items "
                 "and apply every source-supported fix available within the assignment's write "
                 "scope. Summarize what still prevents resolution, using existing unresolved "
-                "IDs for known gaps. For new residual gaps, record the evidence and include "
+                "IDs for known gaps. For new residual gaps, record the source blocks and include "
                 "exact check_refs for coverage checks. "
                 + SCENARIO_RULES
             )
@@ -1194,8 +1195,8 @@ class Runner:
                     "unresolved items; match them by check_ref. Review the full unresolved "
                     "list even when error_count is zero. For every 'has no processing "
                     "producer' row, either add the operation that writes state.<name> in the "
-                    "step that computes it, or change that state's source to external with "
-                    "evidence. Before calling complete_fix, run validate_entities and compare "
+                    "step that computes it, or change that state's source to external. "
+                    "Before calling complete_fix, run validate_entities and compare "
                     "its error_count with repair_start_count. If you cannot reduce it, make at "
                     "least one source-supported change and state in the summary which errors "
                     "remain and why. A Fix that changes nothing and reduces nothing is "
