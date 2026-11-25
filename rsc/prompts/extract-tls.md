@@ -68,7 +68,7 @@ Top-level object, no unknown keys:
 ```text
 meta                {protocol, complete, documents[]}
 parties             [{name, description}]
-messages            [{name, associated_fields: [{name}]}]
+messages            [{name, associated_fields: [name]}]
 channels            [{name, description, transport, connection,
                       endpoint_party_names[], initiator_party_name,
                       acceptor_party_name, endpoint_sources[]}]

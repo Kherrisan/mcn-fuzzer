@@ -39,10 +39,7 @@ def base(doc=None):
         messages.append(
             {
                 "name": name,
-                "associated_fields": [
-                    {"name": "CSeq"},
-                    {"name": "Session"},
-                ],
+                "associated_fields": ["CSeq", "Session"],
             }
         )
     return {

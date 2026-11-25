@@ -27,10 +27,6 @@ class BlockRef(StrictModel):
     block_id: NonEmpty = Field(description="Block identity scoped to the specified document.")
 
 
-class AssociatedField(StrictModel):
-    name: NonEmpty = Field(description="Source-defined field name or stable nested field path.")
-
-
 class Party(StrictModel):
     """A direct communication role; retain a container separately only for a distinct role."""
 
@@ -52,7 +48,7 @@ class ProtocolMessage(StrictModel):
     name: NonEmpty = Field(
         description="Short protocol term. Reuse the same message's name. " + MESSAGE_SCOPE_RULES
     )
-    associated_fields: list[AssociatedField] = Field(description=ASSOCIATED_FIELD_RULES)
+    associated_fields: list[NonEmpty] = Field(description=ASSOCIATED_FIELD_RULES)
 
 
 class EndpointSource(StrictModel):
@@ -282,7 +278,6 @@ def protocol_json_schema() -> dict[str, Any]:
     """Build the published schema from the final model types."""
 
     names = {
-        "AssociatedField": "field",
         "Party": "party",
         "ProtocolMessage": "message",
         "Channel": "channel",

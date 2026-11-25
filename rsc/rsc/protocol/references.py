@@ -99,7 +99,7 @@ def reference_issues(records: dict, bindings=None, *, resolved=None) -> list[dic
         if action == "send":
             message_key = ref(key, ("message_name",), "messages", s.get("message_name"))
             fields = (
-                {f["name"] for f in records[message_key]["value"]["associated_fields"]}
+                set(records[message_key]["value"]["associated_fields"])
                 if message_key is not None
                 else set()
             )
@@ -235,7 +235,7 @@ def reference_issues(records: dict, bindings=None, *, resolved=None) -> list[dic
                 if len(messages) != 1:
                     continue
                 m = records[messages[0]]["value"]
-                allowed = {f["name"] for f in m["associated_fields"]}
+                allowed = set(m["associated_fields"])
                 allowed |= {f"{m['name']}.{name}" for name in tuple(allowed)}
                 field = relation[side]
                 if field not in allowed:
@@ -398,7 +398,7 @@ def duplicate_issues(records: dict) -> list[dict]:
                 )
             seen[duplicate] = key
         if row["kind"] == "messages":
-            names = [field["name"] for field in value["associated_fields"]]
+            names = list(value["associated_fields"])
             if len(set(names)) != len(names):
                 issues.append(
                     {

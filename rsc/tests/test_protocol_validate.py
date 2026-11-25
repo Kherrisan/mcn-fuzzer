@@ -171,7 +171,7 @@ def test_duplicate_declarations_are_reported():
     model = with_lifecycle(sample())
     model["step_dependencies"].append(dict(model["step_dependencies"][-1]))
     model["messages"][0]["associated_fields"].append(
-        dict(model["messages"][0]["associated_fields"][0])
+        model["messages"][0]["associated_fields"][0]
     )
     assert validate_protocol(model, coverage=True) == [
         "message field names must be unique",

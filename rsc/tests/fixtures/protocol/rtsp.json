@@ -16,42 +16,28 @@
       {
         "name": "SETUP request",
         "associated_fields": [
-          {
-            "name": "CSeq"
-          }
+          "CSeq"
         ]
       },
       {
         "name": "SETUP response",
         "associated_fields": [
-          {
-            "name": "CSeq"
-          },
-          {
-            "name": "Session"
-          }
+          "CSeq",
+          "Session"
         ]
       },
       {
         "name": "PLAY request",
         "associated_fields": [
-          {
-            "name": "CSeq"
-          },
-          {
-            "name": "Session"
-          }
+          "CSeq",
+          "Session"
         ]
       },
       {
         "name": "PLAY response",
         "associated_fields": [
-          {
-            "name": "CSeq"
-          },
-          {
-            "name": "Session"
-          }
+          "CSeq",
+          "Session"
         ]
       }
     ],

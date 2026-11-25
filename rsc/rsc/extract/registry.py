@@ -101,30 +101,16 @@ EntityAddition = Annotated[
 ]
 
 
-class FieldAddition(StrictModel):
-    name: Annotated[str, Field(min_length=1)] = Field(description="Exact name of the added field.")
-    before: str = Field(
-        default="",
-        description="Exact name of the field it goes before; empty appends to the end.",
-    )
-
-
-class FieldRename(StrictModel):
-    name: Annotated[str, Field(min_length=1)] = Field(description="Exact existing field name.")
-    new_name: Annotated[str, Field(min_length=1)] = Field(
-        description="Name that replaces it in place.",
-    )
-
-
 class AssociatedFieldsDelta(StrictModel):
     """Name-based edit of one message's associated_fields, applied by the write path."""
 
-    remove: list[str] = Field(default_factory=list, description="Exact names to drop.")
-    replace: list[FieldRename] = Field(
-        default_factory=list, description="In-place renames, keeping the current position."
+    remove: list[str] = Field(default_factory=list, description="Exact field names to drop.")
+    replace: dict[str, str] = Field(
+        default_factory=dict,
+        description="In-place renames as {old_name: new_name}, keeping each position.",
     )
-    add: list[FieldAddition] = Field(
-        default_factory=list, description="New names, in submission order."
+    add: list[str] = Field(
+        default_factory=list, description="New field names appended in submission order."
     )
 
 
@@ -256,15 +242,15 @@ def changed_paths(before, after, prefix=""):
 
 
 def delta_fields(fields, delta):
-    """Rebuild one message's full ordered field list from a name-based delta.
+    """Rebuild one message's full ordered field-name list from a name-based delta.
 
-    Removals disappear, renames stay in their original position, and additions land in
-    submission order before their still-existing anchor (or at the end without one). The
-    caller then feeds the result through the normal full-list write path.
+    Removals disappear, renames stay in their original position, and additions are
+    appended in submission order. The caller then feeds the result through the normal
+    full-list write path. To insert in the middle, write the whole list instead.
     """
     if not (delta.remove or delta.replace or delta.add):
         raise ValueError("associated_fields_delta needs at least one add, replace or remove")
-    names = [field["name"] for field in fields]
+    names = list(fields)
     if len(set(names)) != len(names):
         raise ValueError("the existing associated_fields names are not unique; submit the list")
     removed = list(delta.remove)
@@ -274,38 +260,20 @@ def delta_fields(fields, delta):
         if name not in names:
             raise ValueError(f"remove target {name!r} is not in associated_fields")
     renamed = {}
-    targets = []
-    for item in delta.replace:
-        if item.name not in names:
-            raise ValueError(f"replace target {item.name!r} is not in associated_fields")
-        if item.name in removed:
-            raise ValueError(f"{item.name!r} cannot be both removed and replaced")
-        if item.new_name in renamed.values() or item.new_name in targets:
-            raise ValueError(f"replace target {item.new_name!r} is used more than once")
-        renamed[item.name] = item.new_name
-        targets.append(item.new_name)
-    added = [item.name for item in delta.add]
+    for name, new_name in delta.replace.items():
+        if name not in names:
+            raise ValueError(f"replace target {name!r} is not in associated_fields")
+        if name in removed:
+            raise ValueError(f"{name!r} cannot be both removed and replaced")
+        if new_name in renamed.values() or new_name in delta.replace:
+            raise ValueError(f"replace target {new_name!r} is used more than once")
+        renamed[name] = new_name
+    added = list(delta.add)
     if len(set(added)) != len(added):
         raise ValueError("each added name may appear only once")
-    result = []
-    for field in fields:
-        name = field["name"]
-        if name in removed:
-            continue
-        result.append({"name": renamed.get(name, name)})
-    for item in delta.add:
-        if not item.before:
-            result.append({"name": item.name})
-            continue
-        index = next(
-            (position for position, field in enumerate(result) if field["name"] == item.before),
-            None,
-        )
-        if index is None:
-            raise ValueError(f"add anchor {item.before!r} is not in the resulting fields")
-        result.insert(index, {"name": item.name})
-    final = [field["name"] for field in result]
-    duplicates = sorted({name for name in final if final.count(name) > 1})
+    result = [renamed.get(name, name) for name in names if name not in removed]
+    result.extend(added)
+    duplicates = sorted({name for name in result if result.count(name) > 1})
     if duplicates:
         raise ValueError(f"names already exist or repeat after this delta: {duplicates}")
     return result
@@ -375,6 +343,15 @@ def migrate_registry(data, sources=None):
             if key in row:
                 row.pop(key)
                 migrated = True
+        # Older checkpoints stored each message field as {"name": ...}; the model and
+        # every write use plain field-name strings now.
+        value = row.get("value")
+        fields = value.get("associated_fields") if isinstance(value, dict) else None
+        if isinstance(fields, list) and any(isinstance(field, dict) for field in fields):
+            value["associated_fields"] = [
+                field["name"] if isinstance(field, dict) else field for field in fields
+            ]
+            migrated = True
     # Merge and withdraw receipts also recorded the citation they were accepted with.
     for bucket in ("redirects", "withdrawn"):
         for row in data[bucket].values():

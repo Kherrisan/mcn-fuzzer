@@ -143,7 +143,7 @@ def test_local_message_fix_follows_reverse_references_without_full_review(tmp_pa
     h.review(w, [h.finding(w)])
     fixed = w.checkpoint(h.active(w)[0]["candidate_path"])
     message = next(i for i in fixed["items"] if i["kind"] == "messages")
-    message["value"]["associated_fields"].append({"name": "new source field"})
+    message["value"]["associated_fields"].append("new source field")
     h.submit(w, "parser-1", fixed)
     assert w.data["phase"] == "review", w.data
     assert h.active(w)[0]["batches"] == [first["batch_id"]]

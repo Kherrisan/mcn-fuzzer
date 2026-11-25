@@ -667,9 +667,10 @@ def make_server(
 
         Read current entities first. Each patched list is a full replacement: combine new
         details with all still-valid existing fields and operations. Use stable names.
-        For a small change to one
-        message's associated_fields, send associated_fields_delta (add, replace or remove by
-        exact field name) instead of the whole list. The reply carries each changed entity
+        associated_fields is an array of field-name strings. For a small change to one
+        message's associated_fields, send associated_fields_delta instead of the whole
+        list: add appends new names, replace maps {old_name: new_name}, remove drops names.
+        The reply carries each changed entity
         exactly as get_entity renders it, plus changed_fields with the value paths this
         call changed.
         """
