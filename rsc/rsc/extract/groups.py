@@ -108,14 +108,24 @@ def located(sources, document_id, block_id):
     return sources is not None and (document_id, block_id) in sources.blocks
 
 
+def block_pair(sources, number):
+    """Map one global integer block ID back to its (document_id, block_id) pair."""
+    if sources is None or isinstance(number, bool) or not isinstance(number, int):
+        return None
+    if not 0 <= number < len(sources.block_ids):
+        return None
+    return sources.block_ids[number]
+
+
 def blocked_signature(group, unresolved, sources=None):
     """Signature of a group when one located open item explains all of its checks.
 
     Empty when the group cannot be deferred: a row without its own check, a repeated
     check, an open item that only covers part of the group, several candidate items,
     or an item whose frozen location no longer resolves. The signature holds the sorted
-    checks and the covering item, and the evidence lists are sorted too, so a change in
-    order alone does not invalidate it.
+    checks and the covering item, and the block numbers are sorted too, so a change in
+    order alone does not invalidate it. Open-item evidence is a list of integer block IDs,
+    which the block table maps back to (document_id, block_id) before a read-back check.
     """
     checks = []
     for issue in group["issues"]:
@@ -134,12 +144,11 @@ def blocked_signature(group, unresolved, sources=None):
     if len(covering) != 1:
         return ""
     item = covering[0]
-    locations = sorted(
-        (cite["document_id"], cite["block_id"])
-        for cite in item.get("evidence") or ()
-        if cite.get("block_id")
-    )
-    if not locations or not all(located(sources, *pair) for pair in locations):
+    numbers = sorted(item.get("evidence") or ())
+    locations = [block_pair(sources, number) for number in numbers]
+    if not locations or any(pair is None for pair in locations):
+        return ""
+    if not all(located(sources, *pair) for pair in locations):
         return ""
     rows = sorted(
         (
@@ -147,28 +156,10 @@ def blocked_signature(group, unresolved, sources=None):
             issue["type"],
             tuple(sorted(issue.get("records") or ())),
             tuple(str(part) for part in issue.get("path") or ()),
-            tuple(
-                sorted(
-                    (cite["document_id"], cite["block_id"])
-                    for cite in issue.get("evidence") or ()
-                    if cite.get("block_id")
-                )
-            ),
         )
         for issue in group["issues"]
     )
-    listed = sorted(
-        (
-            cite["document_id"],
-            cite["block_id"],
-            cite.get("start") or 0,
-            cite.get("end") or 0,
-            cite.get("field") or "",
-            cite.get("note") or "",
-        )
-        for cite in item.get("evidence") or ()
-        if cite.get("block_id")
-    )
+    listed = tuple(numbers)
     return json.dumps(
         {
             "checks": rows,

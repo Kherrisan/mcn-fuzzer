@@ -18,7 +18,6 @@ from rsc.extract.registry import (
     Assignment,
     EntityAddition,
     EntityUpdate,
-    OpenBlock,
     Unresolved,
     Workspace,
     migrate_registry,
@@ -46,6 +45,13 @@ def sources(tmp_path):
 def citation(sources):
     doc_id, block_id = next(iter(sources.blocks))
     return {"document_id": doc_id, "block_id": block_id}
+
+
+def block_number(sources, location=None):
+    """The global integer ID of a block locator, defaulting to the first frozen block."""
+    if location is None:
+        location = citation(sources)
+    return sources.block_number(location["document_id"], location["block_id"])
 
 
 def party(sources, name):
@@ -86,7 +92,7 @@ def test_batch_registry_summary_lists_entities_mentioning_the_batch(sources):
     assert [row["name"] for row in context["candidates"]] == [f"Endpoint {i}" for i in range(24)]
 
 
-def test_scan_prompt_keeps_every_open_item_and_only_their_citations():
+def test_scan_prompt_keeps_every_open_item_and_dedups_block_ids():
     from rsc.extract.tools import projected_unresolved
 
     items = [
@@ -97,49 +103,17 @@ def test_scan_prompt_keeps_every_open_item_and_only_their_citations():
             "missing_information": "which endpoint initiates the close",
             "check_refs": ["coverage:1"],
             "assignment": "batch-00001",
-            "evidence": [
-                {
-                    "document_id": "rfc2326",
-                    "block_id": "blk-000001",
-                    "start": 10,
-                    "end": 20,
-                    "field": "/steps/0/name",
-                    "note": "the state table",
-                    "section_path": ["10.4"],
-                },
-                {
-                    "document_id": "rfc2326",
-                    "block_id": "blk-000001",
-                    "start": 10,
-                    "end": 20,
-                    "field": "/steps/0/name",
-                    "note": "same citation again",
-                },
-                {"document_id": "rfc2326", "block_id": "blk-000001", "field": ""},
-                {
-                    "document_id": "rfc7826",
-                    "block_id": "blk-000002",
-                    "field": "/steps/1/name",
-                    "note": "second document",
-                },
-            ],
+            "evidence": [12, 12, 13, 4],
         },
         {
             "id": "U2",
             "description": "second issue",
-            "evidence": [
-                {
-                    "document_id": "rfc2326",
-                    "block_id": "blk-000001",
-                    "field": "/steps/0/name",
-                    "note": "cross-issue citation",
-                }
-            ],
+            "evidence": [12],
         },
         {
             "id": "U3",
-            "description": "legacy citation without a block",
-            "evidence": [{"document_id": "rfc2326", "note": "no block id"}],
+            "description": "third issue",
+            "evidence": [7],
         },
     ]
     projected = projected_unresolved(items)
@@ -151,31 +125,19 @@ def test_scan_prompt_keeps_every_open_item_and_only_their_citations():
             if key != "evidence":
                 assert copy[key] == value
 
-    first = projected[0]["evidence"]
-    # Locations only: the same citation twice collapses, the empty field is kept as a
-    # separate entry, and a different field on the same block stays distinct.
-    assert first == [
-        {"document_id": "rfc2326", "block_id": "blk-000001", "field": "/steps/0/name"},
-        {"document_id": "rfc2326", "block_id": "blk-000001"},
-        {"document_id": "rfc7826", "block_id": "blk-000002", "field": "/steps/1/name"},
-    ]
-    assert all(set(item) <= {"document_id", "block_id", "field"} for item in first)
-    # A block cited by two items is kept for both.
-    assert projected[1]["evidence"] == [
-        {"document_id": "rfc2326", "block_id": "blk-000001", "field": "/steps/0/name"}
-    ]
-    # Evidence that carries no usable location is passed through unchanged.
-    assert projected[2]["evidence"] == [{"document_id": "rfc2326", "note": "no block id"}]
+    # Repeats collapse in first-seen order; the same block cited by two items stays.
+    assert projected[0]["evidence"] == [12, 13, 4]
+    assert projected[1]["evidence"] == [12]
+    assert projected[2]["evidence"] == [7]
     # The projection is a plain JSON list and never rewrites the registry items.
     assert json.loads(json.dumps(projected)) == projected
-    assert items[0]["evidence"][0]["note"] == "the state table"
-    assert items[0]["evidence"][0]["start"] == 10
+    assert items[0]["evidence"] == [12, 12, 13, 4]
 
 
 def test_open_unresolved_reach_another_batch(sources):
     current, earlier = sources.batches
     remote = sources.batch_context(earlier)
-    located = {"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}
+    located = sources.block_number(remote["doc_id"], remote["segments"][0]["block"])
     work = Workspace(sources, "test", empty_registry(), Assignment(earlier, "scan", "parties"))
     for i in range(12):
         work.record_unresolved(
@@ -186,14 +148,109 @@ def test_open_unresolved_reach_another_batch(sources):
                 missing_information=f"Need definition {i}",
             )
         )
-    work.solve_unresolved("U1", "Definition found", [OpenBlock.model_validate(located)])
+    work.solve_unresolved("U1", "Definition found", [located])
     work = Workspace(sources, "test", work.data, Assignment(current, "scan", "channels"))
     items = related(work)["unresolved"]
     # Closed items are gone and the open ones keep their registration order.
     assert [item["id"] for item in items] == [f"U{i}" for i in range(2, 13)]
     assert items[-1]["missing_information"] == "Need definition 11"
-    # The remote batch's citation survives projection exactly, and never picks up a field.
+    # The remote batch's block ID survives projection unchanged.
     assert [item["evidence"] for item in items] == [[located] for _ in items]
+
+
+def test_open_item_evidence_is_a_deduplicated_block_id_list(sources):
+    work = Workspace(sources, "test", empty_registry(), Assignment("seed", "global"))
+    number = block_number(sources)
+    other = sources.block_number(*list(sources.blocks)[1])
+    item = work.record_unresolved(
+        Unresolved(
+            description="The close handshake is unspecified",
+            entity_ids=[],
+            evidence=[number, number, other],
+        )
+    )
+    record = work.data["unresolved"][item["id"]]
+    # A citation object is no longer accepted, and at least one block ID is required.
+    with pytest.raises(ValidationError):
+        Unresolved(description="x", entity_ids=[], evidence=[citation(sources)])
+    with pytest.raises(ValidationError):
+        Unresolved(description="x", entity_ids=[], evidence=[])
+    # Unknown, out-of-range and non-integer IDs are rejected before anything is stored.
+    for bad in ([len(sources.block_ids)], [-1], ["12"], [True]):
+        with pytest.raises((ValueError, ValidationError)):
+            work.record_unresolved(Unresolved(description="x", entity_ids=[], evidence=bad))
+    assert record["evidence"] == [number, other]
+    assert work.solve_unresolved(
+        item["id"], "Resolved from the state table", [other, other]
+    )["resolved"]
+    assert work.data["unresolved"][item["id"]]["resolved"]["evidence"] == [other]
+
+
+def test_block_table_is_global_and_survives_resume(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from rsc.extract.runner import Runner
+
+    config = ExtractConfig()
+    model = fake_model(sources, [])
+    runner = Runner(tmp_path, sources, "test", config, model, no_review())
+    table = runner.state["blocks"]
+    assert table == sources.block_table()
+    # Numbering is 0..n-1: documents in document_id order, blocks in in-document order.
+    assert [sources.block_number(*pair) for pair in table] == list(range(len(table)))
+    assert table == sorted(
+        table, key=lambda pair: (pair[0], sources.blocks[tuple(pair)]["order"])
+    )
+    runner.save()
+    # A resumed run reuses the saved numbers even if a rebuild would order blocks otherwise.
+    saved = read_json(runner.path)
+    saved["blocks"] = list(reversed(saved["blocks"]))
+    atomic_json(runner.path, saved)
+    resumed = Runner(tmp_path, sources, "test", config, model, no_review())
+    assert resumed.state["blocks"] == list(reversed(table))
+    assert resumed.sources.block_ids[0] == tuple(table[-1])
+    assert resumed.sources.block_number(*table[-1]) == 0
+    assert resumed.sources.block_locator(0)["block_id"] == table[-1][1]
+
+
+def test_old_open_item_evidence_migrates_to_the_first_block(sources):
+    work = Workspace(sources, "test", empty_registry(), Assignment("seed", "global"))
+    first, second = list(sources.blocks)[:2]
+    legacy = {
+        "document_id": first[0],
+        "block_id": first[1],
+        "start": 0,
+        "end": 10,
+        "field": "/steps/0/name",
+        "note": "old citation",
+        "section_path": ["1"],
+    }
+    later = {"document_id": second[0], "block_id": second[1], "field": "/name"}
+    data = work.data
+    data["unresolved"] = {
+        "U1": {
+            "id": "U1",
+            "description": "Old open item",
+            "entity_ids": [],
+            "evidence": [legacy, later, legacy],
+            "check_refs": [],
+            "resolved": {"reason": "settled", "evidence": [later, legacy]},
+        },
+        "U2": {
+            "id": "U2",
+            "description": "An old item whose block is gone",
+            "entity_ids": [],
+            "evidence": [{"document_id": "rfc9999", "block_id": "blk-000001"}],
+            "check_refs": [],
+        },
+    }
+    assert migrate_registry(data, sources)
+    item = data["unresolved"]["U1"]
+    # Only the first placeable block survives; fields, offsets and notes are dropped.
+    assert item["evidence"] == [sources.block_number(*first)]
+    assert item["resolved"]["evidence"] == [sources.block_number(*second)]
+    # An item that no rebuilt block can anchor is dropped rather than kept uncitable.
+    assert "U2" not in data["unresolved"]
 
 
 def test_source_map_and_snapshot(sources, tmp_path):
@@ -834,7 +891,7 @@ def test_lifecycle_checks_mature_and_each_channel_requires_its_own_actions(sourc
             Unresolved(
                 description="Missing action",
                 entity_ids=["E2"],
-                evidence=[citation(sources)],
+                evidence=[block_number(sources)],
                 check_refs=["channel_requires_connect:E999"],
             )
         )
@@ -880,7 +937,7 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
         Unresolved(
             description="The wire packet lacks its action",
             entity_ids=["E3"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
         )
     )
     work.data["unresolved"]["U1"]["deferred_kind"] = "steps"
@@ -899,7 +956,7 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
         Unresolved(
             description="The Component is embedded in the wire packet",
             entity_ids=["E5"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
             check_refs=["message_without_send:E5"],
         )
     )
@@ -907,11 +964,11 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
         Unresolved(
             description="State hook cannot be completed with supplied sources",
             entity_ids=["E4"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
             check_refs=["state_without_access:E4"],
         )
     )
-    cite = OpenBlock.model_validate(citation(sources))
+    cite = block_number(sources)
     work.solve_unresolved("U1", "Packet send has been added", [cite])
     assert {issue["check_ref"] for issue in work.issues()} == {
         "message_without_send:E5",
@@ -962,7 +1019,7 @@ def test_legacy_coverage_stays_valid_only_until_its_entity_changes(sources):
     work.add_entities(
         add([entity(sources, "messages", name=name, associated_fields=[]) for name in ("A", "B")])
     )
-    cite = citation(sources)
+    cite = block_number(sources)
     for i in (1, 2):
         key = f"E{i}"
         ref = f"message_without_send:{key}"
@@ -1055,7 +1112,7 @@ def test_global_fix_rechecks_tracked_coverage_and_unresolved_after_resume(
     from rsc.extract.runner import Runner
 
     reviewed = []
-    cite = citation(sources)
+    cite = block_number(sources)
     check_ref = "state_without_access:E6"
     flag_hook = {"reads": [], "writes": ["state.Flag"], "rule": "Set flag"}
 
@@ -1324,7 +1381,7 @@ def test_basics_rejects_interaction_gap_unresolved_items(sources):
                 Unresolved(
                     description="The interaction unit has not been modeled",
                     entity_ids=[entity_id],
-                    evidence=[citation(sources)],
+                    evidence=[block_number(sources)],
                 )
             )
     # The same pass still records a real gap in a party.
@@ -1333,7 +1390,7 @@ def test_basics_rejects_interaction_gap_unresolved_items(sources):
         Unresolved(
             description="The client's role is unclear",
             entity_ids=["E3"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
         )
     )
     assert recorded["id"] == "U1"
@@ -1497,7 +1554,7 @@ def test_completion_tools_return_repairable_categories(sources, phase, kind, cat
             Unresolved(
                 description="Client needs a channel",
                 entity_ids=["E1"],
-                evidence=[citation(sources)],
+                evidence=[block_number(sources)],
                 check_refs=["party_without_channel:E1"],
             )
         )
@@ -1709,7 +1766,7 @@ def test_category_review_and_tool_return_all_issues(sources, tmp_path, repair_ro
     from rsc.extract.runner import Runner
 
     reviewed = []
-    cite = citation(sources)
+    cite = block_number(sources)
 
     def respond(messages, info):
         latest = messages[-1].parts[-1]
@@ -2576,34 +2633,26 @@ def test_read_source_rejects_malformed_block_lists(sources):
     from rsc.extract.tools import make_server
 
     batch_id = next(iter(sources.batches))
+    batch = sources.batches[batch_id]
     work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
-    block_id = sources.batches[batch_id]["segments"][0]["block_id"]
+    block_id = batch["segments"][0]["block_id"]
+    number = sources.block_number(batch["doc_id"], block_id)
 
     async def check():
         async with Client(make_server(lambda: work)) as client:
-            for blocks in (
-                [{"block_id": block_id}],
-                [{"document_id": sources.batches[batch_id]["doc_id"]}],
-            ):
-                with pytest.raises(Exception, match="document_id and block_id"):
+            for blocks in ([-1], [len(sources.block_ids)]):
+                with pytest.raises(Exception, match="unknown source block"):
                     await client.call_tool("read_source", {"blocks": blocks})
-            # A non-dict item is rejected by argument validation instead.
-            with pytest.raises(Exception, match="valid dictionary"):
-                await client.call_tool("read_source", {"blocks": [block_id]})
+            # Non-integer items are rejected by argument validation.
+            for blocks in ([block_id], [{"id": number}]):
+                with pytest.raises(Exception, match="valid integer"):
+                    await client.call_tool("read_source", {"blocks": blocks})
             ok = (
-                await client.call_tool(
-                    "read_source",
-                    {
-                        "blocks": [
-                            {
-                                "document_id": sources.batches[batch_id]["doc_id"],
-                                "block_id": block_id,
-                            }
-                        ]
-                    },
-                )
+                await client.call_tool("read_source", {"blocks": [number]})
             ).data
-            assert ok["count"] == 1 and ok["blocks"][0]["block_id"] == block_id
+            assert ok["count"] == 1
+            assert ok["blocks"][0]["id"] == number
+            assert ok["blocks"][0]["block_id"] == block_id
 
     asyncio.run(check())
 
@@ -2665,7 +2714,7 @@ def test_read_source_pages_by_real_tokens_and_dedups_blocks(sources):
     work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
     batch = sources.batches[batch_id]
     keys = [
-        {"document_id": batch["doc_id"], "block_id": part["block_id"]}
+        sources.block_number(batch["doc_id"], part["block_id"])
         for part in batch["segments"]
     ] * 3
 
@@ -2699,7 +2748,7 @@ def test_read_source_pages_by_real_tokens_and_dedups_blocks(sources):
                         "document_id": batch["doc_id"],
                         "section_path": list(
                             sources.blocks[
-                                (batch["doc_id"], keys[0]["block_id"])
+                                (batch["doc_id"], batch["segments"][0]["block_id"])
                             ]["section_path"]
                         ),
                         "max_tokens": 200,
@@ -4173,7 +4222,7 @@ def unresolved_item(sources, item_id, targets, **updates):
         "description": "The source leaves the transport lifecycle to the layers above.",
         "missing_information": "Transport operations for this channel.",
         "entity_ids": list(targets),
-        "evidence": [citation(sources)],
+        "evidence": [block_number(sources)],
         "check_refs": [f"{kind}:{target}" for target in targets for kind in kinds],
     }
     item.update(updates)
@@ -4190,8 +4239,7 @@ def fix_group(rows, unresolved=()):
 def test_blocked_signature_ignores_order_but_tracks_content(sources):
     from rsc.extract.groups import blocked_signature
 
-    first, second = [{"document_id": doc, "block_id": block} for doc, block in
-                     list(sources.blocks)[:2]]
+    first, second = [sources.block_number(*key) for key in list(sources.blocks)[:2]]
     rows = [
         check_row(sources, "E1", "channel_requires_connect"),
         check_row(sources, "E1", "channel_requires_listen"),
@@ -4201,19 +4249,19 @@ def test_blocked_signature_ignores_order_but_tracks_content(sources):
     group = fix_group(rows, [item])
     signature = blocked_signature(group, [item], sources)
     assert signature
-    # Reordering the checks or the cited evidence changes nothing.
+    # Reordering the checks or the cited blocks changes nothing.
     reordered = deepcopy(item)
     reordered["evidence"] = [second, first]
     shuffled = [deepcopy(rows[1]), deepcopy(rows[0])]
     assert blocked_signature(fix_group(shuffled, [reordered]), [reordered], sources) == signature
-    # A note, an extra check or a location that no longer resolves does change it.
+    # Another set of blocks, an extra check or a block outside the table changes it.
     noted = deepcopy(item)
-    noted["evidence"] = [{**first, "note": "different reading"}, second]
+    noted["evidence"] = [second]
     assert blocked_signature(group, [noted], sources) != signature
     extra = [*rows, check_row(sources, "E1", "channel_requires_close")]
     assert blocked_signature(fix_group(extra, [item]), [item], sources) != signature
     gone = deepcopy(item)
-    gone["evidence"] = [{"document_id": "rfc5246", "block_id": "blk-999999"}]
+    gone["evidence"] = [len(sources.block_ids) + 5]
     assert blocked_signature(group, [gone], sources) == ""
 
 
@@ -4301,8 +4349,7 @@ def test_deferral_clears_when_the_signature_changes(sources, case):
         check_row(sources, "E1", "channel_requires_listen"),
         check_row(sources, "E2", "channel_requires_connect"),
     ]
-    first, second = [{"document_id": doc, "block_id": block} for doc, block in
-                     list(sources.blocks)[:2]]
+    first, second = [sources.block_number(*key) for key in list(sources.blocks)[:2]]
     item = unresolved_item(sources, "U1", ["E1"])
     item["evidence"] = [first]
     items = [item]
@@ -4505,23 +4552,22 @@ def test_category_fix_keeps_the_group_when_its_signature_moved(
     runner, prompts = deferrable_runner(
         sources, tmp_path, monkeypatch, lambda prompt, latest, calls: None, max_repair_rounds=1
     )
-    cites = [{"document_id": doc, "block_id": block} for doc, block in list(sources.blocks)[:2]]
+    numbers = [sources.block_number(*key) for key in list(sources.blocks)[:2]]
     calls = []
 
     def alternating(work):
-        # Every read sees a different citation for the same checks, so the blocked
+        # Every read anchors the same checks on a different block, so the blocked
         # signature an attempt started with never survives to the end of it.
-        cites_turn = cites[len(calls) % 2]
+        number = numbers[len(calls) % 2]
         calls.append(1)
+        for item in work.data["unresolved"].values():
+            item["evidence"] = [number]
         return [
-            {**row, "evidence": [cites_turn]}
-            for row in [
-                check_row(sources, "E1", "channel_requires_connect"),
-                check_row(sources, "E1", "channel_requires_listen"),
-                check_row(sources, "E2", "channel_requires_connect"),
-                check_row(sources, "E2", "channel_requires_listen"),
-                check_row(sources, "E2", "channel_requires_close"),
-            ]
+            check_row(sources, "E1", "channel_requires_connect"),
+            check_row(sources, "E1", "channel_requires_listen"),
+            check_row(sources, "E2", "channel_requires_connect"),
+            check_row(sources, "E2", "channel_requires_listen"),
+            check_row(sources, "E2", "channel_requires_close"),
         ]
 
     async def check():
@@ -4763,7 +4809,7 @@ def test_complete_batch_seals_a_clean_basics_batch_with_open_items(sources):
         Unresolved(
             description="The batch does not say which side closes",
             entity_ids=["E1"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
             missing_information="which side closes",
         )
     )
@@ -4795,7 +4841,7 @@ def test_complete_batch_does_not_let_an_open_item_explain_a_check_away(sources):
         Unresolved(
             description="The channel is still to be written",
             entity_ids=["E1"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
             check_refs=[check_ref],
         )
     )
@@ -5338,20 +5384,15 @@ def steps_recheck_case(sources, *, history=True, cite=None, unresolved=None):
     """A steps workspace whose own basics pass left one open item on its text."""
     batch_id = next(iter(sources.batches))
     batch = sources.batches[batch_id]
-    block = batch["segments"][0]
+    segment = batch["segments"][0]
     row = unresolved or {
         "id": "U1",
         "description": "The overview describes the exchange this batch shows",
         "entity_ids": [],
         "evidence": [
             cite
-            or {
-                "document_id": batch["doc_id"],
-                "block_id": block["block_id"],
-                "start": block["start"],
-                "end": block["end"],
-                "section_path": block["section_path"],
-            }
+            if cite is not None
+            else sources.block_number(batch["doc_id"], segment["block_id"])
         ],
         "check_refs": [],
         "assignment": batch_id,
@@ -5385,7 +5426,9 @@ def test_steps_recheck_names_the_open_items_of_this_batch(sources):
     work, batch_id = steps_recheck_case(sources)
     rows = work.steps_recheck()
     assert [row["id"] for row in rows] == ["U1"]
-    assert rows[0]["document_id"] == sources.batches[batch_id]["doc_id"]
+    batch = sources.batches[batch_id]
+    expected = sources.block_number(batch["doc_id"], batch["segments"][0]["block_id"])
+    assert rows[0]["block"] == expected
     # Asking is a read: no mutation, nothing recorded.
     assert work.mutations == []
     assert work.completion is None
@@ -5394,7 +5437,9 @@ def test_steps_recheck_names_the_open_items_of_this_batch(sources):
 def test_steps_recheck_ignores_a_written_step(sources):
     add = TypeAdapter(list[EntityAddition]).validate_python
     work, _ = steps_recheck_case(sources)
-    work.add_entities(add([interaction_fixtures(sources)["steps"]]))
+    steps = interaction_fixtures(sources)["steps"]
+    steps["mentions"] = [citation(sources)]
+    work.add_entities(add([steps]))
     assert work.mutations
     assert work.steps_recheck() is None
 
@@ -5405,7 +5450,9 @@ def test_steps_recheck_ignores_a_covered_block(sources):
     earlier = Workspace(
         sources, "test", empty_registry(), Assignment(batch_id, "scan", "steps")
     )
-    earlier.add_entities(add([interaction_fixtures(sources)["steps"]]))
+    steps = interaction_fixtures(sources)["steps"]
+    steps["mentions"] = [citation(sources)]
+    earlier.add_entities(add([steps]))
     # The step already exists, but this workspace wrote nothing: only the citation
     # stops the reminder, and the model is expected to cite that step.
     reuse = Workspace(
@@ -5422,7 +5469,7 @@ def test_steps_recheck_ignores_a_covered_block(sources):
 def test_steps_recheck_needs_this_batchs_own_record(sources):
     other = steps_recheck_case(sources, history=False)
     assert other[0].steps_recheck() is None
-    # A basics record of another batch, or of another kind, is not this batch's evidence.
+    # A basics record of another batch, or of another kind, is not this batch's record.
     work, batch_id = steps_recheck_case(sources)
     work.history = [
         {
@@ -5441,13 +5488,19 @@ def test_steps_recheck_ignores_resolved_items_and_other_documents(sources):
     resolved, _ = steps_recheck_case(sources)
     resolved.data["unresolved"]["U1"]["resolved"] = "done"
     assert resolved.steps_recheck() is None
-    # Same block number, other document: that block is not part of this batch.
-    other_doc, _ = steps_recheck_case(sources)
-    other_doc.data["unresolved"]["U1"]["evidence"][0]["document_id"] = "rfc9999"
+    # A block of another document is not part of this batch.
+    other_doc, batch_id = steps_recheck_case(sources)
+    batch_doc = sources.batches[batch_id]["doc_id"]
+    other_number = next(
+        number
+        for (document, _), number in sources.block_numbers.items()
+        if document != batch_doc
+    )
+    other_doc.data["unresolved"]["U1"]["evidence"] = [other_number]
     assert other_doc.steps_recheck() is None
-    # A block of this document that the batch does not carry is no evidence either.
+    # An unknown block ID is no evidence either.
     other_block, _ = steps_recheck_case(sources)
-    other_block.data["unresolved"]["U1"]["evidence"][0]["block_id"] = "blk-999999"
+    other_block.data["unresolved"]["U1"]["evidence"] = [len(sources.block_ids) + 5]
     assert other_block.steps_recheck() is None
 
 
@@ -5455,9 +5508,20 @@ def test_steps_recheck_only_trusts_a_unique_fragment(sources):
     class Fragments:
         blocks = {("doc", "blk-000001"): {"text": "0123456789", "block_id": "blk-000001"}}
         originals = {"doc": "xx0123456789yy", "doc2": "a0123456789b0123456789c"}
+        block_ids = [("doc", "blk-000001")]
+
+        def block_locator(self, number):
+            return {
+                "document_id": "doc",
+                "block_id": "blk-000001",
+                "start": 0,
+                "end": 10,
+                "section_path": [],
+            }
 
     work, _ = steps_recheck_case(sources)
     work.sources = Fragments()
+    work.data["unresolved"]["U1"]["evidence"] = [0]
     batch = {
         "doc_id": "doc",
         "segments": [{"block_id": "blk-000001", "start": 0, "end": 4, "text": "0123"}],

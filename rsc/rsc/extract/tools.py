@@ -29,7 +29,6 @@ from .registry import (
     EntityAddition,
     EntityUpdate,
     Kind,
-    OpenBlock,
     Unresolved,
     identity,
     summary,
@@ -90,49 +89,18 @@ def select_fields(value, fields):
     return result
 
 
-def citation_location(item):
-    """The values a scan prompt needs to re-read one cited block.
-
-    Returns ``None`` for an old citation without a usable location: the caller passes
-    that item through unchanged rather than dropping or rewriting it.
-    """
-    document_id = item.get("document_id")
-    block_id = item.get("block_id")
-    if not document_id or not block_id:
-        return None
-    location = {"document_id": document_id, "block_id": block_id}
-    field = (item.get("field") or "").strip()
-    if field:
-        location["field"] = field
-    return location
-
-
 def projected_unresolved(items):
-    """Open unresolved items with only the re-read locations kept in their evidence.
+    """Open unresolved items with their evidence reduced to duplicate-free block IDs.
 
     Every open item is kept, in order, with its id, description, missing information,
-    entities and check refs untouched. Within one item the evidence is reduced to
-    ``document_id``, ``block_id`` and a non-empty ``field``, deduplicated on those three
-    values in first-seen order; the same block under another field, or cited by another
-    item, stays a separate entry. ``note``, ``section_path`` and offsets are dropped
-    because the block can be re-read instead.
+    entities and check refs untouched. Evidence is a list of integer block IDs, so the
+    only projection left is removing repeats while keeping first-seen order: read any
+    block once with read_source(blocks=[...]).
     """
-    projected = []
-    for item in items:
-        evidence = []
-        seen = set()
-        for citation in item.get("evidence") or ():
-            location = citation_location(citation)
-            if location is None:
-                evidence.append(citation)
-                continue
-            key = (location["document_id"], location["block_id"], location.get("field", ""))
-            if key in seen:
-                continue
-            seen.add(key)
-            evidence.append(location)
-        projected.append({**item, "evidence": evidence})
-    return projected
+    return [
+        {**item, "evidence": list(dict.fromkeys(item.get("evidence") or ()))}
+        for item in items
+    ]
 
 
 def field_paths(value, prefix=""):
@@ -545,7 +513,7 @@ def make_server(
         document_id: str | None = None,
         section_path: list[str] | None = None,
         block_id: str | None = None,
-        blocks: list[dict] | None = None,
+        blocks: list[int] | None = None,
         offset: int = 0,
         limit_chars: int = 10000,
         max_tokens: int = DETAIL_PAGE_TOKENS,
@@ -554,10 +522,11 @@ def make_server(
         """Read a batch, a document section (including subsections), or document blocks.
 
         For RFC section 4.2, section_path may be ["4", "2"] or ["4.2"].
-        Offsets page through the returned text or block list. Use blocks=[{document_id,
-        block_id}, ...] to read several evidence blocks at once; each block is delivered
-        once and next_offset continues the list. original=true returns the frozen source
-        span for a single block.
+        Offsets page through the returned text or block list. Batch and section text is
+        prefixed with each block's integer ID. Use blocks=[1042, 1043] to read several
+        blocks at once; each block is delivered once with its integer ID, and
+        next_offset continues the list. original=true returns the frozen source span for
+        a single block.
         """
         sources = current().sources
         if offset < 0 or limit_chars < 1:
@@ -566,37 +535,33 @@ def make_server(
             if batch_id is not None or section_path is not None or block_id is not None:
                 raise ValueError("use blocks on its own")
             malformed = [
-                item
-                for item in blocks
-                if not isinstance(item, dict)
-                or "document_id" not in item
-                or "block_id" not in item
+                item for item in blocks if isinstance(item, bool) or not isinstance(item, int)
             ]
             if malformed:
-                raise ValueError(
-                    "each blocks item needs document_id and block_id, e.g. "
-                    '{"document_id": "rfc2326", "block_id": "blk-000012"}'
-                )
-            wanted = list(
-                dict.fromkeys((item["document_id"], item["block_id"]) for item in blocks)
-            )
+                raise ValueError("each blocks item is an integer block ID, e.g. blocks=[1042]")
+            wanted = list(dict.fromkeys(blocks))
             allowed = budget.reserve(max_tokens)
             selected = []
             used = 0
             index = offset
             while index < len(wanted):
-                document, block = wanted[index]
+                number = wanted[index]
+                location = sources.block_locator(number)
+                document = location["document_id"]
                 if original:
-                    location = sources.evidence(document, block)
                     text = sources.originals[document][location["start"] : location["end"]]
                 else:
-                    location = sources.evidence(document, block)
                     text = sources.blocks[document, location["block_id"]]["text"]
                 cost = count_tokens(text) + 16
                 if selected and used + cost > allowed:
                     break
                 selected.append(
-                    {"document_id": document, "block_id": location["block_id"], "text": text}
+                    {
+                        "id": number,
+                        "document_id": document,
+                        "block_id": location["block_id"],
+                        "text": text,
+                    }
                 )
                 used += cost
                 index += 1
@@ -616,7 +581,7 @@ def make_server(
                 raise ValueError("unknown batch or unsupported original view for batch")
             batch = sources.batch_context(batch_id)
             keys = [(batch["doc_id"], part["block"]) for part in batch["segments"]]
-            body = "\n".join(f"[{part['block']}] {part['text']}" for part in batch["segments"])
+            body = "\n".join(f"[{part['id']}] {part['text']}" for part in batch["segments"])
         elif batch_id is None and document_id in sources.documents:
             if block_id is not None and section_path is None:
                 locator = sources.evidence(document_id, block_id)
@@ -652,7 +617,10 @@ def make_server(
                 location = sources.evidence(*keys[0])
                 body = sources.originals[document_id][location["start"] : location["end"]]
             else:
-                body = "\n".join(f"[{key[1]}] {sources.blocks[key]['text']}" for key in keys)
+                body = "\n".join(
+                    f"[{sources.block_numbers[key]}] {sources.blocks[key]['text']}"
+                    for key in keys
+                )
         else:
             raise ValueError("specify one batch or one document locator")
         # The char window is capped by the call budget as well, so one section cannot
@@ -723,7 +691,7 @@ def make_server(
         return reply
 
     async def record_unresolved(issue: Unresolved) -> dict:
-        """Record a new unresolved issue with its source block locators.
+        """Record a new unresolved issue with the integer block IDs that support it.
 
         For an issue reported by validation, include the exact check_refs and all listed
         entity IDs. Recording an issue does not remove it from validation. The basics pass
@@ -734,9 +702,9 @@ def make_server(
     async def solve_unresolved(
         unresolved_id: str,
         reason: Annotated[str, Field(min_length=1)],
-        evidence: Annotated[list[OpenBlock], Field(min_length=1)],
+        evidence: Annotated[list[int], Field(min_length=1)],
     ) -> dict:
-        """Mark an existing unresolved ID as solved with a reason and source blocks.
+        """Mark an existing unresolved ID as solved with a reason and integer block IDs.
 
         Any linked coverage checks must already pass. Use the unresolved ID even if
         entities listed on the original issue have since been withdrawn.
@@ -903,10 +871,7 @@ def make_server(
                         "description": item["description"],
                         "entity_ids": item.get("entity_ids") or [],
                         "check_refs": item.get("check_refs") or [],
-                        "evidence": [
-                            {"document_id": cite["document_id"], "block_id": cite["block_id"]}
-                            for cite in (item.get("evidence") or [])[:3]
-                        ],
+                        "evidence": list(item.get("evidence") or [])[:3],
                     }
                 ),
                 unresolved,

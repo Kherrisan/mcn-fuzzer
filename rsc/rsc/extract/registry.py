@@ -49,13 +49,6 @@ class SourceBlock(StrictModel):
     end: int | None = None
 
 
-class OpenBlock(SourceBlock):
-    """Where one open item is anchored in the frozen source."""
-
-    field: str = Field(default="", description="Field the item concerns, when it names one.")
-    note: str = Field(default="", description="Short note recorded with the open item.")
-
-
 class Addition(StrictModel):
     aliases: list[str] = Field(default_factory=list)
     mentions: list[SourceBlock] = Field(default_factory=list)
@@ -156,7 +149,13 @@ class EntityUpdate(StrictModel):
 class Unresolved(StrictModel):
     description: Annotated[str, Field(min_length=1)]
     entity_ids: list[str]
-    evidence: Annotated[list[OpenBlock], Field(min_length=1)]
+    evidence: Annotated[
+        list[int],
+        Field(
+            min_length=1,
+            description="Integer block IDs from the global block table; at least one.",
+        ),
+    ]
     missing_information: str = ""
     check_refs: list[str] = Field(
         default_factory=list,
@@ -312,11 +311,45 @@ def delta_fields(fields, delta):
     return result
 
 
-def migrate_registry(data):
-    """Normalize saved unresolved records and drop legacy entity evidence."""
+def migrate_registry(data, sources=None):
+    """Normalize saved unresolved records, old citations and legacy entity evidence."""
     records = data["entities"]
     migrated = False
-    for issue in data["unresolved"].values():
+    for key in list(data["unresolved"]):
+        issue = data["unresolved"][key]
+        # Old open items cited blocks by document_id/block_id. Keep the first block the
+        # rebuilt block table can place and replace the whole citation list with its
+        # integer ID; an item with no placeable block cannot be cited and is dropped.
+        old = issue.get("evidence") or ()
+        if old and isinstance(old[0], dict):
+            number = None
+            if sources is not None:
+                for entry in old:
+                    number = sources.block_number(
+                        entry.get("document_id"), entry.get("block_id")
+                    )
+                    if number is not None:
+                        break
+            if number is None:
+                del data["unresolved"][key]
+                migrated = True
+                continue
+            issue["evidence"] = [number]
+            migrated = True
+        resolved = issue.get("resolved")
+        if isinstance(resolved, dict) and (resolved.get("evidence") or [None])[0] is not None:
+            old = resolved["evidence"]
+            if old and isinstance(old[0], dict):
+                number = None
+                if sources is not None:
+                    for entry in old:
+                        number = sources.block_number(
+                            entry.get("document_id"), entry.get("block_id")
+                        )
+                        if number is not None:
+                            break
+                resolved["evidence"] = [] if number is None else [number]
+                migrated = True
         for key in ("deferred_kind", "disposition"):
             if key in issue:
                 issue.pop(key)
@@ -493,7 +526,7 @@ class Workspace:
                 continue
             if part.get("start") == 0 and part.get("end") == len(block.get("text") or ""):
                 return True
-            # Segment offsets are block-local while evidence offsets are document
+            # Segment offsets are block-local while citation offsets are document
             # coordinates, so a fragment only counts when the frozen text locates it
             # once and the cited range reaches into it.
             start, end = cite.get("start"), cite.get("end")
@@ -556,15 +589,13 @@ class Workspace:
         for unresolved in self.open_unresolved():
             if unresolved.get("id") not in created:
                 continue
-            for cite in unresolved.get("evidence") or ():
-                if self.batch_holds(batch, cite):
-                    rows.append(
-                        {
-                            "id": unresolved["id"],
-                            "document_id": cite.get("document_id"),
-                            "block_id": cite.get("block_id"),
-                        }
-                    )
+            for number in unresolved.get("evidence") or ():
+                try:
+                    locator = self.sources.block_locator(number)
+                except (ValueError, TypeError):
+                    continue
+                if self.batch_holds(batch, locator):
+                    rows.append({"id": unresolved["id"], "block": number})
                     break
         return rows[:2] or None
 
@@ -625,10 +656,6 @@ class Workspace:
 
     def location(self, item):
         return self.sources.evidence(item.document_id, item.block_id, item.start, item.end)
-
-    def open_citation(self, item):
-        """One open item's locator: the frozen span plus the item's own field and note."""
-        return {**self.location(item), "field": item.field, "note": item.note}
 
     def add_entities(self, entities: list[EntityAddition]):
         """Add a group of entities atomically."""
@@ -815,12 +842,15 @@ class Workspace:
                     check_entity_ids.update(check["records"])
                 if not check_entity_ids <= set(issue.entity_ids):
                     raise ValueError("include every entity listed by the checks")
+            evidence = list(dict.fromkeys(issue.evidence))
+            for number in evidence:
+                self.sources.block_locator(number)
             self.data["next_issue"] += 1
             key = f"U{self.data['next_issue']}"
             self.data["unresolved"][key] = {
                 **issue.model_dump(),
+                "evidence": evidence,
                 "id": key,
-                "evidence": [self.open_citation(item) for item in issue.evidence],
                 "assignment": self.assignment.id,
             }
             if check_entity_ids:
@@ -829,7 +859,7 @@ class Workspace:
 
         return self.mutate("unresolved", issue.model_dump(), apply)
 
-    def solve_unresolved(self, unresolved_id: str, reason: str, evidence: list[OpenBlock]):
+    def solve_unresolved(self, unresolved_id: str, reason: str, evidence: list[int]):
         def apply():
             item = self.data["unresolved"].get(unresolved_id)
             if item is None or item.get("resolved"):
@@ -842,14 +872,17 @@ class Workspace:
             )
             if remaining:
                 raise ValueError(f"linked coverage checks remain: {', '.join(remaining)}")
+            numbers = list(dict.fromkeys(evidence))
+            for number in numbers:
+                self.sources.block_locator(number)
             item["resolved"] = {
                 "reason": reason,
-                "evidence": [self.open_citation(cite) for cite in evidence],
+                "evidence": numbers,
                 "assignment": self.assignment.id,
             }
             return {"id": unresolved_id, "resolved": True}
 
-        request = [unresolved_id, reason, [item.model_dump() for item in evidence]]
+        request = [unresolved_id, reason, list(evidence)]
         return self.mutate("solve_unresolved", request, apply)
 
     def describe_issues(self, issues):
