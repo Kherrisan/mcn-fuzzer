@@ -173,50 +173,28 @@ def test_scan_prompt_keeps_every_open_item_and_only_their_citations():
     assert items[0]["evidence"][0]["start"] == 10
 
 
-def test_scan_prompt_projection_reaches_the_prompt(sources):
+def test_open_unresolved_reach_another_batch(sources):
     current, earlier = sources.batches
     remote = sources.batch_context(earlier)
-    evidence = [{"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}]
-    work = Workspace(sources, "test", empty_registry(), Assignment(earlier, "scan", "parties"))
-    work.record_unresolved(
-        Unresolved(
-            description="Missing definition of the close",
-            entity_ids=[],
-            evidence=evidence,
-            missing_information="which side closes",
-        )
-    )
-    work = Workspace(sources, "test", work.data, Assignment(current, "scan", "channels"))
-    items = related(work)["unresolved"]
-    assert [item["id"] for item in items] == ["U1"]
-    assert items[0]["missing_information"] == "which side closes"
-    assert items[0]["evidence"] == [
-        {"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}
-    ]
-
-
-def test_batch_receives_all_open_unresolved_from_other_batches(sources):
-    current, earlier = sources.batches
-    remote = sources.batch_context(earlier)
-    evidence = [{"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}]
+    located = {"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}
     work = Workspace(sources, "test", empty_registry(), Assignment(earlier, "scan", "parties"))
     for i in range(12):
         work.record_unresolved(
             Unresolved(
                 description=f"Missing definition {i} " + "x" * 1000,
                 entity_ids=[],
-                evidence=evidence,
+                evidence=[located],
                 missing_information=f"Need definition {i}",
             )
         )
-    work.solve_unresolved(
-        "U1", "Definition found", [Evidence.model_validate(evidence[0])]
-    )
+    work.solve_unresolved("U1", "Definition found", [Evidence.model_validate(located)])
     work = Workspace(sources, "test", work.data, Assignment(current, "scan", "channels"))
     items = related(work)["unresolved"]
+    # Closed items are gone and the open ones keep their registration order.
     assert [item["id"] for item in items] == [f"U{i}" for i in range(2, 13)]
     assert items[-1]["missing_information"] == "Need definition 11"
-    assert all(item["evidence"][0]["document_id"] == remote["doc_id"] for item in items)
+    # The remote batch's citation survives projection exactly, and never picks up a field.
+    assert [item["evidence"] for item in items] == [[located] for _ in items]
 
 
 def test_source_map_and_snapshot(sources, tmp_path):

@@ -185,15 +185,6 @@ def scan_writes(assignment):
     return SCAN_WRITES.get(assignment.kind, (assignment.kind,))
 
 
-def page(values, offset, limit):
-    # Clamp instead of rejecting: agents routinely page with limit=0 or a negative
-    # offset to mean "from the start" / "as many as possible".
-    offset = max(0, offset)
-    limit = min(MAX_PAGE, max(1, limit))
-    end = offset + limit
-    return {"rows": values[offset:end], "next_offset": end if end < len(values) else None}
-
-
 def identity(row):
     value = row["value"]
     return value.get("name") or f"{value['prior_step']} → {value['dependent_step']}"

@@ -293,22 +293,6 @@ class ModelMeasure:
 BLOCK_ID = re.compile(r"blk-\d+")
 
 
-def stub_text(content, max_chars):
-    """Replace a large tool result with a handle the agent can re-read."""
-    if isinstance(content, str):
-        text = content
-    else:
-        text = dumps(content)
-    if len(text) <= max_chars:
-        return None
-    return {
-        "omitted": True,
-        "chars": len(text),
-        "blocks": sorted(set(BLOCK_ID.findall(text)))[:12],
-        "note": "Re-read with read_source(document_id=..., block_id=...) when needed.",
-    }
-
-
 TEXT_CHARS = 400
 ARGS_CHARS = 240
 # One Fix prompt carries at most this much of the validation overview; the rest is read
