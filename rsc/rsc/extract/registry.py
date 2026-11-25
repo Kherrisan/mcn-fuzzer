@@ -844,7 +844,15 @@ class Workspace:
 
         def apply():
             for key in issue.entity_ids:
-                self.canonical(key)
+                entity_id = self.canonical(key)
+                if (
+                    self.assignment.kind == "basics"
+                    and self.records[entity_id]["kind"]
+                    in ("states", "steps", "step_dependencies")
+                ):
+                    raise ValueError(
+                        "basics unresolved items must concern parties, channels or messages"
+                    )
             check_entity_ids = set()
             if issue.check_refs:
                 pending = {row["check_ref"]: row for row in self.coverage_issues()}

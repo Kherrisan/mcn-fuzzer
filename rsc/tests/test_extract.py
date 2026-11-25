@@ -1304,7 +1304,52 @@ def test_basics_prompt_orders_parties_then_channels_then_messages(sources, tmp_p
     assert "middlebox" not in rule
     assert "If a party appears only in messages" in rule
     assert "belong to the interaction-unit pass" in rule
+    assert "Do not record interaction-modeling gaps here" in rule
+    assert (
+        "are the interaction-unit pass's job and are not unresolved items for this pass"
+        in rule
+    )
+    assert (
+        "Only gaps in the parties, channels and messages you were asked to write "
+        "belong in record_unresolved" in rule
+    )
+    assert "When a message needs a send step" not in rule
+    assert "Rows about missing sends" not in rule
     assert "write steps, states and step_dependencies together" not in rule
+
+
+def test_basics_rejects_interaction_gap_unresolved_items(sources):
+    steps = Workspace(sources, "t", empty_registry(), Assignment("steps", "scan", "steps"))
+    fixtures = interaction_fixtures(sources)
+    steps.add_entities(
+        TypeAdapter(list[EntityAddition]).validate_python(
+            [fixtures["steps"], fixtures["states"]]
+        )
+    )
+    work = Workspace(sources, "t", steps.data, Assignment("basics", "scan", "basics"))
+    for entity_id in ("E1", "E2"):
+        with pytest.raises(
+            ValueError,
+            match="basics unresolved items must concern parties, channels or messages",
+        ):
+            work.record_unresolved(
+                Unresolved(
+                    description="The interaction unit has not been modeled",
+                    entity_ids=[entity_id],
+                    evidence=[citation(sources)],
+                )
+            )
+    # The same pass still records a real gap in a party.
+    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([party(sources, "Client")]))
+    recorded = work.record_unresolved(
+        Unresolved(
+            description="The client's role is unclear",
+            entity_ids=["E3"],
+            evidence=[citation(sources)],
+        )
+    )
+    assert recorded["id"] == "U1"
+    assert work.data["unresolved"]["U1"]["entity_ids"] == ["E3"]
 
 
 def test_legacy_four_pass_checkpoint_resumes(sources, tmp_path):

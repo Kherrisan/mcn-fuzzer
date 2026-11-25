@@ -755,7 +755,8 @@ def make_server(
         """Record a new unresolved issue with source evidence.
 
         For an issue reported by validation, include the exact check_refs and all listed
-        entity IDs. Recording an issue does not remove it from validation.
+        entity IDs. Recording an issue does not remove it from validation. The basics pass
+        only accepts gaps in parties, channels and messages.
         """
         return await mutate(lambda: current().record_unresolved(issue))
 
