@@ -378,11 +378,17 @@ def rewrite_references(before, after, redirects):
 
 
 class Workspace:
-    def __init__(self, sources, protocol, previous, assignment):
+    def __init__(self, sources, protocol, previous, assignment, history=None):
         self.sources = sources
         self.protocol = protocol
         self.assignment = assignment
         self.data = deepcopy(previous)
+        # Sealed records of this run: the steps pass reads the basics record of its own
+        # batch from here. Older checkpoints may not carry one; then nothing is asked.
+        self.history = tuple(history or ())
+        # One steps reminder per workspace, so a retry or a repeat submission cannot
+        # turn the reminder into a gate.
+        self.reconsidered = False
         self.receipts = {}
         self.mutations = []
         self.initial_issues = set(previous["unresolved"])
@@ -444,6 +450,91 @@ class Workspace:
     @property
     def created_issues(self):
         return self.data["unresolved"].keys() - self.initial_issues
+
+    def batch_holds(self, batch, cite):
+        """Whether one citation points into the text this batch asked the model to read."""
+        if cite.get("document_id") != batch["doc_id"]:
+            return False
+        block = self.sources.blocks.get((batch["doc_id"], cite.get("block_id")))
+        if block is None:
+            return False
+        for part in batch["segments"]:
+            if part.get("block_id") != cite.get("block_id"):
+                continue
+            if part.get("start") == 0 and part.get("end") == len(block.get("text") or ""):
+                return True
+            # Segment offsets are block-local while evidence offsets are document
+            # coordinates, so a fragment only counts when the frozen text locates it
+            # once and the cited range reaches into it.
+            start, end = cite.get("start"), cite.get("end")
+            text = part.get("text") or ""
+            originals = self.sources.originals.get(batch["doc_id"]) or ""
+            if not isinstance(start, int) or not isinstance(end, int) or not text:
+                continue
+            at = originals.find(text)
+            if at < 0 or originals.count(text) != 1:
+                continue
+            if start < at + len(text) and at < end:
+                return True
+        return False
+
+    def steps_recheck(self):
+        """Open items this batch's own basics pass raised, for one steps reminder.
+
+        A steps batch that wrote nothing, whose text still carries basics open items no
+        existing step refers to, gets one chance to look again before it seals. Returns
+        the rows to name, or None when the batch should seal exactly as before.
+        """
+        if self.assignment.phase != "scan" or self.assignment.kind != "steps":
+            return None
+        batch = self.sources.batches.get(self.assignment.id)
+        if batch is None or self.mutations or self.reconsidered:
+            return None
+        if any(
+            record.get("phase") == "scan"
+            and record.get("kind") == "steps"
+            and record.get("id") == self.assignment.id
+            and record.get("status")
+            for record in self.history
+        ):
+            # A sealed batch is never asked again, even if its own record is re-read.
+            return None
+        created = {
+            (mutation.get("result") or {}).get("id")
+            for record in self.history
+            if record.get("phase") == "scan"
+            and record.get("kind") == "basics"
+            and record.get("id") == self.assignment.id
+            for mutation in record.get("mutations") or ()
+            if mutation.get("operation") == "unresolved"
+        }
+        created.discard(None)
+        if not created:
+            return None
+        blocks = {(batch["doc_id"], part.get("block_id")) for part in batch["segments"]}
+        written = {
+            (cite.get("document_id"), cite.get("block_id"))
+            for row in self.records.values()
+            if row["kind"] == "steps"
+            for cite in row.get("evidence") or ()
+        }
+        if blocks & written:
+            return None
+        rows = []
+        for unresolved in self.open_unresolved():
+            if unresolved.get("id") not in created:
+                continue
+            for cite in unresolved.get("evidence") or ():
+                if self.batch_holds(batch, cite):
+                    rows.append(
+                        {
+                            "id": unresolved["id"],
+                            "document_id": cite.get("document_id"),
+                            "block_id": cite.get("block_id"),
+                        }
+                    )
+                    break
+        return rows[:2] or None
 
     def allowed(self, kind):
         if self.assignment.phase == "review":

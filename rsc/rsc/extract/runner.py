@@ -997,7 +997,13 @@ class Runner:
         )
 
     def workspace(self, assignment):
-        return Workspace(self.sources, self.protocol, self.state["registry"], assignment)
+        return Workspace(
+            self.sources,
+            self.protocol,
+            self.state["registry"],
+            assignment,
+            history=self.state["records"],
+        )
 
     @property
     def active(self):

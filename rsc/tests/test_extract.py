@@ -5186,3 +5186,280 @@ def test_compact_rejection_on_a_resumed_checkpoint(sources):
         assert "checked" not in saved
 
     asyncio.run(check())
+
+
+def steps_recheck_case(sources, *, history=True, cite=None, unresolved=None):
+    """A steps workspace whose own basics pass left one open item on its text."""
+    batch_id = next(iter(sources.batches))
+    batch = sources.batches[batch_id]
+    block = batch["segments"][0]
+    row = unresolved or {
+        "id": "U1",
+        "description": "The overview describes the exchange this batch shows",
+        "entity_ids": [],
+        "evidence": [
+            cite
+            or {
+                "document_id": batch["doc_id"],
+                "block_id": block["block_id"],
+                "start": block["start"],
+                "end": block["end"],
+                "section_path": block["section_path"],
+            }
+        ],
+        "check_refs": [],
+        "assignment": batch_id,
+    }
+    previous = empty_registry()
+    previous["unresolved"]["U1"] = row
+    records = []
+    if history:
+        records.append(
+            {
+                "id": batch_id,
+                "phase": "scan",
+                "kind": "basics",
+                "status": "completed_with_unresolved",
+                "mutations": [
+                    {"operation": "unresolved", "request": row, "result": {"id": "U1"}}
+                ],
+            }
+        )
+    work = Workspace(
+        sources,
+        "test",
+        previous,
+        Assignment(batch_id, "scan", "steps"),
+        history=records,
+    )
+    return work, batch_id
+
+
+def test_steps_recheck_names_the_open_items_of_this_batch(sources):
+    work, batch_id = steps_recheck_case(sources)
+    rows = work.steps_recheck()
+    assert [row["id"] for row in rows] == ["U1"]
+    assert rows[0]["document_id"] == sources.batches[batch_id]["doc_id"]
+    # Asking is a read: no mutation, no snapshot movement, nothing recorded.
+    assert work.mutations == []
+    assert work.snapshot == 0
+    assert work.completion is None
+
+
+def test_steps_recheck_ignores_a_written_step(sources):
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work, _ = steps_recheck_case(sources)
+    work.add_entities(add([interaction_fixtures(sources)["steps"]]))
+    assert work.mutations
+    assert work.steps_recheck() is None
+
+
+def test_steps_recheck_ignores_a_covered_block(sources):
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work, batch_id = steps_recheck_case(sources)
+    earlier = Workspace(
+        sources, "test", empty_registry(), Assignment(batch_id, "scan", "steps")
+    )
+    earlier.add_entities(add([interaction_fixtures(sources)["steps"]]))
+    # The step already exists, but this workspace wrote nothing: only the citation
+    # stops the reminder, and the model is expected to cite that step.
+    reuse = Workspace(
+        sources,
+        "test",
+        earlier.data,
+        Assignment(batch_id, "scan", "steps"),
+        history=work.history,
+    )
+    assert reuse.mutations == []
+    assert reuse.steps_recheck() is None
+
+
+def test_steps_recheck_needs_this_batchs_own_record(sources):
+    other = steps_recheck_case(sources, history=False)
+    assert other[0].steps_recheck() is None
+    # A basics record of another batch, or of another kind, is not this batch's evidence.
+    work, batch_id = steps_recheck_case(sources)
+    work.history = [
+        {
+            "id": next(iter(sources.batches)),
+            "phase": "scan",
+            "kind": "basics",
+            "status": "completed",
+            "mutations": [{"operation": "unresolved", "result": {"id": "U1"}}],
+        },
+        {"id": batch_id, "phase": "scan", "kind": "steps", "status": "completed"},
+    ]
+    assert work.steps_recheck() is None
+
+
+def test_steps_recheck_ignores_resolved_items_and_other_documents(sources):
+    resolved, _ = steps_recheck_case(sources)
+    resolved.data["unresolved"]["U1"]["resolved"] = "done"
+    assert resolved.steps_recheck() is None
+    # Same block number, other document: that block is not part of this batch.
+    other_doc, _ = steps_recheck_case(sources)
+    other_doc.data["unresolved"]["U1"]["evidence"][0]["document_id"] = "rfc9999"
+    assert other_doc.steps_recheck() is None
+    # A block of this document that the batch does not carry is no evidence either.
+    other_block, _ = steps_recheck_case(sources)
+    other_block.data["unresolved"]["U1"]["evidence"][0]["block_id"] = "blk-999999"
+    assert other_block.steps_recheck() is None
+
+
+def test_steps_recheck_only_trusts_a_unique_fragment(sources):
+    class Fragments:
+        blocks = {("doc", "blk-000001"): {"text": "0123456789", "block_id": "blk-000001"}}
+        originals = {"doc": "xx0123456789yy", "doc2": "a0123456789b0123456789c"}
+
+    work, _ = steps_recheck_case(sources)
+    work.sources = Fragments()
+    batch = {
+        "doc_id": "doc",
+        "segments": [{"block_id": "blk-000001", "start": 0, "end": 4, "text": "0123"}],
+    }
+    inside = {"document_id": "doc", "block_id": "blk-000001", "start": 0, "end": 4}
+    outside = {"document_id": "doc", "block_id": "blk-000001", "start": 20, "end": 30}
+    assert work.batch_holds(batch, inside) is True
+    assert work.batch_holds(batch, outside) is False
+    # The same fragment text twice in the document is no proof of a location.
+    ambiguous = {
+        "doc_id": "doc2",
+        "segments": [{"block_id": "blk-000001", "start": 0, "end": 4, "text": "0123"}],
+    }
+    reach = {"document_id": "doc2", "block_id": "blk-000001", "start": 0, "end": 4}
+    assert work.batch_holds(ambiguous, reach) is False
+
+
+def test_steps_recheck_leaves_a_sealed_batch_alone(sources):
+    work, batch_id = steps_recheck_case(sources)
+    work.history = list(work.history) + [
+        {"id": batch_id, "phase": "scan", "kind": "steps", "status": "completed"}
+    ]
+    assert work.steps_recheck() is None
+
+
+def test_complete_batch_reminds_once_on_an_empty_steps_batch(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work, batch_id = steps_recheck_case(sources)
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            reminded = (
+                await client.call_tool("complete_batch", {"summary": "Nothing to model"})
+            ).data
+            assert reminded["accepted"] is False
+            assert reminded["review"] == "steps-evidence"
+            assert reminded["assignment"] == batch_id
+            assert reminded["kind"] == "steps"
+            assert [row["id"] for row in reminded["open_items"]] == ["U1"]
+            assert "This steps batch made no change" in reminded["message"]
+            # A reminder is not a validation and leaves no trace in the registry.
+            assert "checked" not in reminded
+            assert work.completion is None
+            assert work.snapshot == 0
+            assert work.mutations == []
+            sealed = (
+                await client.call_tool("complete_batch", {"summary": "Nothing to model"})
+            ).data
+            assert sealed["accepted"] is True
+            # U1 came from the basics pass, so this assignment created none of it.
+            assert work.completion == {
+                "status": "completed",
+                "summary": "Nothing to model",
+                "unresolved_ids": [],
+            }
+
+    asyncio.run(check())
+
+
+def test_complete_batch_reminder_is_not_a_checked_rejection(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+    from fastmcp.exceptions import ToolError
+
+    from rsc.extract.tools import make_server
+
+    work, _ = steps_recheck_case(sources)
+
+    async def check():
+        async with Client(make_server(lambda: work, checked_basics=True)) as client:
+            reminded = (
+                await client.call_tool("complete_batch", {"summary": "Nothing to model"})
+            ).data
+            assert "checked" not in reminded and reminded["review"] == "steps-evidence"
+            # The checked entry stays a basics-only tool: steps never becomes a check.
+            with pytest.raises(ToolError):
+                await client.call_tool(
+                    "complete_batch", {"summary": "x", "check_first": True}
+                )
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize(
+    ("phase", "kind"),
+    [("scan", "basics"), ("category", "steps"), ("review", None), ("gap", None), ("global", None)],
+)
+def test_steps_recheck_never_asks_outside_a_steps_scan(sources, phase, kind):
+    work, batch_id = steps_recheck_case(sources)
+    work.assignment = Assignment(batch_id, phase, kind)
+    assert work.steps_recheck() is None
+
+
+def test_complete_batch_reminder_after_an_in_flight_write(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work, _ = steps_recheck_case(sources)
+    step = interaction_fixtures(sources)["steps"]
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            _, reply = await asyncio.gather(
+                client.call_tool("add_entities", {"entities": [step]}),
+                client.call_tool("complete_batch", {"summary": "Wrote the exchange"}),
+            )
+            # The write landed first, so this batch is no longer empty: it seals.
+            assert reply.data["accepted"] is True
+            assert work.completion["status"] == "completed"
+            assert work.reconsidered is False
+
+    asyncio.run(check())
+
+
+def test_complete_batch_reminder_then_concurrent_resubmits_seal_once(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work, _ = steps_recheck_case(sources)
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            reminded = (
+                await client.call_tool("complete_batch", {"summary": "Nothing to model"})
+            ).data
+            assert reminded["review"] == "steps-evidence"
+            # Two submissions of the same summary race after the reminder: the batch
+            # seals once and the second one gets the idempotent receipt.
+            first, second = await asyncio.gather(
+                client.call_tool("complete_batch", {"summary": "Nothing to model"}),
+                client.call_tool("complete_batch", {"summary": "Nothing to model"}),
+            )
+            assert first.data["accepted"] is True
+            assert second.data["accepted"] is True
+            # U1 came from the basics pass, so this assignment created none of it.
+            assert work.completion == {
+                "status": "completed",
+                "summary": "Nothing to model",
+                "unresolved_ids": [],
+            }
+
+    asyncio.run(check())

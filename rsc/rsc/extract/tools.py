@@ -1038,6 +1038,10 @@ def make_server(
                 return {"accepted": True, **scope}
             if not summary.strip() or len(summary) > 2000:
                 raise ValueError("provide a nonempty summary of at most 2000 characters")
+            if not check_first and not work.reconsidered:
+                reminder = steps_reminder(work)
+                if reminder is not None:
+                    return reminder
             issues = work.issues()
             if check_first:
                 # The same call validates the whole registry: a batch is sealed only when
@@ -1082,6 +1086,34 @@ def make_server(
                 "repair_start_count": start,
                 **scope,
             }
+
+    def steps_reminder(work):
+        """One reminder that an empty steps batch still has this batch's open items.
+
+        A reminder is not a validation result: it writes no mutation, no open item and
+        no snapshot, and the next submission seals as usual. It is reported separately
+        from a ``checked`` rejection so the two can be counted apart.
+        """
+        rows = work.steps_recheck()
+        if rows is None:
+            return None
+        work.reconsidered = True
+        return {
+            "accepted": False,
+            "review": "steps-evidence",
+            "assignment": work.assignment.id,
+            "kind": "steps",
+            "open_items": rows,
+            "message": (
+                "This steps batch made no change. The basics pass for this same batch "
+                "left open items that cite its text, and no step refers to them yet. "
+                "The wording there describes earlier work: if the batch does describe "
+                "behaviour, write it with the existing tools; if an existing step "
+                "already covers it, cite that step in the summary; if the passage truly "
+                "carries nothing to model, say why and submit again. This is a reminder, "
+                "not a validation failure: submit again to seal the batch."
+            ),
+        }
 
     def checked_rejection(work, validated):
         """The summary view of the state that just stopped a checked submission."""
