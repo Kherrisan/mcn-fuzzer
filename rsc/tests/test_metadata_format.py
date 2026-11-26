@@ -38,9 +38,9 @@ def test_publication_preserves_sources_names_and_payload_field_names(tmp_path):
     doc = document()
     model = published()
     model["messages"][0]["associated_fields"] += [
-        {"name": "hash"},
-        {"name": "version"},
-        {"name": "schema_version"},
+        "hash",
+        "version",
+        "schema_version",
     ]
     assert set(Protocol.model_validate(model).meta.model_dump()) == {
         "protocol",

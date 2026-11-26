@@ -1,8 +1,9 @@
 """MCP surface for one active extraction workspace.
 
-Every read reply is bounded: rows are chosen by a token budget, a page reports where
-to continue, and a page of mutable data carries the registry snapshot it came from so
-a cursor that predates a write is rejected instead of returning stale rows.
+Reads always return the current registry state; writes are never rejected for being
+based on an older read. Replies are not clipped or budgeted: the caller pages rows with
+offset and limit and projects detail with fields. Context control is history
+compaction's job, not the tools'.
 """
 
 import asyncio
@@ -11,34 +12,17 @@ from typing import Annotated
 
 from pydantic import Field
 
-from rsc.workflow.store import dumps
-
 from .groups import group_rows, head_group, issue_ref, ordered_issue_rows
 from .guidance import with_suggestions
-from .paging import (
-    DETAIL_PAGE_TOKENS,
-    INDEX_PAGE_TOKENS,
-    MINIMUM_PAGE_TOKENS,
-    TurnBudget,
-    bounded_page,
-    count_tokens,
-    page_limit,
-)
 from .registry import (
-    MAX_PAGE,
     ORDER,
     EntityAddition,
     EntityUpdate,
-    Evidence,
     Kind,
     Unresolved,
     identity,
     summary,
 )
-
-# One server keeps the issue ids it served per snapshot, so a later read can report
-# what appeared and what disappeared without re-running the old validation.
-SEEN_SNAPSHOTS = 8
 
 
 def search(records, queries, kind):
@@ -59,21 +43,12 @@ def search(records, queries, kind):
 
 
 def compact_row(work, row):
-    """Index-level row: identity plus evidence locations, never evidence text."""
+    """Index-level row: identity only, so a page stays small."""
     return {
         "id": row["id"],
         "kind": row["kind"],
         "name": identity(row),
         "aliases": row["aliases"],
-        "evidence": [
-            {
-                "document_id": cite["document_id"],
-                "block_id": cite["block_id"],
-                "field": cite.get("field") or "",
-            }
-            for cite in row["evidence"][:3]
-        ],
-        "field_count": len(row["evidence"]),
     }
 
 
@@ -104,62 +79,32 @@ def select_fields(value, fields):
     return result
 
 
-def citation_location(item):
-    """The values a scan prompt needs to re-read one cited block.
-
-    Returns ``None`` for an old citation without a usable location: the caller passes
-    that item through unchanged rather than dropping or rewriting it.
-    """
-    document_id = item.get("document_id")
-    block_id = item.get("block_id")
-    if not document_id or not block_id:
-        return None
-    location = {"document_id": document_id, "block_id": block_id}
-    field = (item.get("field") or "").strip()
-    if field:
-        location["field"] = field
-    return location
-
-
 def projected_unresolved(items):
-    """Open unresolved items with only the re-read locations kept in their evidence.
+    """Open unresolved items with their evidence reduced to duplicate-free block IDs.
 
     Every open item is kept, in order, with its id, description, missing information,
-    entities and check refs untouched. Within one item the evidence is reduced to
-    ``document_id``, ``block_id`` and a non-empty ``field``, deduplicated on those three
-    values in first-seen order; the same block under another field, or cited by another
-    item, stays a separate entry. ``note``, ``section_path`` and offsets are dropped
-    because the block can be re-read instead.
+    entities and check refs untouched. Evidence is a list of integer block IDs, so the
+    only projection left is removing repeats while keeping first-seen order: read any
+    block once with read_source(blocks=[...]).
     """
-    projected = []
-    for item in items:
-        evidence = []
-        seen = set()
-        for citation in item.get("evidence") or ():
-            location = citation_location(citation)
-            if location is None:
-                evidence.append(citation)
-                continue
-            key = (location["document_id"], location["block_id"], location.get("field", ""))
-            if key in seen:
-                continue
-            seen.add(key)
-            evidence.append(location)
-        projected.append({**item, "evidence": evidence})
-    return projected
-
-
-def evidence_locations(row):
     return [
-        {
-            "document_id": cite["document_id"],
-            "block_id": cite["block_id"],
-            "section_path": cite.get("section_path") or [],
-            "field": cite.get("field") or "",
-            "note": cite.get("note") or "",
-        }
-        for cite in row["evidence"]
+        {**item, "evidence": list(dict.fromkeys(item.get("evidence") or ()))}
+        for item in items
     ]
+
+
+def paged_rows(rows, offset=0, limit=None):
+    """Slice rows by the caller's offset and limit; every selected row comes back whole."""
+    offset = max(0, int(offset))
+    end = len(rows) if limit is None else offset + max(0, int(limit))
+    selected = list(rows[offset:end])
+    next_offset = offset + len(selected) if offset + len(selected) < len(rows) else None
+    return {
+        "rows": selected,
+        "offset": offset,
+        "count": len(rows),
+        "next_offset": next_offset,
+    }
 
 
 def field_paths(value, prefix=""):
@@ -177,7 +122,7 @@ def field_paths(value, prefix=""):
 
 
 # One detail reply never carries more than this many locators of one list. The full
-# text is one read_source call away, so a wide entity cannot blow up the page.
+# text is one read_source call away, so a wide entity's link lists stay readable.
 DETAIL_LIST_PAGE = 60
 
 
@@ -189,20 +134,17 @@ def references(work, row):
 
 
 def detail_body(work, row, fields=None, lists=True):
-    """Entity detail: projected fields, evidence locations, references and mentions.
+    """Entity detail: projected fields, references and mentions.
 
-    Evidence text is not included; read_source returns it for a block. Long lists are
-    capped and report their full count so the reply stays inside one page.
+    Entity evidence is gone, so the body carries no source locators of its own. Link
+    lists report at most ``DETAIL_LIST_PAGE`` entries plus their full count.
     """
     body = {
         "id": row["id"],
         "kind": row["kind"],
         "aliases": row["aliases"],
         "value": select_fields(row["value"], fields),
-        "evidence": evidence_locations(row)[:DETAIL_LIST_PAGE],
     }
-    if len(row["evidence"]) > DETAIL_LIST_PAGE:
-        body["evidence_count"] = len(row["evidence"])
     if lists:
         mentions = row.get("mentions") or []
         edges = references(work, row)
@@ -216,8 +158,26 @@ def detail_body(work, row, fields=None, lists=True):
 
 
 def projected(work, row, fields=None):
-    """Index-level definition: projected fields and evidence locations."""
+    """Index-level definition: projected fields, references and mentions."""
     return detail_body(work, row, fields, lists=False)
+
+
+def changed_entities(work, rows):
+    """Mutation reply: each changed entity rendered exactly like ``get_entity``.
+
+    ``rows`` are the registry results (id plus the value paths the call changed), so a
+    write reply and a later detail read of the same entity are identical. A large batch
+    produces a large reply; history compaction, not the tools, controls context.
+    """
+    entities = {}
+    changed_fields = {}
+    for item in rows:
+        row = work.records.get(item["id"])
+        if row is None:
+            continue
+        entities[row["id"]] = detail_body(work, row)
+        changed_fields[row["id"]] = list(item.get("changed_fields") or [])
+    return {"entities": entities, "changed_fields": changed_fields}
 
 
 def step_scenarios(work, rows, covered):
@@ -257,8 +217,6 @@ def make_server(
     current,
     *,
     readonly=False,
-    turn_budget=None,
-    context_tokens=None,
     checked_basics=False,
     compact_rejection=False,
 ):
@@ -277,8 +235,6 @@ def make_server(
     # parallel tool turn cannot interleave two writes.
     write_lock = asyncio.Lock()
     in_flight = 0
-    budget = turn_budget or TurnBudget(page_limit(context_tokens or 258400))
-    seen = {}
 
     def require(work, *phases):
         if work.assignment.phase not in phases:
@@ -296,62 +252,6 @@ def make_server(
                 return apply()
         finally:
             in_flight -= 1
-
-    def page_tokens(serialize, rows, requested, offset, limit=None):
-        """Page one reply against the call budget and the turn's remaining budget."""
-        allowed = budget.reserve(requested)
-        paged = bounded_page(rows, serialize, allowed, offset, limit)
-        budget.settle(allowed, paged["tokens"])
-        return paged, allowed
-
-    def clipped_full(work, row, fields, allowed):
-        """Full definition, or a bounded stand-in when one row cannot fit a page."""
-        text = dumps(projected(work, row, fields))
-        cost = count_tokens(text) + 4
-        if cost <= allowed:
-            return projected(work, row, fields), cost
-        compact = compact_row(work, row)
-        compact.update(
-            {
-                "truncated": True,
-                "field_count": len(field_paths(row["value"])),
-                "hint": (
-                    f"get_entity(id='{row['id']}', field_offset=0) pages this definition "
-                    "by field"
-                ),
-            }
-        )
-        return compact, count_tokens(dumps(compact)) + 4
-
-    def clip_rows(work, paged, fields, allowed):
-        """Replace over-budget full rows so one entity cannot bypass the page limit."""
-        clipped = []
-        used = 0
-        for row in paged["rows"]:
-            body, cost = clipped_full(work, row, fields, allowed)
-            clipped.append(body)
-            used += cost
-        budget.settle(allowed, used)
-        paged["rows"] = clipped
-        paged["tokens"] = used
-        return paged
-
-    def stale(work, snapshot):
-        if snapshot is not None and snapshot != work.snapshot:
-            return {
-                "stale": True,
-                "snapshot": work.snapshot,
-                "note": (
-                    "The registry changed after this cursor was issued. Re-read from "
-                    "offset 0 with the same filters and the new snapshot."
-                ),
-            }
-        return None
-
-    def remember(work, issues):
-        seen[work.snapshot] = [issue_ref(issue) for issue in issues]
-        while len(seen) > SEEN_SNAPSHOTS:
-            seen.pop(next(iter(seen)))
 
     def validation(work):
         issues = work.issues()
@@ -372,22 +272,17 @@ def make_server(
         batch_id: str | None = None,
         offset: int = 0,
         limit: int = 20,
-        max_tokens: int = INDEX_PAGE_TOKENS,
         full: bool = False,
-        snapshot: int | None = None,
     ) -> dict:
         """Page through entity indexes, optionally only those linked to one batch.
 
-        Rows carry the ID, category, name, aliases and the first evidence locations.
-        Set full=true for whole definitions of the returned rows. With batch_id the page
-        also reports how many steps relate to the same messages. Pass the snapshot from
-        the previous page to be told when the registry changed under the cursor.
+        Rows carry the ID, category, name and aliases. Set full=true for whole
+        definitions of the returned rows. With batch_id the page also reports how many
+        steps relate to the same messages.
         """
         work = current()
         if batch_id is not None and batch_id not in work.sources.batches:
             raise ValueError(f"unknown batch {batch_id}")
-        if (changed := stale(work, snapshot)) is not None:
-            return changed
         if batch_id is None:
             candidates = search(work.records, [""], kind)
         else:
@@ -399,41 +294,20 @@ def make_server(
                 if kind is None or row["kind"] == kind
                 if any(
                     cite["document_id"] == batch["doc_id"] and cite["block_id"] in blocks
-                    for cite in row["evidence"]
+                    for cite in row.get("mentions") or ()
                 )
             ]
+        page = paged_rows(candidates, offset, limit)
         if full:
-            paged, allowed = page_tokens(
-                lambda row: dumps(projected(work, row)),
-                candidates,
-                max_tokens,
-                offset,
-                limit,
-            )
-            clip_rows(work, paged, None, allowed)
+            page["rows"] = [projected(work, row) for row in page["rows"]]
         else:
-            paged, allowed = page_tokens(
-                lambda row: dumps(compact_row(work, row)),
-                candidates,
-                max_tokens,
-                offset,
-                limit,
-            )
-            paged["rows"] = [compact_row(work, row) for row in paged["rows"]]
-        result = {
-            "snapshot": work.snapshot,
-            "rows": paged["rows"],
-            "next_offset": paged["next_offset"],
-            "count": paged["count"],
-            "page_tokens": paged["tokens"],
-            "page_limit": allowed,
-        }
+            page["rows"] = [compact_row(work, row) for row in page["rows"]]
         if batch_id is not None:
             covered = {row["id"] for row in candidates}
             related_steps = step_scenarios(work, candidates, covered)
-            result["related_step_count"] = len(related_steps)
-            result["related_steps"] = related_steps[:5]
-        return result
+            page["related_step_count"] = len(related_steps)
+            page["related_steps"] = related_steps[:5]
+        return page
 
     @server.tool
     def search_entities(
@@ -442,42 +316,26 @@ def make_server(
         offset: int = 0,
         limit: int = 20,
         queries: list[str] | None = None,
-        max_tokens: int = INDEX_PAGE_TOKENS,
         full: bool = False,
         fields: list[str] | None = None,
-        snapshot: int | None = None,
     ) -> dict:
         """Search names and aliases; rows are indexes unless full=true.
 
         Supply exactly one of query or queries. With full=true each row carries the whole
-        definition, or only the dotted fields you pass. Evidence is returned as locations;
-        read the text with read_source.
+        definition, or only the dotted fields you pass. Read source text with read_source.
         """
         if query is not None and queries is None:
             queries = [query]
         elif query is not None or queries is None:
             raise ValueError("provide either query or queries")
         work = current()
-        if (changed := stale(work, snapshot)) is not None:
-            return changed
         candidates = search(work.records, queries, kind)
-
-        def serialize(row):
-            return dumps(projected(work, row, fields) if full else compact_row(work, row))
-
-        paged, allowed = page_tokens(serialize, candidates, max_tokens, offset, limit)
+        page = paged_rows(candidates, offset, limit)
         if full:
-            clip_rows(work, paged, fields, allowed)
+            page["rows"] = [projected(work, row, fields) for row in page["rows"]]
         else:
-            paged["rows"] = [compact_row(work, row) for row in paged["rows"]]
-        return {
-            "snapshot": work.snapshot,
-            "rows": paged["rows"],
-            "next_offset": paged["next_offset"],
-            "count": paged["count"],
-            "page_tokens": paged["tokens"],
-            "page_limit": allowed,
-        }
+            page["rows"] = [compact_row(work, row) for row in page["rows"]]
+        return page
 
     @server.tool
     def get_entity(
@@ -486,22 +344,17 @@ def make_server(
         fields: list[str] | None = None,
         offset: int = 0,
         field_offset: int = 0,
-        max_tokens: int | None = None,
-        snapshot: int | None = None,
     ) -> dict:
         """Read one or more entities by id, optionally only the dotted fields you name.
 
-        Evidence is returned as locations and notes; use read_source for its text. A page
-        too large for the token budget reports next_offset and next_ids. Follow a
-        next_offset with the same ids and fields to continue. When a single entity is
-        larger than one page, the reply sets fields_truncated and next_field_offset:
-        continue with the same id and field_offset to read the rest of its fields.
+        Rows are paged with offset; every selected entity comes back whole. Pass fields to
+        project named dotted paths, and field_offset to start that field list at an index
+        (the remaining fields are returned). Follow a next_offset with the same ids and
+        fields to continue.
         """
         if (id is None) == (ids is None):
             raise ValueError("provide either id or ids")
         work = current()
-        if (changed := stale(work, snapshot)) is not None:
-            return changed
         requested = [id] if id is not None else list(dict.fromkeys(ids or []))
         rows = []
         errors = {}
@@ -510,77 +363,26 @@ def make_server(
                 rows.append(work.records[work.canonical(entity_id)])
             except ValueError as exc:
                 errors[entity_id] = str(exc)
-        if max_tokens is None:
-            # One batch read of N entities is worth N detail pages, still capped by the
-            # turn's remaining budget.
-            max_tokens = DETAIL_PAGE_TOKENS * max(1, len(rows))
-        allowed = budget.reserve(max_tokens)
-        base = {"snapshot": work.snapshot, "errors": errors, "page_limit": allowed}
-        if len(rows) == 1:
-            row = rows[0]
-            body = detail_body(work, row, fields)
-            cost = count_tokens(dumps(body)) + 4
-            if cost > allowed:
-                # The skeleton alone may be too large for a small page; drop the link
-                # lists first and tell the caller they exist.
-                body = detail_body(work, row, fields, lists=False)
-                cost = count_tokens(dumps(body)) + 4
-            paths = list(fields) if fields else field_paths(row["value"])
-            if cost > allowed and paths:
-                # One entity alone exceeds the page: split its fields into pages rather
-                # than returning a page that is silently over budget.
-                pages = []
-                for path in paths:
-                    size = count_tokens(dumps(select_fields(row["value"], [path]))) + 4
-                    pages.append((path, size))
-                selected = []
-                used = 0
-                index = max(0, int(field_offset))
-                while index < len(pages):
-                    path, size = pages[index]
-                    if selected and used + size > allowed:
-                        break
-                    selected.append(path)
-                    used += size
-                    index += 1
-                    if used >= allowed:
-                        break
-                page_body = detail_body(work, row, selected, lists=False)
-                used = count_tokens(dumps(page_body)) + 4
-                # The skeleton is part of the page, so trim fields until the whole
-                # reply fits rather than trusting the sum of the field sizes.
-                while used > allowed and len(selected) > 1:
-                    selected.pop()
-                    index -= 1
-                    page_body = detail_body(work, row, selected, lists=False)
-                    used = count_tokens(dumps(page_body)) + 4
-                budget.settle(allowed, used)
-                return {
-                    **base,
-                    "entities": {row["id"]: page_body},
-                    "fields_truncated": index < len(pages),
-                    "next_field_offset": index if index < len(pages) else None,
-                    "field_count": len(pages),
-                    "remaining_fields": [path for path, _ in pages[index:]][:20],
-                    "next_offset": None,
-                    "count": 1,
-                    "page_tokens": used,
-                }
-        paged, allowed = page_tokens(
-            lambda item: dumps(detail_body(work, item, fields)),
-            rows,
-            max_tokens,
-            offset,
-        )
+        paths = None
+        if fields or field_offset:
+            for row in rows[:1]:
+                listed = list(fields) if fields else field_paths(row["value"])
+                paths = listed[max(0, int(field_offset)) :]
+        page = paged_rows(rows, offset)
+        entities = {}
+        for row in page["rows"]:
+            selected = paths if paths is not None and row is rows[0] else fields
+            entities[row["id"]] = detail_body(work, row, selected)
         result = {
-            **base,
-            "entities": {row["id"]: detail_body(work, row, fields) for row in paged["rows"]},
-            "next_offset": paged["next_offset"],
-            "count": paged["count"],
-            "page_tokens": paged["tokens"],
+            "errors": errors,
+            "entities": entities,
+            "next_offset": page["next_offset"],
+            "count": page["count"],
         }
-        if paged["next_offset"] is not None:
-            result["next_ids"] = [row["id"] for row in rows[paged["next_offset"] :][:5]]
+        if page["next_offset"] is not None:
+            result["next_ids"] = [row["id"] for row in page["rows"][:5]]
+        if paths is not None:
+            result["field_count"] = len(paths) + max(0, int(field_offset))
         return result
 
     @server.tool
@@ -589,19 +391,19 @@ def make_server(
         document_id: str | None = None,
         section_path: list[str] | None = None,
         block_id: str | None = None,
-        blocks: list[dict] | None = None,
+        blocks: list[int] | None = None,
         offset: int = 0,
         limit_chars: int = 10000,
-        max_tokens: int = DETAIL_PAGE_TOKENS,
         original: bool = False,
     ) -> dict:
         """Read a batch, a document section (including subsections), or document blocks.
 
         For RFC section 4.2, section_path may be ["4", "2"] or ["4.2"].
-        Offsets page through the returned text or block list. Use blocks=[{document_id,
-        block_id}, ...] to read several evidence blocks at once; each block is delivered
-        once and next_offset continues the list. original=true returns the frozen source
-        span for a single block.
+        offsets page through the returned text or block list. Batch and section text is
+        prefixed with each block's integer ID. Use blocks=[1042, 1043] to read several
+        blocks at once; each block is delivered once with its integer ID. limit_chars is
+        the only text window. original=true returns the frozen source span for a single
+        block.
         """
         sources = current().sources
         if offset < 0 or limit_chars < 1:
@@ -610,49 +412,31 @@ def make_server(
             if batch_id is not None or section_path is not None or block_id is not None:
                 raise ValueError("use blocks on its own")
             malformed = [
-                item
-                for item in blocks
-                if not isinstance(item, dict)
-                or "document_id" not in item
-                or "block_id" not in item
+                item for item in blocks if isinstance(item, bool) or not isinstance(item, int)
             ]
             if malformed:
-                raise ValueError(
-                    "each blocks item needs document_id and block_id, e.g. "
-                    '{"document_id": "rfc2326", "block_id": "blk-000012"}'
-                )
-            wanted = list(
-                dict.fromkeys((item["document_id"], item["block_id"]) for item in blocks)
-            )
-            allowed = budget.reserve(max_tokens)
+                raise ValueError("each blocks item is an integer block ID, e.g. blocks=[1042]")
+            wanted = list(dict.fromkeys(blocks))
             selected = []
-            used = 0
-            index = offset
-            while index < len(wanted):
-                document, block = wanted[index]
+            for number in wanted[offset:]:
+                location = sources.block_locator(number)
+                document = location["document_id"]
                 if original:
-                    location = sources.evidence(document, block)
                     text = sources.originals[document][location["start"] : location["end"]]
                 else:
-                    location = sources.evidence(document, block)
                     text = sources.blocks[document, location["block_id"]]["text"]
-                cost = count_tokens(text) + 16
-                if selected and used + cost > allowed:
-                    break
                 selected.append(
-                    {"document_id": document, "block_id": location["block_id"], "text": text}
+                    {
+                        "id": number,
+                        "document_id": document,
+                        "block_id": location["block_id"],
+                        "text": text,
+                    }
                 )
-                used += cost
-                index += 1
-                if used >= allowed:
-                    break
-            budget.settle(allowed, used)
             return {
                 "blocks": selected,
-                "next_offset": index if index < len(wanted) else None,
+                "next_offset": None,
                 "count": len(wanted),
-                "page_tokens": used,
-                "page_limit": allowed,
             }
         location = None
         if batch_id and document_id is None and section_path is None and block_id is None:
@@ -660,7 +444,7 @@ def make_server(
                 raise ValueError("unknown batch or unsupported original view for batch")
             batch = sources.batch_context(batch_id)
             keys = [(batch["doc_id"], part["block"]) for part in batch["segments"]]
-            body = "\n".join(f"[{part['block']}] {part['text']}" for part in batch["segments"])
+            body = "\n".join(f"[{part['id']}] {part['text']}" for part in batch["segments"])
         elif batch_id is None and document_id in sources.documents:
             if block_id is not None and section_path is None:
                 locator = sources.evidence(document_id, block_id)
@@ -696,117 +480,112 @@ def make_server(
                 location = sources.evidence(*keys[0])
                 body = sources.originals[document_id][location["start"] : location["end"]]
             else:
-                body = "\n".join(f"[{key[1]}] {sources.blocks[key]['text']}" for key in keys)
+                body = "\n".join(
+                    f"[{sources.block_numbers[key]}] {sources.blocks[key]['text']}"
+                    for key in keys
+                )
         else:
             raise ValueError("specify one batch or one document locator")
-        # The char window is capped by the call budget as well, so one section cannot
-        # spend the whole turn. The estimate is corrected against the real token count
-        # so a dense block cannot overshoot the budget by a fixed ratio.
-        allowed = budget.reserve(max_tokens)
-        cap = min(limit_chars, 10000, max(MINIMUM_PAGE_TOKENS * 4, allowed * 4))
-        text = body[offset : offset + cap]
-        for _ in range(3):
-            spent = count_tokens(text)
-            if spent <= allowed or len(text) <= MINIMUM_PAGE_TOKENS * 4:
-                break
-            text = text[: max(MINIMUM_PAGE_TOKENS * 4, len(text) * allowed // spent)]
-        spent = count_tokens(text)
+        text = body[offset : offset + limit_chars]
         end = offset + len(text)
-        budget.settle(allowed, spent)
         return {
             "text": text,
             "original_span": location,
             "next_offset": end if end < len(body) else None,
-            "page_tokens": spent,
-            "page_limit": allowed,
             "batch_ids": list(
                 dict.fromkeys(batch for key in keys for batch in sources.block_batches.get(key, []))
             ),
         }
 
     async def add_entities(
-        entities: Annotated[list[EntityAddition], Field(min_length=1, max_length=MAX_PAGE)],
-    ) -> list[dict]:
-        """Add up to 20 entities atomically with block evidence for every entity.
+        entities: Annotated[list[EntityAddition], Field(min_length=1)],
+    ) -> dict:
+        """Add entities atomically; every created entity is returned in full.
 
-        Query existing names and aliases first. Enrich an existing concept with update_entities.
+        Query existing names and aliases first. Enrich an existing concept with
+        update_entities. The reply carries each created entity exactly as get_entity
+        renders it, plus changed_fields with the value paths this call wrote.
         """
-        return await mutate(lambda: current().add_entities(entities))
+        result = await mutate(lambda: current().add_entities(entities))
+        return changed_entities(current(), result)
 
     async def update_entities(
-        entities: Annotated[list[EntityUpdate], Field(min_length=1, max_length=MAX_PAGE)],
-    ) -> list[dict]:
-        """Update entities by ID, citing each changed top-level field.
+        entities: Annotated[list[EntityUpdate], Field(min_length=1)],
+    ) -> dict:
+        """Update entities by ID; every changed entity is returned in full.
 
         Read current entities first. Each patched list is a full replacement: combine new
-        details with all still-valid existing fields, operations and evidence. Use stable names.
-        When exactly one field changes, unqualified citations apply to that field.
-        For multiple changed fields, cite every field explicitly. For a small change to one
-        message's associated_fields, send associated_fields_delta (add, replace or remove by
-        exact field name) instead of the whole list. Submit at most 20 entities.
+        details with all still-valid existing fields and operations. Use stable names.
+        associated_fields is an array of field-name strings. For a small change to one
+        message's associated_fields, send associated_fields_delta instead of the whole
+        list: add appends new names, replace maps {old_name: new_name}, remove drops names.
+        The reply carries each changed entity
+        exactly as get_entity renders it, plus changed_fields with the value paths this
+        call changed.
         """
-        return await mutate(lambda: current().update_entities(entities))
+        result = await mutate(lambda: current().update_entities(entities))
+        return changed_entities(current(), result)
 
     async def merge_entities(
         keep_id: str,
         ids: list[str],
         reason: str,
-        evidence: list[Evidence],
         value: dict | None = None,
     ) -> dict:
-        """Merge equivalent entities, providing a final value when attributes differ."""
-        return await mutate(lambda: current().merge_entities(keep_id, ids, reason, evidence, value))
+        """Merge equivalent entities, returning the survivor in full and absorbed IDs."""
+        result = await mutate(
+            lambda: current().merge_entities(keep_id, ids, reason, value)
+        )
+        reply = changed_entities(current(), [result])
+        reply["absorbed_ids"] = list(result.get("absorbed_ids") or [])
+        return reply
 
     async def record_unresolved(issue: Unresolved) -> dict:
-        """Record a new unresolved issue with source evidence.
+        """Record a new unresolved issue with the integer block IDs that support it.
 
         For an issue reported by validation, include the exact check_refs and all listed
-        entity IDs. Recording an issue does not remove it from validation.
+        entity IDs. Recording an issue does not remove it from validation. The basics pass
+        only accepts gaps in parties, channels and messages.
         """
         return await mutate(lambda: current().record_unresolved(issue))
 
     async def solve_unresolved(
         unresolved_id: str,
         reason: Annotated[str, Field(min_length=1)],
-        evidence: Annotated[list[Evidence], Field(min_length=1)],
+        evidence: Annotated[list[int], Field(min_length=1)],
     ) -> dict:
-        """Mark an existing unresolved ID as solved with a reason and source evidence.
+        """Mark an existing unresolved ID as solved with a reason and integer block IDs.
 
         Any linked coverage checks must already pass. Use the unresolved ID even if
         entities listed on the original issue have since been withdrawn.
         """
         return await mutate(lambda: current().solve_unresolved(unresolved_id, reason, evidence))
 
-    def unresolved_page(work, unresolved, budget):
-        """One bounded page of open items, the same shape the prompt carries."""
-
-        def row(item):
-            return {
-                "id": item["id"],
-                "description": item["description"][:200],
-                "check_refs": item.get("check_refs") or [],
-            }
-
-        paged = bounded_page(unresolved, lambda item: dumps(row(item)), budget)
+    def unresolved_page(unresolved):
+        """Open items in the shape the prompt carries; no entry is dropped or clipped."""
         return {
-            "unresolved": [row(item) for item in paged["rows"]],
-            "unresolved_next_offset": paged["next_offset"],
+            "unresolved": [
+                {
+                    "id": item["id"],
+                    "description": item["description"],
+                    "check_refs": item.get("check_refs") or [],
+                }
+                for item in unresolved
+            ],
+            "unresolved_next_offset": None,
         }
 
-    def summary_page(work, unresolved, groups, rows, offset, max_tokens):
+    def summary_page(work, unresolved, groups, rows, offset):
         """Counts, head group and one page: the summary view and a checked submission
         describe the same state the same way, from sets that were computed once."""
         head = head_group(groups, work.deferred_groups)
-        paged, allowed = page_tokens(dumps, rows, max_tokens, offset, None)
+        page = paged_rows(rows, offset)
         head_rows = [
-            row for row in paged["rows"] if head and row["group_id"] == head["group_id"]
+            row for row in page["rows"] if head and row["group_id"] == head["group_id"]
         ]
-        page = unresolved_page(
-            work, unresolved, max(MINIMUM_PAGE_TOKENS, allowed // 2)
-        )
         return {
-            "rows": paged["rows"],
-            "next_offset": paged["next_offset"],
+            "rows": page["rows"],
+            "next_offset": page["next_offset"],
             "current_group": (
                 {
                     "group_id": head["group_id"],
@@ -818,14 +597,11 @@ def make_server(
                 if head
                 else None
             ),
-            **page,
-            "page_tokens": paged["tokens"],
-            "page_limit": allowed,
+            **unresolved_page(unresolved),
             "hint": (
                 "view=groups pages the catalog; view=group with group_id pages one "
                 "group; view=issues filters by type or entity; view=issue with "
-                "issue_id returns suggestions and evidence; view=unresolved pages "
-                "open items."
+                "issue_id returns its suggestion; view=unresolved pages open items."
             ),
         }
 
@@ -837,18 +613,16 @@ def make_server(
         issue_type: str | None = None,
         entity_id: str | None = None,
         offset: int = 0,
-        max_tokens: int = INDEX_PAGE_TOKENS,
-        snapshot: int | None = None,
         include_advisory: bool = False,
     ) -> dict:
-        """Read validation state in bounded pages.
+        """Read validation state; nothing is clipped.
 
-        view=summary (default) returns the global counts, the open-gap count, the first
-        page of the current repair group and what changed since an earlier snapshot.
+        view=summary (default) returns the global counts, the open-gap count and the rows
+        from offset, starting with the current repair group.
         view=groups pages the group catalog: one entry per repair site, largest first.
-        view=group with group_id pages that group's rows. view=issues pages all rows,
+        view=group with group_id returns that group's rows. view=issues returns all rows,
         filtered by issue_type or entity_id. view=issue with issue_id returns one row's
-        full description, suggestion and evidence notes.
+        full description and suggestion.
 
         Row ids are stable and can be passed back as issue_id. error_count counts
         blocking rows only; advisory rows appear only with include_advisory.
@@ -856,8 +630,6 @@ def make_server(
         work = current()
         require(work, "scan", "category", "gap", "global", "review")
         issues, advisory, unresolved, groups, rows = validation(work)
-        remembered = seen.get(snapshot) if snapshot is not None else None
-        remember(work, issues)
         advisory_rows = ordered_issue_rows(advisory, (), work.records)[1] if advisory else []
         # An advisory row is never in a blocking page, but its detail is still
         # addressable by id once the caller has seen it.
@@ -866,7 +638,6 @@ def make_server(
             rows = rows + advisory_rows
         catalog = group_rows(groups)
         counts = {
-            "snapshot": work.snapshot,
             "error_count": len(issues),
             "advisory_count": len(advisory),
             "unresolved_count": len(unresolved),
@@ -874,32 +645,15 @@ def make_server(
             "deferred_checks": work.deferred_checks(),
             "groups": catalog[:5],
         }
-        if snapshot is not None and snapshot != work.snapshot:
-            counts["stale"] = True
-            counts["note"] = (
-                "The registry changed after that snapshot; rows below are current and "
-                "group ids stay stable, so re-read the group you were fixing."
-            )
-        if remembered is not None:
-            current_ids = [row["id"] for row in rows]
-            counts["changed_since"] = {
-                "snapshot": snapshot,
-                "new": [item for item in current_ids if item not in remembered][:20],
-                "gone": [item for item in remembered if item not in current_ids][:20],
-            }
         if view == "summary":
-            counts.update(
-                summary_page(work, unresolved, groups, rows, offset, max_tokens)
-            )
+            counts.update(summary_page(work, unresolved, groups, rows, offset))
             return counts
         if view == "groups":
-            paged, allowed = page_tokens(dumps, catalog, max_tokens, offset, None)
+            page = paged_rows(catalog, offset)
             counts.update(
                 {
-                    "groups": paged["rows"],
-                    "next_offset": paged["next_offset"],
-                    "page_tokens": paged["tokens"],
-                    "page_limit": allowed,
+                    "groups": page["rows"],
+                    "next_offset": page["next_offset"],
                 }
             )
             return counts
@@ -912,21 +666,19 @@ def make_server(
                     {
                         "group_id": group_id,
                         "issues": [],
-                        "note": "this group is clean at the current snapshot",
+                        "note": "this group is clean in the current registry",
                     }
                 )
                 return counts
             # Reading the group is what a stalled attempt is judged on, so record it
             # only when the reply actually carries the group's rows.
             work.read_groups.add(("group", group_id))
-            paged, allowed = page_tokens(dumps, selected, max_tokens, offset, None)
+            page = paged_rows(selected, offset)
             counts.update(
                 {
                     "group_id": group_id,
-                    "issues": paged["rows"],
-                    "next_offset": paged["next_offset"],
-                    "page_tokens": paged["tokens"],
-                    "page_limit": allowed,
+                    "issues": page["rows"],
+                    "next_offset": page["next_offset"],
                 }
             )
             return counts
@@ -937,41 +689,29 @@ def make_server(
                 if (issue_type is None or row["type"] == issue_type)
                 and (entity_id is None or entity_id in row["records"])
             ]
-            paged, allowed = page_tokens(dumps, selected, max_tokens, offset, None)
+            page = paged_rows(selected, offset)
             counts.update(
                 {
-                    "issues": paged["rows"],
-                    "next_offset": paged["next_offset"],
-                    "page_tokens": paged["tokens"],
-                    "page_limit": allowed,
+                    "issues": page["rows"],
+                    "next_offset": page["next_offset"],
                 }
             )
             return counts
         if view == "unresolved":
-            paged, allowed = page_tokens(
-                lambda item: dumps(
-                    {
-                        "id": item["id"],
-                        "description": item["description"],
-                        "entity_ids": item.get("entity_ids") or [],
-                        "check_refs": item.get("check_refs") or [],
-                        "evidence": [
-                            {"document_id": cite["document_id"], "block_id": cite["block_id"]}
-                            for cite in (item.get("evidence") or [])[:3]
-                        ],
-                    }
-                ),
-                unresolved,
-                max_tokens,
-                offset,
-                None,
-            )
+            page = paged_rows(unresolved, offset)
             counts.update(
                 {
-                    "unresolved_rows": paged["rows"],
-                    "unresolved_next_offset": paged["next_offset"],
-                    "page_tokens": paged["tokens"],
-                    "page_limit": allowed,
+                    "unresolved_rows": [
+                        {
+                            "id": item["id"],
+                            "description": item["description"],
+                            "entity_ids": item.get("entity_ids") or [],
+                            "check_refs": item.get("check_refs") or [],
+                            "evidence": list(item.get("evidence") or []),
+                        }
+                        for item in page["rows"]
+                    ],
+                    "unresolved_next_offset": page["next_offset"],
                 }
             )
             return counts
@@ -993,15 +733,6 @@ def make_server(
                     "issue": {
                         **row,
                         "suggestion": with_suggestions([issue])[0].get("suggestion", ""),
-                        "evidence": [
-                            {
-                                "document_id": cite["document_id"],
-                                "block_id": cite["block_id"],
-                                "path": cite.get("path") or [],
-                                "note": cite.get("note") or "",
-                            }
-                            for cite in (issue.get("evidence") or [])[:6]
-                        ],
                     }
                 }
             )
@@ -1075,7 +806,7 @@ def make_server(
                         "This Fix made no entity change and did not reduce the error "
                         "count. Read the current groups, make a source-supported change, "
                         "or explain why these errors cannot be fixed with the available "
-                        "evidence."
+                        "source text."
                     )
                     return payload
             work.completion = receipt
@@ -1091,7 +822,7 @@ def make_server(
         """One reminder that an empty steps batch still has this batch's open items.
 
         A reminder is not a validation result: it writes no mutation, no open item and
-        no snapshot, and the next submission seals as usual. It is reported separately
+        nothing else, and the next submission seals as usual. It is reported separately
         from a ``checked`` rejection so the two can be counted apart.
         """
         rows = work.steps_recheck()
@@ -1100,7 +831,7 @@ def make_server(
         work.reconsidered = True
         return {
             "accepted": False,
-            "review": "steps-evidence",
+            "review": "steps-recheck",
             "assignment": work.assignment.id,
             "kind": "steps",
             "open_items": rows,
@@ -1124,14 +855,13 @@ def make_server(
             "accepted": False,
             "checked": True,
             "assignment": work.assignment.id,
-            "snapshot": work.snapshot,
             "error_count": len(issues),
             "advisory_count": len(advisory),
             "unresolved_count": len(unresolved),
             "group_count": len(groups),
             "deferred_checks": work.deferred_checks(),
             "groups": group_rows(groups)[:5],
-            **summary_page(work, unresolved, groups, rows, 0, INDEX_PAGE_TOKENS),
+            **summary_page(work, unresolved, groups, rows, 0),
         }
         if advisory and not issues:
             # Blocking is empty, so the advisory rows are what stopped the seal: give
@@ -1160,36 +890,30 @@ def make_server(
         return payload
 
     def compact_checked_rejection(work, validated):
-        """A refused checked submission as counts, a cursor and one line per row.
+        """A refused checked submission as counts and one line per row.
 
-        The page boundary and the row order are the ones the full reply would have
-        used, so ``next_offset`` and every ``id`` mean the same thing in both. What is
-        dropped is only what a row-level detail read can reproduce: the head group's
-        problems, the group catalog and the open-item descriptions.
+        The row order is the one the full reply uses, so every ``id`` means the same
+        thing in both. What is dropped is only what a row-level detail read can
+        reproduce: the head group's problems, the group catalog and the open-item
+        descriptions.
         """
         issues, advisory, unresolved, _, rows = validated
-        paged, _ = page_tokens(dumps, rows, INDEX_PAGE_TOKENS, 0, None)
         payload = {
             "accepted": False,
             "checked": True,
             "assignment": work.assignment.id,
-            "snapshot": work.snapshot,
             "error_count": len(issues),
             "advisory_count": len(advisory),
             "unresolved_count": len(unresolved),
             "deferred_checks": work.deferred_checks(),
-            "next_offset": paged["next_offset"],
+            "next_offset": None,
             "rows": [
                 {
                     "id": row["id"],
                     "check_ref": row["check_ref"],
                     "group_id": row["group_id"],
-                    "evidence": [
-                        {"document_id": cite["document_id"], "block_id": cite["block_id"]}
-                        for cite in row["evidence"][:1]
-                    ],
                 }
-                for row in paged["rows"]
+                for row in rows
             ],
         }
         if advisory and not issues:
@@ -1211,7 +935,7 @@ def make_server(
         )
         payload["message"] = (
             f"This call validated the whole registry and did not seal the batch: {counts}."
-            f"{advisory_hint} Fix the rows you have evidence for, then submit again with "
+            f"{advisory_hint} Fix the rows you can support, then submit again with "
             "complete_batch(summary). Details: view='issue', issue_id=<row id>; more rows: "
             "view='issues', offset=next_offset; open items: view='unresolved'; the old "
             "full first page: view='summary'."
@@ -1219,9 +943,8 @@ def make_server(
         return payload
 
     def rejection(work, issues, start, scope):
-        """Compact diagnostics: counts, the group catalog head and one page of rows."""
+        """Compact diagnostics: counts, the group catalog head and all rows."""
         _, advisory, unresolved, groups, rows = validation(work)
-        paged, allowed = page_tokens(dumps, rows, INDEX_PAGE_TOKENS, 0, None)
         return {
             "accepted": False,
             "error_count": len(issues),
@@ -1230,13 +953,11 @@ def make_server(
             "unresolved_count": len(unresolved),
             "group_count": len(groups),
             "groups": group_rows(groups)[:5],
-            "errors": paged["rows"],
-            "next_offset": paged["next_offset"],
-            "page_tokens": paged["tokens"],
-            "page_limit": allowed,
+            "errors": rows,
+            "next_offset": None,
             "hint": (
                 "Call validate_entities(view='group', group_id=...) for one group's rows, "
-                "or view='issue', issue_id=... for suggestions and evidence."
+                "or view='issue', issue_id=... for suggestions and details."
             ),
             "message": (
                 "Close at least one more issue than this repair introduces."
@@ -1249,7 +970,6 @@ def make_server(
     def compact_validation(work):
         """Small validation summary attached to accepted and rejected Fix receipts."""
         issues, advisory, unresolved, groups, _ = validation(work)
-        remember(work, issues)
         return {
             "error_count": len(issues),
             "advisory_count": len(advisory),
@@ -1275,8 +995,8 @@ def make_server(
 
         A category Fix is accepted when validation is clean or the issue count drops.
         The response reports error_count before and after and the current group catalog
-        head. When rejected it lists the first page of rows; fetch suggestions and
-        evidence with validate_entities(view="issue", issue_id=...).
+        head. When rejected it lists the first page of rows; fetch a row's suggestion
+        with validate_entities(view="issue", issue_id=...).
         """
         return await complete(summary, ("category", "global"))
 
@@ -1414,7 +1134,8 @@ def related(work):
         summary(row)
         for row in work.records.values()
         if any(
-            cite["document_id"] == doc_id and cite["block_id"] in blocks for cite in row["evidence"]
+            cite["document_id"] == doc_id and cite["block_id"] in blocks
+            for cite in row.get("mentions") or ()
         )
     ]
     references = [

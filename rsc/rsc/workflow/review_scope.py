@@ -160,13 +160,9 @@ def build_scope(before, after, batches, findings, *, before_path, after_path):
     for name in sorted(old_messages.keys() | new_messages.keys()):
         left = old_messages.get(name, {}).get("value", {})
         right = new_messages.get(name, {}).get("value", {})
-        before_fields = {f["name"]: f for f in left.get("associated_fields", [])}
-        after_fields = {f["name"]: f for f in right.get("associated_fields", [])}
-        fields = {
-            key
-            for key in before_fields.keys() | after_fields.keys()
-            if before_fields.get(key) != after_fields.get(key)
-        }
+        before_fields = set(left.get("associated_fields", []))
+        after_fields = set(right.get("associated_fields", []))
+        fields = before_fields ^ after_fields
         if fields:
             message_fields[name] = fields
 

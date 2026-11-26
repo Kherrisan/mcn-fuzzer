@@ -38,7 +38,7 @@ def test_ftp_connection_direction_and_endpoint_sources():
     channels = {channel["name"]: channel for channel in model["channels"]}
     messages = {message["name"]: message for message in model["messages"]}
     assert messages["PASV"]["associated_fields"] == []
-    assert {field["name"] for field in messages["227"]["associated_fields"]} == {"host", "port"}
+    assert set(messages["227"]["associated_fields"]) == {"host", "port"}
     assert {party["name"] for party in model["parties"]} == {
         "user-PI",
         "server-PI",
@@ -60,7 +60,7 @@ def test_ftp_connection_direction_and_endpoint_sources():
     assert all(step["name"] and "id" not in step for step in model["steps"])
     assert all("effects" not in step for step in model["steps"])
     assert all(
-        set(field) == {"name"}
+        isinstance(field, str)
         for message in model["messages"]
         for field in message["associated_fields"]
     )

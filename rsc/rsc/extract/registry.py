@@ -1,4 +1,4 @@
-"""Batch workspaces, evidence capture and registry checks."""
+"""Batch workspaces and registry checks."""
 
 from copy import deepcopy
 from dataclasses import dataclass
@@ -40,7 +40,6 @@ ADAPTERS = {
         ORDER, (Party, Channel, ProtocolMessage, State, Step, StepDependency), strict=True
     )
 }
-MAX_PAGE = 20
 
 
 class SourceBlock(StrictModel):
@@ -50,13 +49,7 @@ class SourceBlock(StrictModel):
     end: int | None = None
 
 
-class Evidence(SourceBlock):
-    field: str = Field(default="", description="JSON Pointer relative to the entity value.")
-    note: str = Field(default="", description="Explain how the source supports this field.")
-
-
 class Addition(StrictModel):
-    evidence: Annotated[list[Evidence], Field(min_length=1)]
     aliases: list[str] = Field(default_factory=list)
     mentions: list[SourceBlock] = Field(default_factory=list)
 
@@ -108,40 +101,21 @@ EntityAddition = Annotated[
 ]
 
 
-class FieldAddition(StrictModel):
-    name: Annotated[str, Field(min_length=1)] = Field(description="Exact name of the added field.")
-    before: str = Field(
-        default="",
-        description="Exact name of the field it goes before; empty appends to the end.",
-    )
-
-
-class FieldRename(StrictModel):
-    name: Annotated[str, Field(min_length=1)] = Field(description="Exact existing field name.")
-    new_name: Annotated[str, Field(min_length=1)] = Field(
-        description="Name that replaces it in place.",
-    )
-
-
 class AssociatedFieldsDelta(StrictModel):
     """Name-based edit of one message's associated_fields, applied by the write path."""
 
-    remove: list[str] = Field(default_factory=list, description="Exact names to drop.")
-    replace: list[FieldRename] = Field(
-        default_factory=list, description="In-place renames, keeping the current position."
+    remove: list[str] = Field(default_factory=list, description="Exact field names to drop.")
+    replace: dict[str, str] = Field(
+        default_factory=dict,
+        description="In-place renames as {old_name: new_name}, keeping each position.",
     )
-    add: list[FieldAddition] = Field(
-        default_factory=list, description="New names, in submission order."
-    )
-    snapshot: int | None = Field(
-        default=None,
-        description="Workspace snapshot returned by the read that this edit is based on.",
+    add: list[str] = Field(
+        default_factory=list, description="New field names appended in submission order."
     )
 
 
 class EntityUpdate(StrictModel):
     id: str = Field(description="Existing entity ID returned by registry tools.")
-    evidence: Annotated[list[Evidence], Field(min_length=1)]
     patch: dict[str, Any] = Field(
         default_factory=dict,
         description="Object mapping changed top-level fields to their full replacement values.",
@@ -161,7 +135,13 @@ class EntityUpdate(StrictModel):
 class Unresolved(StrictModel):
     description: Annotated[str, Field(min_length=1)]
     entity_ids: list[str]
-    evidence: Annotated[list[Evidence], Field(min_length=1)]
+    evidence: Annotated[
+        list[int],
+        Field(
+            min_length=1,
+            description="Integer block IDs from the global block table; at least one.",
+        ),
+    ]
     missing_information: str = ""
     check_refs: list[str] = Field(
         default_factory=list,
@@ -210,20 +190,67 @@ def normalized(kind, value):
     )
 
 
-def delta_fields(fields, delta, snapshot):
-    """Rebuild one message's full ordered field list from a name-based delta.
+def leaf_paths(value, prefix=""):
+    """Dotted paths of every value written, keeping one path per list element.
 
-    Removals disappear, renames stay in their original position, and additions land in
-    submission order before their still-existing anchor (or at the end without one). The
-    caller then feeds the result through the normal full-list write path.
+    Nested objects contribute their own leaves (``extensions.cookie``); a list is
+    reported at its element paths (``associated_fields.3``) instead of descending into
+    each element, which matches the paths a delta edit names.
     """
-    if delta.snapshot is not None and delta.snapshot != snapshot:
-        raise ValueError(
-            f"stale associated_fields snapshot {delta.snapshot}; the workspace is at {snapshot}"
-        )
+    if isinstance(value, dict) and value:
+        result = []
+        for key, item in value.items():
+            result.extend(leaf_paths(item, f"{prefix}.{key}" if prefix else key))
+        return result
+    if isinstance(value, list) and value:
+        return [
+            f"{prefix}.{index}" if prefix else str(index) for index in range(len(value))
+        ]
+    return [prefix] if prefix else []
+
+
+def changed_paths(before, after, prefix=""):
+    """Dotted paths where two entity values differ, keeping array element paths.
+
+    Objects are compared key by key so ``extensions.cookie`` names the changed leaf, but
+    a changed list element is reported as its index (``associated_fields.3``) because the
+    whole element is the unit the write path replaced.
+    """
+    if isinstance(before, dict) and isinstance(after, dict):
+        result = []
+        for key in dict.fromkeys((*before, *after)):
+            path = f"{prefix}.{key}" if prefix else key
+            if key not in before:
+                result.extend(leaf_paths(after[key], path) or [path])
+            elif key not in after:
+                result.append(path)
+            else:
+                result.extend(changed_paths(before[key], after[key], path))
+        return result
+    if isinstance(before, list) and isinstance(after, list):
+        result = []
+        for index in range(max(len(before), len(after))):
+            path = f"{prefix}.{index}" if prefix else str(index)
+            if (
+                index >= len(before)
+                or index >= len(after)
+                or before[index] != after[index]
+            ):
+                result.append(path)
+        return result
+    return [] if before == after else ([prefix] if prefix else [])
+
+
+def delta_fields(fields, delta):
+    """Rebuild one message's full ordered field-name list from a name-based delta.
+
+    Removals disappear, renames stay in their original position, and additions are
+    appended in submission order. The caller then feeds the result through the normal
+    full-list write path. To insert in the middle, write the whole list instead.
+    """
     if not (delta.remove or delta.replace or delta.add):
         raise ValueError("associated_fields_delta needs at least one add, replace or remove")
-    names = [field["name"] for field in fields]
+    names = list(fields)
     if len(set(names)) != len(names):
         raise ValueError("the existing associated_fields names are not unique; submit the list")
     removed = list(delta.remove)
@@ -233,64 +260,64 @@ def delta_fields(fields, delta, snapshot):
         if name not in names:
             raise ValueError(f"remove target {name!r} is not in associated_fields")
     renamed = {}
-    targets = []
-    for item in delta.replace:
-        if item.name not in names:
-            raise ValueError(f"replace target {item.name!r} is not in associated_fields")
-        if item.name in removed:
-            raise ValueError(f"{item.name!r} cannot be both removed and replaced")
-        if item.new_name in renamed.values() or item.new_name in targets:
-            raise ValueError(f"replace target {item.new_name!r} is used more than once")
-        renamed[item.name] = item.new_name
-        targets.append(item.new_name)
-    added = [item.name for item in delta.add]
+    for name, new_name in delta.replace.items():
+        if name not in names:
+            raise ValueError(f"replace target {name!r} is not in associated_fields")
+        if name in removed:
+            raise ValueError(f"{name!r} cannot be both removed and replaced")
+        if new_name in renamed.values() or new_name in delta.replace:
+            raise ValueError(f"replace target {new_name!r} is used more than once")
+        renamed[name] = new_name
+    added = list(delta.add)
     if len(set(added)) != len(added):
         raise ValueError("each added name may appear only once")
-    result = []
-    for field in fields:
-        name = field["name"]
-        if name in removed:
-            continue
-        result.append({"name": renamed.get(name, name)})
-    for item in delta.add:
-        if not item.before:
-            result.append({"name": item.name})
-            continue
-        index = next(
-            (position for position, field in enumerate(result) if field["name"] == item.before),
-            None,
-        )
-        if index is None:
-            raise ValueError(f"add anchor {item.before!r} is not in the resulting fields")
-        result.insert(index, {"name": item.name})
-    final = [field["name"] for field in result]
-    duplicates = sorted({name for name in final if final.count(name) > 1})
+    result = [renamed.get(name, name) for name in names if name not in removed]
+    result.extend(added)
+    duplicates = sorted({name for name in result if result.count(name) > 1})
     if duplicates:
         raise ValueError(f"names already exist or repeat after this delta: {duplicates}")
     return result
 
 
-def moved_field_evidence(evidence, before, after):
-    """Index-based evidence paths that would land on another field after a delta."""
-
-    moved = []
-    for entry in evidence:
-        parts = entry["field"].strip("/").split("/")
-        if parts[0] != "associated_fields" or len(parts) < 2 or not parts[1].isdecimal():
-            continue
-        index = int(parts[1])
-        old = before[index]["name"] if index < len(before) else None
-        new = after[index]["name"] if index < len(after) else None
-        if old != new:
-            moved.append(entry["field"])
-    return moved
-
-
-def migrate_registry(data):
-    """Normalize saved unresolved records and remove legacy entity versions."""
+def migrate_registry(data, sources=None):
+    """Normalize saved unresolved records, old citations and legacy entity evidence."""
     records = data["entities"]
     migrated = False
-    for issue in data["unresolved"].values():
+    for key in list(data["unresolved"]):
+        issue = data["unresolved"][key]
+        # Old open items cited blocks by document_id/block_id. Keep the first block the
+        # rebuilt block table can place and replace the whole citation list with its
+        # integer ID; an item with no placeable block cannot be cited and is dropped.
+        old = issue.get("evidence") or ()
+        if old and isinstance(old[0], dict):
+            number = None
+            if sources is not None:
+                for entry in old:
+                    number = sources.block_number(
+                        entry.get("document_id"), entry.get("block_id")
+                    )
+                    if number is not None:
+                        break
+            if number is None:
+                del data["unresolved"][key]
+                migrated = True
+                continue
+            issue["evidence"] = [number]
+            migrated = True
+        resolved = issue.get("resolved")
+        if isinstance(resolved, dict) and (resolved.get("evidence") or [None])[0] is not None:
+            old = resolved["evidence"]
+            if old and isinstance(old[0], dict):
+                number = None
+                if sources is not None:
+                    for entry in old:
+                        number = sources.block_number(
+                            entry.get("document_id"), entry.get("block_id")
+                        )
+                        if number is not None:
+                            break
+                resolved["evidence"] = [] if number is None else [number]
+                migrated = True
         for key in ("deferred_kind", "disposition"):
             if key in issue:
                 issue.pop(key)
@@ -312,9 +339,25 @@ def migrate_registry(data):
         if "entity" in row
     ]
     for row in [*records.values(), *archived]:
-        if "revision" in row:
-            row.pop("revision")
+        for key in ("revision", "evidence"):
+            if key in row:
+                row.pop(key)
+                migrated = True
+        # Older checkpoints stored each message field as {"name": ...}; the model and
+        # every write use plain field-name strings now.
+        value = row.get("value")
+        fields = value.get("associated_fields") if isinstance(value, dict) else None
+        if isinstance(fields, list) and any(isinstance(field, dict) for field in fields):
+            value["associated_fields"] = [
+                field["name"] if isinstance(field, dict) else field for field in fields
+            ]
             migrated = True
+    # Merge and withdraw receipts also recorded the citation they were accepted with.
+    for bucket in ("redirects", "withdrawn"):
+        for row in data[bucket].values():
+            if "evidence" in row:
+                row.pop("evidence")
+                migrated = True
     return migrated
 
 
@@ -396,9 +439,6 @@ class Workspace:
         self.repair_start_count = 0
         self.gaps = []
         self.reject_count = 0
-        # Bumped by every applied mutation so a paged read can tell the model when
-        # its cursor predates a change to the rows it was reading.
-        self.snapshot = 0
         # Category Fix scheduling: repair sites that stalled on an unchanged blocked
         # signature, and the group or issue reads this attempt actually made. Both live
         # only in memory; neither is written to the checkpoint.
@@ -463,7 +503,7 @@ class Workspace:
                 continue
             if part.get("start") == 0 and part.get("end") == len(block.get("text") or ""):
                 return True
-            # Segment offsets are block-local while evidence offsets are document
+            # Segment offsets are block-local while citation offsets are document
             # coordinates, so a fragment only counts when the frozen text locates it
             # once and the cited range reaches into it.
             start, end = cite.get("start"), cite.get("end")
@@ -512,11 +552,13 @@ class Workspace:
         if not created:
             return None
         blocks = {(batch["doc_id"], part.get("block_id")) for part in batch["segments"]}
+        # Entity evidence is gone, so a step's own mentions are the only per-entity
+        # record of which blocks it was written from.
         written = {
             (cite.get("document_id"), cite.get("block_id"))
             for row in self.records.values()
             if row["kind"] == "steps"
-            for cite in row.get("evidence") or ()
+            for cite in row.get("mentions") or ()
         }
         if blocks & written:
             return None
@@ -524,15 +566,13 @@ class Workspace:
         for unresolved in self.open_unresolved():
             if unresolved.get("id") not in created:
                 continue
-            for cite in unresolved.get("evidence") or ():
-                if self.batch_holds(batch, cite):
-                    rows.append(
-                        {
-                            "id": unresolved["id"],
-                            "document_id": cite.get("document_id"),
-                            "block_id": cite.get("block_id"),
-                        }
-                    )
+            for number in unresolved.get("evidence") or ():
+                try:
+                    locator = self.sources.block_locator(number)
+                except (ValueError, TypeError):
+                    continue
+                if self.batch_holds(batch, locator):
+                    rows.append({"id": unresolved["id"], "block": number})
                     break
         return rows[:2] or None
 
@@ -589,49 +629,19 @@ class Workspace:
         updated = {i: self.records.get(i) for i in touched} if operation == "update" else {}
         self.receipts[key] = result, updated
         self.mutations.append({"operation": operation, "request": request, "result": result})
-        self.snapshot += 1
         return result
 
     def location(self, item):
         return self.sources.evidence(item.document_id, item.block_id, item.start, item.end)
 
-    def evidence(self, evidence, value=None, *, aliases=None):
-        result = []
-        for item in evidence:
-            field = "" if item.field == "/value" else item.field.removeprefix("/value/")
-            if field:
-                field = "/" + field.lstrip("/")
-            if value is not None and field:
-                parts = field[1:].split("/")
-                current = value
-                if parts[0] == "aliases" and aliases is not None:
-                    current = {"aliases": aliases}
-                for part in parts:
-                    part = part.replace("~1", "/").replace("~0", "~")
-                    try:
-                        if isinstance(current, list) and not part.isdecimal():
-                            raise ValueError("invalid array index")
-                        current = current[int(part)] if isinstance(current, list) else current[part]
-                    except (ValueError, KeyError, IndexError, TypeError) as exc:
-                        raise ValueError(f"invalid evidence field {item.field!r}") from exc
-            result.append(
-                {
-                    **self.location(item),
-                    "field": field,
-                    "note": item.note,
-                }
-            )
-        return result
-
     def add_entities(self, entities: list[EntityAddition]):
-        """Add a group of entities atomically, with one or more citations for each."""
+        """Add a group of entities atomically."""
 
         def apply():
             result = []
             for item in entities:
                 self.allowed(item.kind)
                 value = normalized(item.kind, item.value.model_dump(mode="json", by_alias=True))
-                citations = self.evidence(item.evidence, value, aliases=item.aliases)
                 self.data["next_entity"] += 1
                 entity_id = f"E{self.data['next_entity']}"
                 row = {
@@ -639,15 +649,12 @@ class Workspace:
                     "kind": item.kind,
                     "value": value,
                     "aliases": item.aliases,
-                    "evidence": citations,
                     "mentions": [self.location(loc) for loc in item.mentions],
                 }
                 self.records[entity_id] = row
-                result.append(summary(row))
+                result.append({**summary(row), "changed_fields": leaf_paths(value)})
             return result
 
-        if not 1 <= len(entities) <= MAX_PAGE:
-            raise ValueError(f"provide 1..{MAX_PAGE} entities")
         return self.mutate("add", [entity.model_dump(mode="json") for entity in entities], apply)
 
     def update_entities(self, entities: list[EntityUpdate]):
@@ -685,7 +692,6 @@ class Workspace:
                     self.data["withdrawn"][entity_id] = {
                         "entity": self.records.pop(entity_id),
                         "reason": item.withdraw_reason,
-                        "evidence": self.evidence(item.evidence),
                     }
                     expanded.append(record)
                     continue
@@ -698,42 +704,30 @@ class Workspace:
                         )
                     if row["kind"] != "messages":
                         raise ValueError("associated_fields_delta only applies to messages")
-                    fields = delta_fields(row["value"]["associated_fields"], delta, self.snapshot)
-                    moved = moved_field_evidence(
-                        row["evidence"], row["value"]["associated_fields"], fields
-                    )
-                    if moved:
-                        raise ValueError(
-                            "this delta moves fields that existing evidence cites: "
-                            + ", ".join(moved)
-                        )
+                    fields = delta_fields(row["value"]["associated_fields"], delta)
                     patch = {**patch, "associated_fields": fields}
                 record["patch"] = patch
                 expanded.append(record)
                 value = normalized(row["kind"], {**row["value"], **patch})
-                citations = self.evidence(item.evidence, value, aliases=item.aliases)
-                touched = {key for key in patch if value[key] != row["value"].get(key)}
-                if len(touched) == 1:
-                    (field,) = touched
-                    for entry in citations:
-                        if not entry["field"]:
-                            entry["field"] = f"/{field}"
-                covered = {entry["field"].strip("/").split("/")[0] for entry in citations}
-                if touched - covered:
-                    raise ValueError(f"missing field evidence for {sorted(touched - covered)}")
                 if item.aliases is not None:
                     row["aliases"] = item.aliases
                 row["value"] = value
-                row["evidence"].extend(cite for cite in citations if cite not in row["evidence"])
                 locations = row.setdefault("mentions", [])
                 for item_location in map(self.location, item.mentions):
                     if item_location not in locations:
                         locations.append(item_location)
             changed.update(rewrite_references(before, self.records, {}))
-            return [summary(self.records[key]) for key in self.records if key in changed]
+            return [
+                {
+                    **summary(self.records[key]),
+                    "changed_fields": changed_paths(
+                        before[key]["value"], self.records[key]["value"]
+                    ),
+                }
+                for key in self.records
+                if key in changed
+            ]
 
-        if not 1 <= len(entities) <= MAX_PAGE:
-            raise ValueError(f"provide 1..{MAX_PAGE} entities")
         raw = [entity.model_dump(mode="json") for entity in entities]
         return self.mutate("update", expanded, apply, touched=changed, key_request=raw)
 
@@ -742,7 +736,6 @@ class Workspace:
         keep_id: str,
         ids: list[str],
         reason: str,
-        evidence: list[Evidence],
         value: dict[str, Any] | None = None,
     ):
         """Merge duplicates, supplying the final value for conflicting attributes."""
@@ -752,10 +745,11 @@ class Workspace:
         def apply():
             keep = self.canonical(keep_id)
             others = list(dict.fromkeys(self.canonical(key) for key in ids))
-            if not others or keep in others or not reason.strip() or not evidence:
-                raise ValueError("merge requires distinct source IDs, a reason and evidence")
+            if not others or keep in others or not reason.strip():
+                raise ValueError("merge requires distinct source IDs and a reason")
             target = self.records[keep]
             self.allowed(target["kind"])
+            before_value = deepcopy(target["value"])
             before = deepcopy(self.records)
             if any(self.records[key]["kind"] != target["kind"] for key in others):
                 raise ValueError("only entities in the same category can be merged")
@@ -768,8 +762,6 @@ class Workspace:
                         raise ValueError("conflicting attributes require the final merged value")
             else:
                 target["value"] = normalized(target["kind"], value)
-            citations = self.evidence(evidence, target["value"])
-            target["evidence"].extend(citations)
             for key in others:
                 old = self.records.pop(key)
                 aliases = old["aliases"] + (
@@ -781,14 +773,17 @@ class Workspace:
                 self.data["redirects"][key] = {
                     "to": keep,
                     "reason": reason,
-                    "evidence": citations,
                     "entity": old,
                 }
             changed.update([keep, *others])
             changed.update(rewrite_references(before, self.records, dict.fromkeys(others, keep)))
-            return summary(target)
+            return {
+                **summary(target),
+                "changed_fields": changed_paths(before_value, target["value"]),
+                "absorbed_ids": others,
+            }
 
-        request = [keep_id, ids, reason, [item.model_dump() for item in evidence], value]
+        request = [keep_id, ids, reason, value]
         return self.mutate("merge", request, apply, touched=changed)
 
     def record_unresolved(self, issue: Unresolved):
@@ -796,7 +791,15 @@ class Workspace:
 
         def apply():
             for key in issue.entity_ids:
-                self.canonical(key)
+                entity_id = self.canonical(key)
+                if (
+                    self.assignment.kind == "basics"
+                    and self.records[entity_id]["kind"]
+                    in ("states", "steps", "step_dependencies")
+                ):
+                    raise ValueError(
+                        "basics unresolved items must concern parties, channels or messages"
+                    )
             check_entity_ids = set()
             if issue.check_refs:
                 pending = {row["check_ref"]: row for row in self.coverage_issues()}
@@ -816,12 +819,15 @@ class Workspace:
                     check_entity_ids.update(check["records"])
                 if not check_entity_ids <= set(issue.entity_ids):
                     raise ValueError("include every entity listed by the checks")
+            evidence = list(dict.fromkeys(issue.evidence))
+            for number in evidence:
+                self.sources.block_locator(number)
             self.data["next_issue"] += 1
             key = f"U{self.data['next_issue']}"
             self.data["unresolved"][key] = {
                 **issue.model_dump(),
+                "evidence": evidence,
                 "id": key,
-                "evidence": self.evidence(issue.evidence),
                 "assignment": self.assignment.id,
             }
             if check_entity_ids:
@@ -830,7 +836,7 @@ class Workspace:
 
         return self.mutate("unresolved", issue.model_dump(), apply)
 
-    def solve_unresolved(self, unresolved_id: str, reason: str, evidence: list[Evidence]):
+    def solve_unresolved(self, unresolved_id: str, reason: str, evidence: list[int]):
         def apply():
             item = self.data["unresolved"].get(unresolved_id)
             if item is None or item.get("resolved"):
@@ -843,25 +849,24 @@ class Workspace:
             )
             if remaining:
                 raise ValueError(f"linked coverage checks remain: {', '.join(remaining)}")
+            numbers = list(dict.fromkeys(evidence))
+            for number in numbers:
+                self.sources.block_locator(number)
             item["resolved"] = {
                 "reason": reason,
-                "evidence": self.evidence(evidence),
+                "evidence": numbers,
                 "assignment": self.assignment.id,
             }
             return {"id": unresolved_id, "resolved": True}
 
-        request = [unresolved_id, reason, [item.model_dump() for item in evidence]]
+        request = [unresolved_id, reason, list(evidence)]
         return self.mutate("solve_unresolved", request, apply)
 
     def describe_issues(self, issues):
+        # Validation rows never carried source locators of their own once entity
+        # evidence was removed; they are handed on unchanged.
         for issue in issues:
-            locations = list(issue.get("evidence", []))
-            for key in issue["records"]:
-                row = self.records.get(key, {})
-                for cite in row.get("evidence", [])[:2]:
-                    if cite not in locations:
-                        locations.append(cite)
-            yield {**issue, "evidence": locations[:6]}
+            yield {**issue}
 
     def coverage_issues(self):
         return self.index.coverage(self.ready)

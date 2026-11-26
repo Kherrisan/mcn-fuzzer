@@ -8,9 +8,9 @@ from pydantic import ValidationError
 
 from rsc.protocol.contract import COLLECTIONS, protocol_schema
 from rsc.protocol.models import (
-    AssociatedField,
     FieldRelation,
     Issue,
+    ProtocolMessage,
     ProtocolModel,
     protocol_json_schema,
     validate_step,
@@ -40,9 +40,13 @@ def test_final_model_rejects_audit_fields():
 
 
 def test_fields_and_issues_remain_minimal():
-    assert AssociatedField.model_validate({"name": "Session"}).name == "Session"
+    assert ProtocolMessage.model_validate(
+        {"name": "SETUP", "associated_fields": ["Session", "CSeq"]}
+    ).associated_fields == ["Session", "CSeq"]
     with pytest.raises(ValidationError):
-        AssociatedField.model_validate({"name": "Session", "purposes": ["correlation"]})
+        ProtocolMessage.model_validate(
+            {"name": "SETUP", "associated_fields": [{"name": "Session"}]}
+        )
     assert Issue.model_validate({"description": "Ambiguous", "object_names": []})
     with pytest.raises(ValidationError):
         Issue.model_validate({"id": "not-exported", "description": "Ambiguous", "object_names": []})

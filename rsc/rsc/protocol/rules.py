@@ -53,7 +53,8 @@ ASSOCIATED_FIELD_RULES = (
     "Use stable dot-separated paths for nested fields that need independent access, consistently "
     "across messages, processing and field relations. Attach each field to its transmitting "
     "message. Keep local-only values in processing or states. Preserve source-defined encoding, "
-    "length, value and presence constraints in evidence notes and applicable processing rules. "
+    "length, value and presence constraints in the field definitions and applicable "
+    "processing rules. Submit associated_fields as a plain array of field-name strings. "
     "Use an empty field list when the source defines an empty body; otherwise revisit detailed "
     "definitions before retaining a fieldless message."
 )

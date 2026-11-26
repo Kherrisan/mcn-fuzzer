@@ -24,12 +24,8 @@
       {
         "name": "PORT",
         "associated_fields": [
-          {
-            "name": "host"
-          },
-          {
-            "name": "port"
-          }
+          "host",
+          "port"
         ]
       },
       {
@@ -39,12 +35,8 @@
       {
         "name": "227",
         "associated_fields": [
-          {
-            "name": "host"
-          },
-          {
-            "name": "port"
-          }
+          "host",
+          "port"
         ]
       }
     ],

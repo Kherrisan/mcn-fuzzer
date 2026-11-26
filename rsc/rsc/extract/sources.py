@@ -1,4 +1,4 @@
-"""Frozen source snapshots and the scan and section indexes."""
+"""Frozen source snapshots, the global block table and the scan and section indexes."""
 
 from hashlib import sha256
 from pathlib import Path
@@ -41,6 +41,15 @@ class Sources:
                 path = tuple(block["section_path"])
                 for length in range(len(path) + 1):
                     self.sections.setdefault((doc_id, path[:length]), []).append(key)
+        # One integer per block for the whole run: documents in document_id order,
+        # and inside a document the block order. The same rule rebuilds the table for
+        # an old checkpoint, so a saved block_id maps to the number it always had.
+        self.block_ids = [
+            (doc_id, block["block_id"])
+            for doc_id in sorted(self.documents)
+            for block in sorted(self.documents[doc_id]["blocks"], key=lambda item: item["order"])
+        ]
+        self.block_numbers = {key: number for number, key in enumerate(self.block_ids)}
         for batch_id, batch in self.batches.items():
             for part in batch["segments"]:
                 key = (batch["doc_id"], part["block_id"])
@@ -119,20 +128,52 @@ class Sources:
         atomic_json(root / "source-plan.json", manifest)
         return parsed
 
-    def evidence(self, document_id, block_id, start=None, end=None):
-        block = self.blocks.get((document_id, block_id))
+    def block_key(self, document_id, block_id):
+        """Canonical (document_id, block_id) key; short block numbers are accepted."""
+        key = (document_id, block_id)
+        if key in self.blocks:
+            return key
+        if not isinstance(block_id, str):
+            return None
         prefix, separator, ordinal = block_id.partition("-")
-        if (
-            block is None
-            and prefix == "blk"
-            and separator
-            and ordinal.isascii()
-            and ordinal.isdecimal()
-        ):
-            block_id = f"blk-{ordinal.lstrip('0').zfill(6)}"
-            block = self.blocks.get((document_id, block_id))
+        if prefix == "blk" and separator and ordinal.isascii() and ordinal.isdecimal():
+            key = (document_id, f"blk-{ordinal.lstrip('0').zfill(6)}")
+            if key in self.blocks:
+                return key
+        return None
+
+    def block_number(self, document_id, block_id):
+        """Global integer ID of one block, or None when it is not part of this run."""
+        key = self.block_key(document_id, block_id)
+        return None if key is None else self.block_numbers.get(key)
+
+    def block_locator(self, number):
+        """Locator of one globally numbered block; an out-of-range ID is an error."""
+        if isinstance(number, bool) or not isinstance(number, int):
+            raise ValueError(f"unknown source block {number}")
+        if not 0 <= number < len(self.block_ids):
+            raise ValueError(f"unknown source block {number}")
+        return self.evidence(*self.block_ids[number])
+
+    def block_table(self):
+        """The checkpoint's `blocks` array: one (document_id, block_id) pair per block."""
+        return [[document_id, block_id] for document_id, block_id in self.block_ids]
+
+    def use_block_table(self, entries):
+        """Adopt a checkpoint's numbering; a table with the same blocks keeps its order."""
+        table = [(entry[0], entry[1]) for entry in entries]
+        if table == self.block_ids:
+            return
+        if sorted(table) == sorted(self.block_ids):
+            self.block_ids = table
+            self.block_numbers = {key: number for number, key in enumerate(table)}
+
+    def evidence(self, document_id, block_id, start=None, end=None):
+        key = self.block_key(document_id, block_id)
+        block = self.blocks.get(key) if key is not None else None
         if block is None:
             raise ValueError(f"unknown source block {document_id}/{block_id}")
+        block_id = key[1]
         span = block["original_span"]
         if start is None and end is None:
             start, end = span["start"], span["end"]
@@ -152,7 +193,12 @@ class Sources:
             "doc_id": batch["doc_id"],
             "batch_id": batch_id,
             "segments": [
-                {"block": part["block_id"], "section": part["section_path"], "text": part["text"]}
+                {
+                    "id": self.block_numbers[(batch["doc_id"], part["block_id"])],
+                    "block": part["block_id"],
+                    "section": part["section_path"],
+                    "text": part["text"],
+                }
                 for part in batch["segments"]
             ],
         }

@@ -192,7 +192,7 @@ def test_message_field_propagates_only_through_its_own_relations():
     def row(kind, batch, **value):
         return {"kind": kind, "value": value, "evidence": [{"batch_id": batch, "block_id": batch}]}
 
-    message = row("messages", "definition", name="Offer", associated_fields=[{"name": "first"}])
+    message = row("messages", "definition", name="Offer", associated_fields=["first"])
     sender = row("steps", "offer", name="offer", message_name="Offer")
     # Only one of the two consumers uses the added field in the new snapshot.
     additions = [
@@ -211,7 +211,7 @@ def test_message_field_propagates_only_through_its_own_relations():
         )
 
     updated = deepcopy(message)
-    updated["value"]["associated_fields"].append({"name": "second"})
+    updated["value"]["associated_fields"].append("second")
     scope = build_scope(
         {"items": [message, sender, *additions, edge("first")], "unresolved": []},
         {"items": [updated, sender, *additions, edge("first"), edge("second")], "unresolved": []},

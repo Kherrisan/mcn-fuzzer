@@ -2,11 +2,12 @@
 
 import asyncio
 import json
+import re
 from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from rsc.artifacts import read_jsonl
 from rsc.extract.cli import ExtractConfig
@@ -18,7 +19,6 @@ from rsc.extract.registry import (
     Assignment,
     EntityAddition,
     EntityUpdate,
-    Evidence,
     Unresolved,
     Workspace,
     migrate_registry,
@@ -48,15 +48,21 @@ def citation(sources):
     return {"document_id": doc_id, "block_id": block_id}
 
 
+def block_number(sources, location=None):
+    """The global integer ID of a block locator, defaulting to the first frozen block."""
+    if location is None:
+        location = citation(sources)
+    return sources.block_number(location["document_id"], location["block_id"])
+
+
 def party(sources, name):
     return {
         "kind": "parties",
         "value": {"name": name, "description": "Protocol endpoint"},
-        "evidence": [citation(sources)],
     }
 
 
-def test_batch_registry_summary_includes_all_evidence_matches(sources):
+def test_batch_registry_summary_lists_entities_mentioning_the_batch(sources):
     batch_id, next_batch_id = sources.batches
     local = sources.batch_context(batch_id)
     remote = sources.batch_context(next_batch_id)
@@ -65,7 +71,7 @@ def test_batch_registry_summary_includes_all_evidence_matches(sources):
     remote_party = {
         **party(sources, "Client"),
         "aliases": ["server"],
-        "evidence": [{"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}],
+        "mentions": [{"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}],
     }
     work.add_entities(add([remote_party]))
     assert related(work)["candidates"] == []
@@ -74,7 +80,7 @@ def test_batch_registry_summary_includes_all_evidence_matches(sources):
         {
             **party(sources, f"Endpoint {i}"),
             "aliases": [f"alias {i} " + "x" * 500],
-            "evidence": [
+            "mentions": [
                 {"document_id": local["doc_id"], "block_id": local["segments"][0]["block"]}
             ],
         }
@@ -87,7 +93,7 @@ def test_batch_registry_summary_includes_all_evidence_matches(sources):
     assert [row["name"] for row in context["candidates"]] == [f"Endpoint {i}" for i in range(24)]
 
 
-def test_scan_prompt_keeps_every_open_item_and_only_their_citations():
+def test_scan_prompt_keeps_every_open_item_and_dedups_block_ids():
     from rsc.extract.tools import projected_unresolved
 
     items = [
@@ -98,49 +104,17 @@ def test_scan_prompt_keeps_every_open_item_and_only_their_citations():
             "missing_information": "which endpoint initiates the close",
             "check_refs": ["coverage:1"],
             "assignment": "batch-00001",
-            "evidence": [
-                {
-                    "document_id": "rfc2326",
-                    "block_id": "blk-000001",
-                    "start": 10,
-                    "end": 20,
-                    "field": "/steps/0/name",
-                    "note": "the state table",
-                    "section_path": ["10.4"],
-                },
-                {
-                    "document_id": "rfc2326",
-                    "block_id": "blk-000001",
-                    "start": 10,
-                    "end": 20,
-                    "field": "/steps/0/name",
-                    "note": "same citation again",
-                },
-                {"document_id": "rfc2326", "block_id": "blk-000001", "field": ""},
-                {
-                    "document_id": "rfc7826",
-                    "block_id": "blk-000002",
-                    "field": "/steps/1/name",
-                    "note": "second document",
-                },
-            ],
+            "evidence": [12, 12, 13, 4],
         },
         {
             "id": "U2",
             "description": "second issue",
-            "evidence": [
-                {
-                    "document_id": "rfc2326",
-                    "block_id": "blk-000001",
-                    "field": "/steps/0/name",
-                    "note": "cross-issue citation",
-                }
-            ],
+            "evidence": [12],
         },
         {
             "id": "U3",
-            "description": "legacy citation without a block",
-            "evidence": [{"document_id": "rfc2326", "note": "no block id"}],
+            "description": "third issue",
+            "evidence": [7],
         },
     ]
     projected = projected_unresolved(items)
@@ -152,31 +126,19 @@ def test_scan_prompt_keeps_every_open_item_and_only_their_citations():
             if key != "evidence":
                 assert copy[key] == value
 
-    first = projected[0]["evidence"]
-    # Locations only: the same citation twice collapses, the empty field is kept as a
-    # separate entry, and a different field on the same block stays distinct.
-    assert first == [
-        {"document_id": "rfc2326", "block_id": "blk-000001", "field": "/steps/0/name"},
-        {"document_id": "rfc2326", "block_id": "blk-000001"},
-        {"document_id": "rfc7826", "block_id": "blk-000002", "field": "/steps/1/name"},
-    ]
-    assert all(set(item) <= {"document_id", "block_id", "field"} for item in first)
-    # A block cited by two items is kept for both.
-    assert projected[1]["evidence"] == [
-        {"document_id": "rfc2326", "block_id": "blk-000001", "field": "/steps/0/name"}
-    ]
-    # Evidence that carries no usable location is passed through unchanged.
-    assert projected[2]["evidence"] == [{"document_id": "rfc2326", "note": "no block id"}]
+    # Repeats collapse in first-seen order; the same block cited by two items stays.
+    assert projected[0]["evidence"] == [12, 13, 4]
+    assert projected[1]["evidence"] == [12]
+    assert projected[2]["evidence"] == [7]
     # The projection is a plain JSON list and never rewrites the registry items.
     assert json.loads(json.dumps(projected)) == projected
-    assert items[0]["evidence"][0]["note"] == "the state table"
-    assert items[0]["evidence"][0]["start"] == 10
+    assert items[0]["evidence"] == [12, 12, 13, 4]
 
 
 def test_open_unresolved_reach_another_batch(sources):
     current, earlier = sources.batches
     remote = sources.batch_context(earlier)
-    located = {"document_id": remote["doc_id"], "block_id": remote["segments"][0]["block"]}
+    located = sources.block_number(remote["doc_id"], remote["segments"][0]["block"])
     work = Workspace(sources, "test", empty_registry(), Assignment(earlier, "scan", "parties"))
     for i in range(12):
         work.record_unresolved(
@@ -187,14 +149,109 @@ def test_open_unresolved_reach_another_batch(sources):
                 missing_information=f"Need definition {i}",
             )
         )
-    work.solve_unresolved("U1", "Definition found", [Evidence.model_validate(located)])
+    work.solve_unresolved("U1", "Definition found", [located])
     work = Workspace(sources, "test", work.data, Assignment(current, "scan", "channels"))
     items = related(work)["unresolved"]
     # Closed items are gone and the open ones keep their registration order.
     assert [item["id"] for item in items] == [f"U{i}" for i in range(2, 13)]
     assert items[-1]["missing_information"] == "Need definition 11"
-    # The remote batch's citation survives projection exactly, and never picks up a field.
+    # The remote batch's block ID survives projection unchanged.
     assert [item["evidence"] for item in items] == [[located] for _ in items]
+
+
+def test_open_item_evidence_is_a_deduplicated_block_id_list(sources):
+    work = Workspace(sources, "test", empty_registry(), Assignment("seed", "global"))
+    number = block_number(sources)
+    other = sources.block_number(*list(sources.blocks)[1])
+    item = work.record_unresolved(
+        Unresolved(
+            description="The close handshake is unspecified",
+            entity_ids=[],
+            evidence=[number, number, other],
+        )
+    )
+    record = work.data["unresolved"][item["id"]]
+    # A citation object is no longer accepted, and at least one block ID is required.
+    with pytest.raises(ValidationError):
+        Unresolved(description="x", entity_ids=[], evidence=[citation(sources)])
+    with pytest.raises(ValidationError):
+        Unresolved(description="x", entity_ids=[], evidence=[])
+    # Unknown, out-of-range and non-integer IDs are rejected before anything is stored.
+    for bad in ([len(sources.block_ids)], [-1], ["12"], [True]):
+        with pytest.raises((ValueError, ValidationError)):
+            work.record_unresolved(Unresolved(description="x", entity_ids=[], evidence=bad))
+    assert record["evidence"] == [number, other]
+    assert work.solve_unresolved(
+        item["id"], "Resolved from the state table", [other, other]
+    )["resolved"]
+    assert work.data["unresolved"][item["id"]]["resolved"]["evidence"] == [other]
+
+
+def test_block_table_is_global_and_survives_resume(sources, tmp_path):
+    pytest.importorskip("pydantic_ai")
+    pytest.importorskip("fastmcp")
+    from rsc.extract.runner import Runner
+
+    config = ExtractConfig()
+    model = fake_model(sources, [])
+    runner = Runner(tmp_path, sources, "test", config, model, no_review())
+    table = runner.state["blocks"]
+    assert table == sources.block_table()
+    # Numbering is 0..n-1: documents in document_id order, blocks in in-document order.
+    assert [sources.block_number(*pair) for pair in table] == list(range(len(table)))
+    assert table == sorted(
+        table, key=lambda pair: (pair[0], sources.blocks[tuple(pair)]["order"])
+    )
+    runner.save()
+    # A resumed run reuses the saved numbers even if a rebuild would order blocks otherwise.
+    saved = read_json(runner.path)
+    saved["blocks"] = list(reversed(saved["blocks"]))
+    atomic_json(runner.path, saved)
+    resumed = Runner(tmp_path, sources, "test", config, model, no_review())
+    assert resumed.state["blocks"] == list(reversed(table))
+    assert resumed.sources.block_ids[0] == tuple(table[-1])
+    assert resumed.sources.block_number(*table[-1]) == 0
+    assert resumed.sources.block_locator(0)["block_id"] == table[-1][1]
+
+
+def test_old_open_item_evidence_migrates_to_the_first_block(sources):
+    work = Workspace(sources, "test", empty_registry(), Assignment("seed", "global"))
+    first, second = list(sources.blocks)[:2]
+    legacy = {
+        "document_id": first[0],
+        "block_id": first[1],
+        "start": 0,
+        "end": 10,
+        "field": "/steps/0/name",
+        "note": "old citation",
+        "section_path": ["1"],
+    }
+    later = {"document_id": second[0], "block_id": second[1], "field": "/name"}
+    data = work.data
+    data["unresolved"] = {
+        "U1": {
+            "id": "U1",
+            "description": "Old open item",
+            "entity_ids": [],
+            "evidence": [legacy, later, legacy],
+            "check_refs": [],
+            "resolved": {"reason": "settled", "evidence": [later, legacy]},
+        },
+        "U2": {
+            "id": "U2",
+            "description": "An old item whose block is gone",
+            "entity_ids": [],
+            "evidence": [{"document_id": "rfc9999", "block_id": "blk-000001"}],
+            "check_refs": [],
+        },
+    }
+    assert migrate_registry(data, sources)
+    item = data["unresolved"]["U1"]
+    # Only the first placeable block survives; fields, offsets and notes are dropped.
+    assert item["evidence"] == [sources.block_number(*first)]
+    assert item["resolved"]["evidence"] == [sources.block_number(*second)]
+    # An item that no rebuilt block can anchor is dropped rather than kept uncitable.
+    assert "U2" not in data["unresolved"]
 
 
 def test_source_map_and_snapshot(sources, tmp_path):
@@ -232,17 +289,16 @@ def test_batch_writes_are_atomic_and_idempotent(sources):
     work = Workspace(sources, "test", empty_registry(), Assignment("b", "scan", "parties"))
     add = TypeAdapter(list[EntityAddition])
     first = party(sources, "Client")
-    broken = {**party(sources, "Server"), "evidence": [{"document_id": "absent", "block_id": "?"}]}
-    with pytest.raises(ValueError, match="unknown source"):
+    broken = entity(sources, "messages", name="Packet", associated_fields=[])
+    with pytest.raises(ValueError, match="this scan can only write parties"):
         work.add_entities(add.validate_python([first, broken]))
     assert not work.records
     entities = add.validate_python([first, party(sources, "Server")])
     assert [item["id"] for item in work.add_entities(entities)] == ["E1", "E2"]
     assert work.add_entities(entities) == work.add_entities(entities)
-    cite = {**citation(sources), "field": "/description"}
     update = [
-        EntityUpdate(id="E1", patch={"description": "sender"}, evidence=[citation(sources)]),
-        EntityUpdate(id="E2", patch={"description": "receiver"}, evidence=[cite]),
+        EntityUpdate(id="E1", patch={"description": "sender"}),
+        EntityUpdate(id="E2", patch={"description": "receiver"}),
     ]
     with pytest.raises(ValueError, match="duplicate update"):
         work.update_entities([update[0], update[0]])
@@ -251,12 +307,9 @@ def test_batch_writes_are_atomic_and_idempotent(sources):
     assert [row["id"] for row in work.update_entities(update)] == ["E1", "E2"]
     assert work.update_entities(update)[0]["id"] == "E1"
     assert len(work.mutations) == 2
-    work.update_entities(
-        [EntityUpdate(id="E1", patch={"description": "initiator"}, evidence=[cite])]
-    )
+    work.update_entities([EntityUpdate(id="E1", patch={"description": "initiator"})])
     work.update_entities(update)
     assert work.records["E1"]["value"]["description"] == "sender"
-    assert work.records["E1"]["evidence"][-1]["field"] == "/description"
 
 
 def test_merge_redirects_and_rewrites_channel_references(sources):
@@ -269,7 +322,6 @@ def test_merge_redirects_and_rewrites_channel_references(sources):
                 party(sources, "User"),
                 {
                     "kind": "channels",
-                    "evidence": [citation(sources)],
                     "value": {
                         "name": "c",
                         "description": "connection",
@@ -290,7 +342,6 @@ def test_merge_redirects_and_rewrites_channel_references(sources):
         "E1",
         ["E2"],
         "RFC uses interchangeable names",
-        [Evidence(**citation(sources))],
     )
     assert receipt["id"] == work.canonical("E2") == "E1"
     channel = work.records["E3"]
@@ -301,7 +352,7 @@ def test_merge_redirects_and_rewrites_channel_references(sources):
 
 
 def entity(sources, kind, **value):
-    return {"kind": kind, "value": value, "evidence": [citation(sources)]}
+    return {"kind": kind, "value": value}
 
 
 def channel(sources, name, *, connected=True):
@@ -757,7 +808,6 @@ def test_category_validation_is_visible_and_repairable(sources, tmp_path, monkey
                                     "keep_id": row["records"][0],
                                     "ids": row["records"][1:],
                                     "reason": "same concept",
-                                    "evidence": [citation(sources)],
                                 },
                             )
                             for row in duplicates
@@ -837,13 +887,12 @@ def test_lifecycle_checks_mature_and_each_channel_requires_its_own_actions(sourc
         for key in ("E2", "E3")
         for action in ("connect", "listen", "close")
     }
-    assert all(f["evidence"] for f in issues)
     with pytest.raises(ValueError, match="not an open coverage check"):
         work.record_unresolved(
             Unresolved(
                 description="Missing action",
                 entity_ids=["E2"],
-                evidence=[citation(sources)],
+                evidence=[block_number(sources)],
                 check_refs=["channel_requires_connect:E999"],
             )
         )
@@ -889,7 +938,7 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
         Unresolved(
             description="The wire packet lacks its action",
             entity_ids=["E3"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
         )
     )
     work.data["unresolved"]["U1"]["deferred_kind"] = "steps"
@@ -908,7 +957,7 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
         Unresolved(
             description="The Component is embedded in the wire packet",
             entity_ids=["E5"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
             check_refs=["message_without_send:E5"],
         )
     )
@@ -916,11 +965,11 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
         Unresolved(
             description="State hook cannot be completed with supplied sources",
             entity_ids=["E4"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
             check_refs=["state_without_access:E4"],
         )
     )
-    cite = Evidence.model_validate(citation(sources))
+    cite = block_number(sources)
     work.solve_unresolved("U1", "Packet send has been added", [cite])
     assert {issue["check_ref"] for issue in work.issues()} == {
         "message_without_send:E5",
@@ -930,7 +979,7 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
     with pytest.raises(ValueError, match="linked coverage checks remain: state_without_access:E4"):
         work.solve_unresolved("U3", "Premature closure", [cite])
     work.update_entities(
-        [EntityUpdate(id="E5", withdraw_reason="Component is an embedded field", evidence=[cite])]
+        [EntityUpdate(id="E5", withdraw_reason="Component is an embedded field")]
     )
     assert work.solve_unresolved("U2", "Withdrew the standalone component", [cite])["resolved"]
     assert {issue["check_ref"] for issue in work.issues()} == {
@@ -955,7 +1004,6 @@ def test_cross_category_coverage_remains_open_until_repaired(sources):
                         "before_send": [{"reads": [], "writes": ["state.flag"], "rule": "set"}]
                     }
                 },
-                evidence=[{**citation(sources), "field": "/processing"}],
             )
         ]
     )
@@ -972,7 +1020,7 @@ def test_legacy_coverage_stays_valid_only_until_its_entity_changes(sources):
     work.add_entities(
         add([entity(sources, "messages", name=name, associated_fields=[]) for name in ("A", "B")])
     )
-    cite = citation(sources)
+    cite = block_number(sources)
     for i in (1, 2):
         key = f"E{i}"
         ref = f"message_without_send:{key}"
@@ -998,7 +1046,7 @@ def test_legacy_coverage_stays_valid_only_until_its_entity_changes(sources):
     assert [item["check_ref"] for item in work.issues()] == [
         "message_without_send:E1", "message_without_send:E2"
     ]
-    work.update_entities([EntityUpdate(id="E1", patch={"name": "Renamed A"}, evidence=[cite])])
+    work.update_entities([EntityUpdate(id="E1", patch={"name": "Renamed A"})])
     assert work.open_unresolved() == []
     assert {item["check_ref"] for item in work.issues()} == {
         "message_without_send:E1",
@@ -1065,7 +1113,7 @@ def test_global_fix_rechecks_tracked_coverage_and_unresolved_after_resume(
     from rsc.extract.runner import Runner
 
     reviewed = []
-    cite = citation(sources)
+    cite = block_number(sources)
     check_ref = "state_without_access:E6"
     flag_hook = {"reads": [], "writes": ["state.Flag"], "rule": "Set flag"}
 
@@ -1075,7 +1123,6 @@ def test_global_fix_rechecks_tracked_coverage_and_unresolved_after_resume(
         assert check["check_ref"] == check_ref
         assert check["records"] == ["E6"]
         assert "Flag" in check["description"]
-        assert check["evidence"][0]["block_id"] == cite["block_id"]
 
     def respond(messages, info):
         latest = messages[-1].parts[-1]
@@ -1105,7 +1152,7 @@ def test_global_fix_rechecks_tracked_coverage_and_unresolved_after_resume(
             assert latest.content == {"id": "U1", "resolved": True}
             return ModelResponse(parts=[ToolCallPart("validate_entities", {})])
         if isinstance(latest, ToolReturnPart) and latest.tool_name == "update_entities":
-            assert latest.content[0]["id"] == "E4"
+            assert list(latest.content["entities"]) == ["E4"]
             return ModelResponse(parts=[ToolCallPart("complete_fix", {"summary": "Repaired flag"})])
         assert isinstance(latest, ToolReturnPart) and latest.tool_name == "validate_entities"
         assert latest.content["error_count"] == 1
@@ -1121,7 +1168,6 @@ def test_global_fix_rechecks_tracked_coverage_and_unresolved_after_resume(
                                 {
                                     "id": "E4",
                                     "patch": {"processing": {"before_send": [flag_hook]}},
-                                    "evidence": [{**cite, "field": "/processing"}],
                                 }
                             ]
                         },
@@ -1304,7 +1350,52 @@ def test_basics_prompt_orders_parties_then_channels_then_messages(sources, tmp_p
     assert "middlebox" not in rule
     assert "If a party appears only in messages" in rule
     assert "belong to the interaction-unit pass" in rule
+    assert "Do not record interaction-modeling gaps here" in rule
+    assert (
+        "are the interaction-unit pass's job and are not unresolved items for this pass"
+        in rule
+    )
+    assert (
+        "Only gaps in the parties, channels and messages you were asked to write "
+        "belong in record_unresolved" in rule
+    )
+    assert "When a message needs a send step" not in rule
+    assert "Rows about missing sends" not in rule
     assert "write steps, states and step_dependencies together" not in rule
+
+
+def test_basics_rejects_interaction_gap_unresolved_items(sources):
+    steps = Workspace(sources, "t", empty_registry(), Assignment("steps", "scan", "steps"))
+    fixtures = interaction_fixtures(sources)
+    steps.add_entities(
+        TypeAdapter(list[EntityAddition]).validate_python(
+            [fixtures["steps"], fixtures["states"]]
+        )
+    )
+    work = Workspace(sources, "t", steps.data, Assignment("basics", "scan", "basics"))
+    for entity_id in ("E1", "E2"):
+        with pytest.raises(
+            ValueError,
+            match="basics unresolved items must concern parties, channels or messages",
+        ):
+            work.record_unresolved(
+                Unresolved(
+                    description="The interaction unit has not been modeled",
+                    entity_ids=[entity_id],
+                    evidence=[block_number(sources)],
+                )
+            )
+    # The same pass still records a real gap in a party.
+    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([party(sources, "Client")]))
+    recorded = work.record_unresolved(
+        Unresolved(
+            description="The client's role is unclear",
+            entity_ids=["E3"],
+            evidence=[block_number(sources)],
+        )
+    )
+    assert recorded["id"] == "U1"
+    assert work.data["unresolved"]["U1"]["entity_ids"] == ["E3"]
 
 
 def test_legacy_four_pass_checkpoint_resumes(sources, tmp_path):
@@ -1464,7 +1555,7 @@ def test_completion_tools_return_repairable_categories(sources, phase, kind, cat
             Unresolved(
                 description="Client needs a channel",
                 entity_ids=["E1"],
-                evidence=[citation(sources)],
+                evidence=[block_number(sources)],
                 check_refs=["party_without_channel:E1"],
             )
         )
@@ -1519,7 +1610,6 @@ def test_completion_tools_return_repairable_categories(sources, phase, kind, cat
                         "records": row["records"],
                         "path": row["path"],
                         "description": row["description"],
-                        "evidence": row["evidence"],
                     }
                     for row in validation["rows"]
                 ] == [
@@ -1529,13 +1619,6 @@ def test_completion_tools_return_repairable_categories(sources, phase, kind, cat
                         "records": ["E1"],
                         "path": [],
                         "description": "Party 'Client' is not a channel endpoint",
-                        "evidence": [
-                            {
-                                "document_id": cite["document_id"],
-                                "block_id": cite["block_id"],
-                            }
-                            for cite in seed.records["E1"]["evidence"][:3]
-                        ],
                     }
                 ]
                 assert validation["unresolved"] == [
@@ -1551,7 +1634,7 @@ def test_completion_tools_return_repairable_categories(sources, phase, kind, cat
     asyncio.run(check())
 
 
-def test_entity_tools_return_full_evidence_blocks_and_references(sources):
+def test_entity_tools_return_full_mentions_and_references(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -1562,16 +1645,14 @@ def test_entity_tools_return_full_evidence_blocks_and_references(sources):
     location = citation(sources)
     doc, block_id = location["document_id"], location["block_id"]
     span = sources.evidence(doc, block_id)
-    fixture["channels"]["evidence"] = [
+    fixture["channels"]["mentions"] = [
         {
             **location,
             "start": span["start"],
             "end": span["start"] + 1,
-            "note": f"Evidence {i}",
         }
-        for i in range(10)
+        for _ in range(10)
     ]
-    fixture["channels"]["mentions"] = [location]
     step = fixture["steps"]
     variants = [
         {**step, "value": {**step["value"], "name": f"Send variant {i}"}} for i in range(10)
@@ -1591,41 +1672,22 @@ def test_entity_tools_return_full_evidence_blocks_and_references(sources):
                 ],
                 {"from": "E2", "field": ["endpoint_party_names", 0], "to": "E1"},
             ]
-            # Evidence arrives as locators; the text stays in read_source.
-            assert detail["evidence"] == [
-                {
-                    "document_id": cite["document_id"],
-                    "block_id": cite["block_id"],
-                    "section_path": cite["section_path"],
-                    "field": cite["field"],
-                    "note": cite["note"],
-                }
-                for cite in work.records["E2"]["evidence"]
-            ]
-            assert len(detail["evidence"]) == 10
+            # Entity evidence is gone; only mentions stay as locators.
+            assert "evidence" not in detail and "evidence_count" not in detail
             assert detail["mentions"] == work.records["E2"]["mentions"]
-            assert result.data["snapshot"] == work.snapshot
+            assert len(detail["mentions"]) == 10
             found = await client.call_tool("search_entities", {"queries": ["Datagrams"]})
             assert [row["id"] for row in found.data["rows"]] == ["E2"]
             batch = await client.call_tool(
                 "get_entity",
                 {"ids": ["E1", "E2", "E2", "E999"]},
             )
-            # The second detail does not fit what is left of this turn's reply budget,
-            # so the first page names where to continue and the rest arrives after it.
-            assert list(batch.data["entities"]) == ["E1"]
-            assert batch.data["next_ids"] == ["E2"]
-            rest = await client.call_tool(
-                "get_entity",
-                {
-                    "ids": ["E1", "E2", "E2", "E999"],
-                    "offset": batch.data["next_offset"],
-                },
-            )
-            assert list(rest.data["entities"]) == ["E2"]
-            assert rest.data["entities"]["E2"] == detail
-            assert rest.data["next_offset"] is None
-            assert "unknown active entity" in rest.data["errors"]["E999"]
+            # One turn's reply is not budgeted: both distinct entities come back and
+            # only the unknown id is reported as an error.
+            assert list(batch.data["entities"]) == ["E1", "E2"]
+            assert batch.data["next_offset"] is None
+            assert batch.data["entities"]["E2"] == detail
+            assert "unknown active entity" in batch.data["errors"]["E999"]
             empty = await client.call_tool("get_entity", {"ids": []})
             assert empty.data["entities"] == {} and empty.data["errors"] == {}
             missing = await client.call_tool(
@@ -1678,7 +1740,6 @@ def test_search_entities_returns_paged_union_of_name_and_alias_matches(sources):
                 (row["id"], row["kind"], row["name"], row["aliases"])
                 for row in listed.data["rows"]
             ] == [("E1", "parties", "Client Proxy", [])]
-            assert listed.data["rows"][0]["evidence"][0]["block_id"]
             empty = await client.call_tool("search_entities", {"queries": []})
             assert empty.data["rows"] == []
             assert empty.data["next_offset"] is None
@@ -1697,7 +1758,7 @@ def test_category_review_and_tool_return_all_issues(sources, tmp_path, repair_ro
     from rsc.extract.runner import Runner
 
     reviewed = []
-    cite = citation(sources)
+    cite = block_number(sources)
 
     def respond(messages, info):
         latest = messages[-1].parts[-1]
@@ -1712,14 +1773,14 @@ def test_category_review_and_tool_return_all_issues(sources, tmp_path, repair_ro
             assert set(prompt["entities"]) <= ids
             assert prompt["current_group"]["group_id"] in prompt["entities"]
             assert all(
-                row["id"] == i and row["name"] and row["evidence"] and "revision" not in row
+                row["id"] == i and row["name"] and "revision" not in row
                 for i, row in prompt["entities"].items()
             )
             return ModelResponse(
                 parts=[
                     ToolCallPart(
                         "validate_entities",
-                        {"view": "issues", "max_tokens": 20000},
+                        {"view": "issues"},
                     )
                 ]
             )
@@ -1738,7 +1799,6 @@ def test_category_review_and_tool_return_all_issues(sources, tmp_path, repair_ro
                                 {
                                     "id": row["records"][0],
                                     "withdraw_reason": "This object is not a channel participant",
-                                    "evidence": [cite],
                                 }
                                 for row in errors
                             ],
@@ -1828,17 +1888,18 @@ def test_condensed_rows_keep_the_handle_that_rereads_them():
     assert parts[0]["tool_call_id"] == "c1"
     assert parts[0]["args"]["block_id"] == "blk-000129"
     assert parts[0]["args"]["padding"].endswith("…")
-    # ...and the result keeps the locator that re-reads it.
+    # ...and the result keeps a re-read handle instead of the old locator list.
     assert parts[1]["tool_call_id"] == "c1"
     assert parts[1]["tool_name"] == "read_source"
     assert parts[1]["content"]["condensed"] is True
-    assert parts[1]["content"]["blocks"] == ["blk-000129"]
+    assert parts[1]["content"]["keys"] == ["text"]
+    assert "blocks" not in parts[1]["content"]
     assert parts[2]["content"] == small
     # The stored row is untouched: only the planned copy is condensed.
     assert messages[0]["parts"][0]["part_kind"] == "thinking"
 
 
-def test_history_compaction_drops_then_condenses_a_quarter_each():
+def test_history_compaction_stubs_the_oldest_rows_until_it_fits_the_aim():
     from rsc.extract.runner import plan_history
 
     def row(index):
@@ -1861,18 +1922,16 @@ def test_history_compaction_drops_then_condenses_a_quarter_each():
         }
 
     rows = [row(index) for index in range(8)]
-    kept, dropped, stats = plan_history(rows, aim=6000, floor=5000, max_chars=200)
+    kept, stats = plan_history(rows, aim=6000, max_chars=200, keep_full_turns=2)
 
-    # Phase one removes whole oldest rows and covers at least a quarter of the window.
-    assert stats["dropped_tokens"] >= 5000
-    assert [item["assignment_id"] for item in dropped] == ["batch-0", "batch-1", "batch-2"]
-    # Phase two condenses the rows right after them and covers another quarter.
-    assert stats["condensed_before_tokens"] >= 5000
-    assert stats["condensed_after_tokens"] < stats["condensed_before_tokens"]
-    condensed_ids = [item["assignment_id"] for item in kept if item.get("condensed")]
-    assert condensed_ids == ["batch-3", "batch-4", "batch-5"]
-    # The two sets are disjoint and the rest of the history is untouched.
-    assert not set(condensed_ids) & {item["assignment_id"] for item in dropped}
+    # No row is lost; the oldest unprotected rows are stubbed until the total fits.
+    assert stats["dropped_rows"] == 0
+    assert [item["assignment_id"] for item in kept] == [f"batch-{index}" for index in range(8)]
+    assert stats["stubbed_rows"] >= 1
+    assert stats["stubbed_before_tokens"] > stats["stubbed_after_tokens"]
+    stubbed_ids = [item["assignment_id"] for item in kept if item.get("condensed")]
+    assert stubbed_ids == [f"batch-{index}" for index in range(stats["stubbed_rows"])]
+    # The most recent keep_full_turns rows stay verbatim.
     assert [item["assignment_id"] for item in kept if not item.get("condensed")] == [
         "batch-6",
         "batch-7",
@@ -1880,19 +1939,7 @@ def test_history_compaction_drops_then_condenses_a_quarter_each():
     assert stats["retained_tokens"] <= 6000
 
 
-def test_history_compaction_keeps_the_checkpoint_when_a_floor_is_unreachable():
-    from rsc.extract.runner import plan_history
-
-    rows = [
-        {"messages": [], "tokens": 100, "decision": f"decision {index}"} for index in range(3)
-    ]
-    # 300 tokens of history cannot cover two floors of 5000 tokens.
-    kept, dropped, stats = plan_history(rows, aim=10_000, floor=5000, max_chars=1200)
-    assert (kept, dropped) == (None, None)
-    assert stats["insufficient"] is True
-
-
-def test_history_compaction_reports_an_unfittable_request_instead_of_dropping_more():
+def test_history_compaction_keeps_the_checkpoint_when_the_aim_is_unreachable():
     from rsc.extract.runner import plan_history
 
     def row(index):
@@ -1912,12 +1959,34 @@ def test_history_compaction_reports_an_unfittable_request_instead_of_dropping_mo
         }
 
     rows = [row(index) for index in range(8)]
-    kept, dropped, stats = plan_history(rows, aim=1000, floor=3000, max_chars=40)
-    # Both floors are met, but the untouched remainder alone still exceeds the aim;
-    # the caller keeps its checkpoint instead of shrinking history further.
-    assert (kept, dropped) == (None, None)
+    kept, stats = plan_history(rows, aim=1000, max_chars=40, keep_full_turns=2)
+    # Every unprotected row is stubbed, but the protected tail alone exceeds the aim;
+    # the caller keeps its checkpoint instead of shrinking or dropping more.
+    assert kept is None
     assert stats["over_budget"] is True
-    assert stats["dropped_rows"] == 1 and stats["condensed_rows"] == 1
+    assert stats["dropped_rows"] == 0
+    assert stats["stubbed_rows"] == 6
+
+
+def test_condensed_entity_reply_keeps_field_names_and_the_written_summary():
+    from rsc.extract.runner import condensed_result
+
+    content = {
+        "entities": {
+            "E1": {
+                "id": "E1",
+                "value": {"description": "enriched", "associated_fields": ["CSeq", "Session"]},
+            }
+        },
+        "changed_fields": {"E1": ["description", "associated_fields.0"]},
+        "padding": "p" * 5000,
+    }
+    stub = condensed_result(content, 200)
+    assert stub["condensed"] is True
+    assert stub["entity_fields"] == {"E1": ["associated_fields", "description"]}
+    assert stub["wrote"] == "E1: description, associated_fields.0"
+    assert "blocks" not in stub
+    assert not re.search(r"blk-\d+", dumps(stub))
 
 
 def test_measure_projection_drops_only_the_thinking_signature():
@@ -2030,7 +2099,7 @@ def test_resume_remeasures_stored_history_for_the_current_model(sources, tmp_pat
     )
 
 
-def test_rejection_reports_raw_projection_limit_and_floor(capsys):
+def test_rejection_reports_raw_projection_limit_and_keep_full(capsys):
     pytest.importorskip("pydantic_ai")
     from pydantic_ai.messages import ModelRequest, ToolReturnPart
 
@@ -2039,13 +2108,10 @@ def test_rejection_reports_raw_projection_limit_and_floor(capsys):
     live = [ModelRequest(parts=[ToolReturnPart("read_source", {"text": "z" * 6000}, "c1")])]
     budget = HistoryBudget(
         kept=[],
-        dropped=[],
         offset=0,
         limit=50,
-        floor=64_600,
+        keep_full_turns=2,
         max_chars=1200,
-        summary="",
-        summary_tokens=128,
         measure=ModelMeasure("openai-codex:gpt-6-luna"),
     )
     context = SimpleNamespace(messages=live)
@@ -2058,7 +2124,7 @@ def test_rejection_reports_raw_projection_limit_and_floor(capsys):
     assert "raw " in line and "projection " in line
     assert "limit 50" in line
     assert "history 0 rows / 0 tokens" in line
-    assert "floor 64600" in line
+    assert "keep_full_turns 2" in line
 
 
 def test_condensed_rows_are_measured_with_the_projection():
@@ -2101,19 +2167,17 @@ def test_condensed_rows_are_measured_with_the_projection():
         item = row(index)
         item["tokens"] = measure(item["messages"])
         rows.append(item)
-    kept, dropped, stats = plan_history(
-        rows, aim=6000, floor=4000, max_chars=200, measure=measure
+    kept, stats = plan_history(
+        rows, aim=6000, max_chars=200, keep_full_turns=0, measure=measure
     )
-    assert dropped and kept
+    assert kept
     for item in kept:
         assert item["tokens"] == measure(item["messages"])
-    condensed = [item for item in kept if item.get("condensed")]
-    assert condensed
-    for item in condensed:
+    stubbed = [item for item in kept if item.get("condensed")]
+    assert stubbed
+    for item in stubbed:
         assert item["tokens"] < item["original_tokens"]
-    assert stats["condensed_after_tokens"] == sum(
-        item["tokens"] for item in condensed
-    )
+    assert stats["stubbed_after_tokens"] == sum(item["tokens"] for item in stubbed)
 
 
 def test_context_budget_leaves_history_alone_without_pressure():
@@ -2136,13 +2200,10 @@ def test_context_budget_leaves_history_alone_without_pressure():
                 "decision": "earlier decision",
             }
         ],
-        dropped=[],
         offset=1,
         limit=200_000,
-        floor=1000,
+        keep_full_turns=1,
         max_chars=1200,
-        summary="",
-        summary_tokens=128,
     )
     context = SimpleNamespace(messages=old + current)
     result = asyncio.run(
@@ -2184,28 +2245,56 @@ def test_context_budget_compacts_completed_rows_only_on_pressure():
             "decision": "second decision",
         },
     ]
-    floor = kept[0]["tokens"]
     budget = HistoryBudget(
         kept=[dict(row) for row in kept],
-        dropped=[],
         offset=2,
-        # Tight enough to force one compaction, large enough that the compacted
-        # request fits afterwards.
+        # Tight enough to force stubbing, large enough that the stubbed request fits.
         limit=800,
-        floor=floor,
+        keep_full_turns=0,
         max_chars=120,
-        summary="",
-        summary_tokens=512,
     )
     context = SimpleNamespace(messages=old + middle + current)
     result = asyncio.run(
         ContextBudget().before_model_request(SimpleNamespace(deps=budget), context)
     )
-    # The active tool exchange is intact and the completed rows were compacted.
+    # The active tool exchange is intact and the completed rows were stubbed.
     assert result.messages[-1].parts[0].content == {"id": "E1"}
-    assert budget.stats and budget.stats[-1]["dropped_rows"] == 1
-    assert budget.stats[-1]["condensed_rows"] >= 1
-    assert "decision" in result.messages[0].parts[0].content
+    assert budget.stats and budget.stats[-1]["dropped_rows"] == 0
+    assert budget.stats[-1]["stubbed_rows"] >= 1
+    assert result.messages[0].parts[0].content["condensed"] is True
+
+
+def test_context_budget_stubs_rows_when_only_the_live_tail_overflows():
+    from pydantic_ai import ModelMessagesTypeAdapter
+    from pydantic_ai.messages import ModelRequest, ToolReturnPart
+
+    from rsc.extract.runner import ContextBudget, HistoryBudget, ModelMeasure
+
+    measure = ModelMeasure()
+    old = [ModelRequest(parts=[ToolReturnPart("read_source", {"text": "a" * 2000}, "c1")])]
+    current = [
+        ModelRequest(parts=[ToolReturnPart("get_entity", {"id": "E1", "x": "z" * 4000}, "c2")])
+    ]
+    budget = HistoryBudget(
+        kept=[
+            {
+                "messages": json.loads(ModelMessagesTypeAdapter.dump_json(old)),
+                "tokens": measure(old),
+            }
+        ],
+        offset=1,
+        # The completed row alone fits, but the live tail pushes the request over.
+        limit=measure(old + current) - 1,
+        keep_full_turns=0,
+        max_chars=200,
+        measure=measure,
+    )
+    context = SimpleNamespace(messages=old + current)
+    result = asyncio.run(
+        ContextBudget().before_model_request(SimpleNamespace(deps=budget), context)
+    )
+    assert budget.stats and budget.stats[-1]["stubbed_rows"] == 1
+    assert result.messages[-1].parts[0].content["id"] == "E1"
 
 
 def test_repairs_start_without_scan_history(sources, tmp_path):
@@ -2317,7 +2406,7 @@ def message_with_fields(sources, names):
         sources,
         "messages",
         name="Request",
-        associated_fields=[{"name": name} for name in names],
+        associated_fields=list(names),
     )
 
 
@@ -2332,15 +2421,15 @@ def add_message(work, sources, names):
 
 def update_with(work, sources, **fields):
     return work.update_entities(
-        [EntityUpdate.model_validate({"id": "E1", "evidence": [citation(sources)], **fields})]
+        [EntityUpdate.model_validate({"id": "E1", **fields})]
     )
 
 
 def field_names(work):
-    return [field["name"] for field in work.records["E1"]["value"]["associated_fields"]]
+    return list(work.records["E1"]["value"]["associated_fields"])
 
 
-def test_associated_fields_delta_adds_renames_and_removes_in_place(sources):
+def test_associated_fields_delta_adds_renames_and_removes(sources):
     work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
     add_message(work, sources, ["A", "B", "C", "D"])
     work.update_entities(
@@ -2348,26 +2437,24 @@ def test_associated_fields_delta_adds_renames_and_removes_in_place(sources):
             EntityUpdate.model_validate(
                 {
                     "id": "E1",
-                    "evidence": [citation(sources)],
                     "associated_fields_delta": {
                         "remove": ["B"],
-                        "replace": [{"name": "C", "new_name": "C2"}],
-                        "add": [{"name": "X", "before": "D"}, {"name": "Y"}],
+                        "replace": {"C": "C2"},
+                        "add": ["X", "Y"],
                     },
                 }
             )
         ]
     )
-    # Removals vanish, renames stay in place, anchored additions land before their anchor,
-    # unanchored additions append.
-    assert field_names(work) == ["A", "C2", "X", "D", "Y"]
-    # The saved request holds the expanded list, in the old shape, without the delta key.
+    # Removals vanish, renames stay in place, additions append.
+    assert field_names(work) == ["A", "C2", "D", "X", "Y"]
+    # The saved request holds the expanded list, without the delta key.
     record = work.mutations[-1]["request"][0]
     assert "associated_fields_delta" not in record
-    assert record["patch"]["associated_fields"] == [{"name": name} for name in field_names(work)]
+    assert record["patch"]["associated_fields"] == field_names(work)
 
 
-def test_associated_fields_delta_keeps_submission_order_for_one_anchor(sources):
+def test_associated_fields_delta_appends_in_submission_order(sources):
     work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
     add_message(work, sources, ["A", "B"])
     work.update_entities(
@@ -2375,19 +2462,19 @@ def test_associated_fields_delta_keeps_submission_order_for_one_anchor(sources):
             EntityUpdate.model_validate(
                 {
                     "id": "E1",
-                    "evidence": [citation(sources)],
-                    "associated_fields_delta": {
-                        "add": [
-                            {"name": "X1", "before": "B"},
-                            {"name": "X2", "before": "B"},
-                            {"name": "X3", "before": "A"},
-                        ]
-                    },
+                    "associated_fields_delta": {"add": ["X1", "X2", "X3"]},
                 }
             )
         ]
     )
-    assert field_names(work) == ["X3", "A", "X1", "X2", "B"]
+    assert field_names(work) == ["A", "B", "X1", "X2", "X3"]
+
+
+def test_whole_list_patch_inserts_in_the_middle(sources):
+    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
+    add_message(work, sources, ["A", "B", "C"])
+    update_with(work, sources, patch={"associated_fields": ["A", "X", "B", "C"]})
+    assert field_names(work) == ["A", "X", "B", "C"]
 
 
 def test_associated_fields_delta_matches_the_full_list_path(sources):
@@ -2398,25 +2485,23 @@ def test_associated_fields_delta_matches_the_full_list_path(sources):
     update_with(
         delta_work,
         sources,
-        associated_fields_delta={"remove": ["A"], "add": [{"name": "D", "before": "C"}]},
+        associated_fields_delta={"remove": ["A"], "add": ["D"]},
     )
-    update_with(list_work, sources, patch={"associated_fields": [
-        {"name": "B"}, {"name": "D"}, {"name": "C"}
-    ]})
+    update_with(list_work, sources, patch={"associated_fields": ["B", "C", "D"]})
     assert delta_work.records == list_work.records
     assert delta_work.issues() == list_work.issues()
-    assert delta_work.snapshot == list_work.snapshot
 
 
 @pytest.mark.parametrize(
     ("delta", "message"),
     [
         ({"remove": ["missing"]}, "not in associated_fields"),
-        ({"replace": [{"name": "missing", "new_name": "X"}]}, "not in associated_fields"),
-        ({"replace": [{"name": "A", "new_name": "B"}]}, "names already exist"),
-        ({"add": [{"name": "B"}]}, "names already exist"),
-        ({"add": [{"name": "X", "before": "missing"}]}, "is not in the resulting fields"),
-        ({"remove": ["A"], "replace": [{"name": "A", "new_name": "X"}]}, "both removed"),
+        ({"replace": {"missing": "X"}}, "not in associated_fields"),
+        ({"replace": {"A": "B"}}, "names already exist"),
+        ({"replace": {"A": "X", "B": "X"}}, "used more than once"),
+        ({"add": ["B"]}, "names already exist"),
+        ({"add": ["X", "X"]}, "may appear only once"),
+        ({"remove": ["A"], "replace": {"A": "X"}}, "both removed"),
         ({}, "at least one add, replace or remove"),
     ],
 )
@@ -2427,18 +2512,9 @@ def test_associated_fields_delta_rejects_bad_edits(sources, delta, message):
     with pytest.raises(ValueError, match=message):
         update_with(work, sources, associated_fields_delta=delta)
     assert work.records == before
-    assert work.snapshot == 1
 
 
-def test_associated_fields_delta_rejects_stale_snapshot_and_other_kinds(sources):
-    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
-    add_message(work, sources, ["A"])
-    update_with(work, sources, associated_fields_delta={"add": [{"name": "B"}], "snapshot": 1})
-    with pytest.raises(ValueError, match="stale associated_fields snapshot"):
-        update_with(
-            work, sources, associated_fields_delta={"add": [{"name": "C"}], "snapshot": 999}
-        )
-    assert field_names(work) == ["A", "B"]
+def test_associated_fields_delta_rejects_other_kinds(sources):
     party_work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "parties"))
     party_work.add_entities(
         TypeAdapter(list[EntityAddition]).validate_python([party(sources, "C")])
@@ -2449,8 +2525,7 @@ def test_associated_fields_delta_rejects_stale_snapshot_and_other_kinds(sources)
                 EntityUpdate.model_validate(
                     {
                         "id": "E1",
-                        "evidence": [citation(sources)],
-                        "associated_fields_delta": {"add": [{"name": "X"}]},
+                        "associated_fields_delta": {"add": ["X"]},
                     }
                 )
             ]
@@ -2464,101 +2539,61 @@ def test_associated_fields_delta_cannot_mix_with_the_full_list(sources):
         update_with(
             work,
             sources,
-            patch={"associated_fields": [{"name": "B"}]},
-            associated_fields_delta={"add": [{"name": "C"}]},
+            patch={"associated_fields": ["B"]},
+            associated_fields_delta={"add": ["C"]},
         )
 
 
-def test_associated_fields_delta_still_needs_field_evidence(sources):
-    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
-    add_message(work, sources, ["A"])
-    with pytest.raises(ValueError, match="missing field evidence"):
-        work.update_entities(
-            [
-                EntityUpdate.model_validate(
-                    {
-                        "id": "E1",
-                        "evidence": [
-                            {**citation(sources), "field": "/name"}
-                        ],
-                        "associated_fields_delta": {"add": [{"name": "B"}]},
-                    }
-                )
-            ]
-        )
-
-
-def test_associated_fields_delta_rejects_moving_cited_indices(sources):
-    work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
-    fixture = message_with_fields(sources, ["A", "B", "C"])
-    fixture["evidence"] = [{**citation(sources), "field": "/associated_fields/1"}]
-    work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([fixture]))
-    with pytest.raises(ValueError, match="/associated_fields/1"):
-        update_with(work, sources, associated_fields_delta={"remove": ["A"]})
-    # Dropping the trailing field leaves the cited index alone.
-    update_with(work, sources, associated_fields_delta={"remove": ["C"]})
-    assert field_names(work) == ["A", "B"]
-
-
-def test_associated_fields_delta_shares_one_snapshot_across_entities(sources):
+def test_associated_fields_delta_applies_one_call_across_entities(sources):
     work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
     work.add_entities(
         TypeAdapter(list[EntityAddition]).validate_python(
             [
                 message_with_fields(sources, ["A"]),
                 {**message_with_fields(sources, ["B"]), "value": {"name": "Response",
-                 "associated_fields": [{"name": "B"}]}},
+                 "associated_fields": ["B"]}},
             ]
         )
     )
-    snapshot = work.snapshot
     work.update_entities(
         [
             EntityUpdate.model_validate(
                 {
                     "id": "E1",
-                    "evidence": [citation(sources)],
-                    "associated_fields_delta": {"add": [{"name": "A2"}], "snapshot": snapshot},
+                    "associated_fields_delta": {"add": ["A2"]},
                 }
             ),
             EntityUpdate.model_validate(
                 {
                     "id": "E2",
-                    "evidence": [citation(sources)],
-                    "associated_fields_delta": {"add": [{"name": "B2"}], "snapshot": snapshot},
+                    "associated_fields_delta": {"add": ["B2"]},
                 }
             ),
         ]
     )
-    assert [field["name"] for field in work.records["E1"]["value"]["associated_fields"]] == [
-        "A",
-        "A2",
-    ]
-    assert [field["name"] for field in work.records["E2"]["value"]["associated_fields"]] == [
-        "B",
-        "B2",
-    ]
-    # One mutation carried both edits, so a shared read snapshot stays valid for the call.
+    assert work.records["E1"]["value"]["associated_fields"] == ["A", "A2"]
+    assert work.records["E2"]["value"]["associated_fields"] == ["B", "B2"]
+    # One mutation carried both edits.
     assert len(work.mutations) == 2
 
 
 def test_associated_fields_delta_replays_once_and_stays_optional(sources):
     work = Workspace(sources, "t", empty_registry(), Assignment("test", "scan", "messages"))
     add_message(work, sources, ["A"])
-    update_with(work, sources, associated_fields_delta={"add": [{"name": "B", "before": "A"}]})
+    update_with(work, sources, associated_fields_delta={"add": ["B"]})
     mutations = len(work.mutations)
     # An identical submission is a retry: the receipt answers and no second write lands.
-    update_with(work, sources, associated_fields_delta={"add": [{"name": "B", "before": "A"}]})
+    update_with(work, sources, associated_fields_delta={"add": ["B"]})
     assert len(work.mutations) == mutations
-    assert field_names(work) == ["B", "A"]
+    assert field_names(work) == ["A", "B"]
     # Without the new key the update path is unchanged.
     update_with(work, sources, patch={"name": "Request2"})
     assert work.records["E1"]["value"]["name"] == "Request2"
-    assert field_names(work) == ["B", "A"]
+    assert field_names(work) == ["A", "B"]
     assert "associated_fields_delta" not in work.mutations[-1]["request"][0]
 
 
-def test_oversized_entity_pages_its_fields(sources):
+def test_get_entity_returns_the_whole_wide_entity(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -2570,38 +2605,33 @@ def test_oversized_entity_pages_its_fields(sources):
         "messages",
         name="Packet",
         associated_fields=[
-            {"name": f"field-{index} " + "long source field name " * 6} for index in range(120)
+            f"field-{index} " + "long source field name " * 6 for index in range(120)
         ],
     )
     work.add_entities(TypeAdapter(list[EntityAddition]).validate_python([fixture]))
-    expected = [str(index) for index in range(len(fixture["value"]["associated_fields"]))]
+    fields = fixture["value"]["associated_fields"]
 
     async def check():
         async with Client(make_server(lambda: work)) as client:
-            seen = []
-            offset = 0
-            pages = 0
-            while True:
-                page = (
-                    await client.call_tool(
-                        "get_entity",
-                        {"id": "E1", "max_tokens": 900, "field_offset": offset},
-                    )
-                ).data
-                assert page["page_tokens"] <= page["page_limit"]
-                body = page["entities"]["E1"]
-                assert body["evidence"]
-                seen.extend(body["value"].get("associated_fields") or {})
-                pages += 1
-                if page["next_field_offset"] is None:
-                    assert page["fields_truncated"] is False
-                    break
-                offset = page["next_field_offset"]
-                assert page["remaining_fields"]
-                assert pages < 40
-            # No page ever exceeded its budget, and together they cover every field.
-            assert sorted(seen, key=int) == expected
-            assert pages > 1
+            page = (await client.call_tool("get_entity", {"id": "E1"})).data
+            # A wide entity comes back whole: no field paging, no budget fields.
+            assert page["entities"]["E1"]["value"]["associated_fields"] == fields
+            for key in ("page_tokens", "page_limit", "fields_truncated", "next_field_offset"):
+                assert key not in page
+            # The caller can still project fields and start that list at an index.
+            projected = (
+                await client.call_tool(
+                    "get_entity",
+                    {
+                        "id": "E1",
+                        "fields": ["name", "associated_fields"],
+                        "field_offset": 1,
+                    },
+                )
+            ).data
+            assert list(projected["entities"]["E1"]["value"]) == ["associated_fields"]
+            assert projected["field_count"] == 2
+            assert "page_tokens" not in projected
 
     asyncio.run(check())
 
@@ -2613,34 +2643,26 @@ def test_read_source_rejects_malformed_block_lists(sources):
     from rsc.extract.tools import make_server
 
     batch_id = next(iter(sources.batches))
+    batch = sources.batches[batch_id]
     work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
-    block_id = sources.batches[batch_id]["segments"][0]["block_id"]
+    block_id = batch["segments"][0]["block_id"]
+    number = sources.block_number(batch["doc_id"], block_id)
 
     async def check():
         async with Client(make_server(lambda: work)) as client:
-            for blocks in (
-                [{"block_id": block_id}],
-                [{"document_id": sources.batches[batch_id]["doc_id"]}],
-            ):
-                with pytest.raises(Exception, match="document_id and block_id"):
+            for blocks in ([-1], [len(sources.block_ids)]):
+                with pytest.raises(Exception, match="unknown source block"):
                     await client.call_tool("read_source", {"blocks": blocks})
-            # A non-dict item is rejected by argument validation instead.
-            with pytest.raises(Exception, match="valid dictionary"):
-                await client.call_tool("read_source", {"blocks": [block_id]})
+            # Non-integer items are rejected by argument validation.
+            for blocks in ([block_id], [{"id": number}]):
+                with pytest.raises(Exception, match="valid integer"):
+                    await client.call_tool("read_source", {"blocks": blocks})
             ok = (
-                await client.call_tool(
-                    "read_source",
-                    {
-                        "blocks": [
-                            {
-                                "document_id": sources.batches[batch_id]["doc_id"],
-                                "block_id": block_id,
-                            }
-                        ]
-                    },
-                )
+                await client.call_tool("read_source", {"blocks": [number]})
             ).data
-            assert ok["count"] == 1 and ok["blocks"][0]["block_id"] == block_id
+            assert ok["count"] == 1
+            assert ok["blocks"][0]["id"] == number
+            assert ok["blocks"][0]["block_id"] == block_id
 
     asyncio.run(check())
 
@@ -2656,12 +2678,14 @@ def test_retried_assignment_records_each_compaction_once(sources, tmp_path, monk
         tmp_path, sources, "test", ExtractConfig(), fake_model(sources, []), no_review()
     )
     stats = {
-        "dropped_rows": 2,
-        "dropped_tokens": 70000,
-        "condensed_rows": 2,
-        "condensed_before_tokens": 70000,
-        "condensed_after_tokens": 20000,
-        "floor_tokens": 64600,
+        "dropped_rows": 0,
+        "stubbed_rows": 2,
+        "stubbed_before_tokens": 70000,
+        "stubbed_after_tokens": 20000,
+        "retained_rows": 4,
+        "retained_tokens": 20000,
+        "aim_tokens": 100000,
+        "keep_full_turns": 2,
     }
     attempts = []
 
@@ -2692,7 +2716,7 @@ def test_retried_assignment_records_each_compaction_once(sources, tmp_path, monk
     assert attempts == [1, 2]
 
 
-def test_read_source_pages_by_real_tokens_and_dedups_blocks(sources):
+def test_read_source_returns_whole_blocks_and_dedups(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -2702,33 +2726,19 @@ def test_read_source_pages_by_real_tokens_and_dedups_blocks(sources):
     work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
     batch = sources.batches[batch_id]
     keys = [
-        {"document_id": batch["doc_id"], "block_id": part["block_id"]}
+        sources.block_number(batch["doc_id"], part["block_id"])
         for part in batch["segments"]
     ] * 3
 
     async def check():
         async with Client(make_server(lambda: work)) as client:
-            first = (
-                await client.call_tool(
-                    "read_source", {"blocks": keys, "max_tokens": 256}
-                )
-            ).data
-            # Repeated locators are read once.
+            first = (await client.call_tool("read_source", {"blocks": keys})).data
+            # Repeated locators are read once, and the whole list comes back.
             assert first["count"] == len(batch["segments"])
-            assert len(first["blocks"]) <= first["count"]
-            assert first["page_tokens"] <= first["page_limit"] + 200
-            if first["next_offset"] is not None:
-                rest = (
-                    await client.call_tool(
-                        "read_source",
-                        {
-                            "blocks": keys,
-                            "max_tokens": 4000,
-                            "offset": first["next_offset"],
-                        },
-                    )
-                ).data
-                assert rest["next_offset"] is None
+            assert len(first["blocks"]) == first["count"]
+            assert first["next_offset"] is None
+            for key in ("page_tokens", "page_limit"):
+                assert key not in first
             story = (
                 await client.call_tool(
                     "read_source",
@@ -2736,26 +2746,26 @@ def test_read_source_pages_by_real_tokens_and_dedups_blocks(sources):
                         "document_id": batch["doc_id"],
                         "section_path": list(
                             sources.blocks[
-                                (batch["doc_id"], keys[0]["block_id"])
+                                (batch["doc_id"], batch["segments"][0]["block_id"])
                             ]["section_path"]
                         ),
-                        "max_tokens": 200,
+                        "limit_chars": 200,
                     },
                 )
             ).data
-            assert story["page_tokens"] <= story["page_limit"]
             assert story["text"]
+            # limit_chars is now the only text window.
+            assert len(story["text"]) <= 200
             if story["next_offset"] is not None:
-                assert len(story["text"]) < 10000
+                assert len(story["text"]) == 200
 
     asyncio.run(check())
 
 
-def test_parallel_reads_share_one_turn_budget_and_writes_stay_whole(sources):
+def test_parallel_reads_are_not_budgeted_and_writes_stay_whole(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
-    from rsc.extract.paging import MINIMUM_PAGE_TOKENS, TurnBudget
     from rsc.extract.tools import make_server
 
     work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
@@ -2764,42 +2774,77 @@ def test_parallel_reads_share_one_turn_budget_and_writes_stay_whole(sources):
         work.add_entities(
             add([party(sources, f"Role {index}") for index in range(start, start + 20)])
         )
-    budget = TurnBudget(3000)
 
     async def check():
-        async with Client(
-            make_server(lambda: work, turn_budget=budget)
-        ) as client:
+        async with Client(make_server(lambda: work)) as client:
             pages = await asyncio.gather(
                 *(
-                    client.call_tool(
-                        "list_entities", {"kind": "parties", "max_tokens": 2000}
-                    )
+                    client.call_tool("list_entities", {"kind": "parties", "limit": 10})
                     for _ in range(6)
                 )
             )
-            spent = sum(page.data["page_tokens"] for page in pages)
-            limit = 3000 + MINIMUM_PAGE_TOKENS * len(pages)
-            assert spent <= limit, (spent, limit)
-            # Every reply that could not hold the whole index says where to continue.
-            partial = [page.data for page in pages if page.data["next_offset"] is not None]
-            assert partial
-            for page in partial:
-                assert page["next_offset"] > 0
-            # A write and its receipt are never paged away, even with the budget spent.
+            # Parallel reads no longer share a turn budget: each one pages by its
+            # own limit and carries exactly that many rows, with no token fields.
+            for page in pages:
+                assert len(page.data["rows"]) == 10
+                assert page.data["next_offset"] == 10
+                for key in ("page_tokens", "page_limit", "max_tokens"):
+                    assert key not in page.data
+            # A large list reply comes back whole.
+            whole = (
+                await client.call_tool("list_entities", {"kind": "parties", "limit": 100})
+            ).data
+            assert len(whole["rows"]) == 60
+            assert whole["next_offset"] is None
+            # A write and its receipt are never paged.
             receipt = (
                 await client.call_tool(
                     "add_entities",
                     {"entities": [party(sources, "Late party")]},
                 )
             ).data
-            assert receipt[0]["id"]
-            assert "E" in receipt[0]["id"]
+            assert list(receipt["entities"]) == ["E61"]
+            assert receipt["entities"]["E61"]["id"] == "E61"
 
     asyncio.run(check())
 
 
-def test_snapshot_cursors_report_staleness_and_changes(sources):
+def test_replies_carry_no_version_or_budget_fields(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    work.add_entities(add([party(sources, "Role one")]))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            listed = (await client.call_tool("list_entities", {})).data
+            searched = (
+                await client.call_tool("search_entities", {"query": "Role one"})
+            ).data
+            detail = (await client.call_tool("get_entity", {"id": "E1"})).data
+            validated = (await client.call_tool("validate_entities", {})).data
+            added = (
+                await client.call_tool(
+                    "add_entities", {"entities": [party(sources, "Role two")]}
+                )
+            ).data
+            for reply in (listed, searched, detail, validated, added):
+                for key in ("snapshot", "page_limit", "page_tokens", "max_tokens"):
+                    assert key not in reply
+            # No tool accepts a budget either; paging is offset/limit/fields only.
+            properties = set()
+            for tool in await client.list_tools():
+                properties.update(tool.inputSchema.get("properties") or {})
+            assert "max_tokens" not in properties
+
+    asyncio.run(check())
+
+
+def test_reads_always_report_current_state(sources):
     pytest.importorskip("fastmcp")
     from fastmcp import Client
 
@@ -2811,34 +2856,237 @@ def test_snapshot_cursors_report_staleness_and_changes(sources):
     async def check():
         async with Client(make_server(lambda: work)) as client:
             first = (await client.call_tool("validate_entities", {})).data
-            assert first["snapshot"] == 0
+            assert "snapshot" not in first
             before = first["error_count"]
             work.add_entities(add([party(sources, "Client")]))
-            # A party without a channel is a new blocking issue at the next snapshot.
-            stale = (await client.call_tool("list_entities", {"snapshot": 0})).data
-            assert stale["stale"] is True
-            assert stale["snapshot"] == work.snapshot == 1
-            fresh = (await client.call_tool("list_entities", {"snapshot": 1})).data
-            assert fresh["rows"] and "stale" not in fresh
+            # A party without a channel is a new blocking issue, visible at once.
+            listing = (await client.call_tool("list_entities", {})).data
+            assert listing["rows"]
+            assert "snapshot" not in listing and "stale" not in listing
             grown = (await client.call_tool("validate_entities", {})).data
-            assert grown["snapshot"] == 1
             assert grown["error_count"] >= before
-            assert "changed_since" not in grown
+            assert "changed_since" not in grown and "stale" not in grown
             new_ids = [
                 row["id"] for row in grown["rows"] if row["type"] == "party_without_channel"
             ]
             assert new_ids
             assert grown["group_count"] >= 1
             assert grown["current_group"]["group_id"] == grown["rows"][0]["group_id"]
-            # Fix the row, then ask again with the snapshot the caller already saw.
+            # Fixing the row is visible on the next read without any version token.
             work.add_entities(add([channel(sources, "Datagrams", connected=False)]))
-            after = (
-                await client.call_tool("validate_entities", {"snapshot": 1})
+            after = (await client.call_tool("validate_entities", {})).data
+            assert "stale" not in after and "changed_since" not in after
+            assert not set(new_ids) & {row["id"] for row in after["rows"]}
+
+    asyncio.run(check())
+
+
+def test_mutation_models_reject_entity_evidence(sources):
+    """Entities carry no source citations any more, so the schema refuses the field."""
+    add = TypeAdapter(list[EntityAddition]).validate_python
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        add([{**party(sources, "Client"), "evidence": [citation(sources)]}])
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        EntityUpdate.model_validate(
+            {"id": "E1", "patch": {"description": "x"}, "evidence": [citation(sources)]}
+        )
+    import inspect
+
+    from rsc.extract.registry import Workspace as RegistryWorkspace
+
+    assert "evidence" not in inspect.signature(RegistryWorkspace.merge_entities).parameters
+
+
+def test_old_entity_evidence_is_dropped_from_a_checkpoint(sources):
+    """An old checkpoint keeps working: its entity citations are deleted on load."""
+    data = empty_registry()
+    archived = {
+        "id": "E2",
+        "kind": "parties",
+        "value": {"name": "User", "description": "Protocol endpoint"},
+        "aliases": [],
+        "evidence": [citation(sources)],
+        "mentions": [],
+    }
+    data["entities"]["E1"] = {
+        "id": "E1",
+        "kind": "parties",
+        "value": {"name": "Client", "description": "Protocol endpoint"},
+        "aliases": [],
+        "evidence": [citation(sources)],
+        "mentions": [],
+    }
+    data["redirects"]["E2"] = {
+        "to": "E1",
+        "reason": "same role",
+        "evidence": [citation(sources)],
+        "entity": archived,
+    }
+    data["withdrawn"]["E3"] = {
+        "entity": {**archived, "id": "E3"},
+        "reason": "duplicate",
+        "evidence": [citation(sources)],
+    }
+
+    assert migrate_registry(data)
+    for row in [*data["entities"].values(), *(
+        entry["entity"] for entry in (data["redirects"]["E2"], data["withdrawn"]["E3"])
+    )]:
+        assert "evidence" not in row
+    for bucket in ("redirects", "withdrawn"):
+        assert all("evidence" not in entry for entry in data[bucket].values())
+    # Loading the migrated registry through a workspace shows the same rows.
+    work = Workspace(sources, "test", data, Assignment("check", "category", "parties"))
+    assert set(work.records) == {"E1"}
+    assert "evidence" not in work.records["E1"]
+
+
+def test_old_associated_field_objects_become_strings_on_load(sources):
+    """Old checkpoints stored {"name": ...} per message field; loading keeps the names."""
+    data = empty_registry()
+    data["entities"]["E1"] = {
+        "id": "E1",
+        "kind": "messages",
+        "value": {
+            "name": "Request",
+            "associated_fields": [{"name": "CSeq"}, {"name": "Session"}],
+        },
+        "aliases": [],
+        "mentions": [],
+    }
+    archived = {**data["entities"]["E1"], "id": "E2"}
+    data["redirects"]["E2"] = {"to": "E1", "reason": "duplicate", "entity": archived}
+    assert migrate_registry(data)
+    assert data["entities"]["E1"]["value"]["associated_fields"] == ["CSeq", "Session"]
+    assert data["redirects"]["E2"]["entity"]["value"]["associated_fields"] == [
+        "CSeq",
+        "Session",
+    ]
+    work = Workspace(sources, "test", data, Assignment("check", "category", "messages"))
+    assert work.records["E1"]["value"]["associated_fields"] == ["CSeq", "Session"]
+
+
+def test_mutation_replies_return_full_entities_matching_get_entity(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            added = (
+                await client.call_tool(
+                    "add_entities",
+                    {"entities": [party(sources, "Client"), party(sources, "Server")]},
+                )
             ).data
-            assert after["stale"] is True
-            assert after["snapshot"] == 2
-            assert set(after["changed_since"]["gone"]) == set(new_ids)
-            assert after["changed_since"]["snapshot"] == 1
+            assert set(added) == {"entities", "changed_fields"}
+            assert "snapshot" not in added and "evidence" not in added
+            assert set(added["entities"]) == {"E1", "E2"}
+            assert added["changed_fields"]["E1"] == ["name", "description", "alias"]
+            detail = (await client.call_tool("get_entity", {"ids": ["E1", "E2"]})).data
+            assert added["entities"] == detail["entities"]
+            merged = (
+                await client.call_tool(
+                    "merge_entities",
+                    {
+                        "keep_id": "E1",
+                        "ids": ["E2"],
+                        "reason": "same role",
+                    },
+                )
+            ).data
+            assert merged["absorbed_ids"] == ["E2"]
+            assert "E2" not in work.records
+            assert merged["entities"]["E1"] == (
+                await client.call_tool("get_entity", {"id": "E1"})
+            ).data["entities"]["E1"]
+            assert merged["entities"]["E1"]["aliases"] == ["Server"]
+            updated = (
+                await client.call_tool(
+                    "update_entities",
+                    {
+                        "entities": [
+                            {
+                                "id": "E1",
+                                "patch": {"description": "Initiator"},
+                            }
+                        ]
+                    },
+                )
+            ).data
+            assert updated["changed_fields"] == {"E1": ["description"]}
+            assert updated["entities"]["E1"] == (
+                await client.call_tool("get_entity", {"id": "E1"})
+            ).data["entities"]["E1"]
+            assert updated["entities"]["E1"]["value"]["description"] == "Initiator"
+
+    asyncio.run(check())
+
+
+def test_update_reply_reports_changed_associated_field_paths(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            await client.call_tool(
+                "add_entities",
+                {"entities": [message_with_fields(sources, ["A", "B"])]},
+            )
+            reply = (
+                await client.call_tool(
+                    "update_entities",
+                    {
+                        "entities": [
+                            {
+                                "id": "E1",
+                                "patch": {
+                                    "associated_fields": ["A", "C"]
+                                },
+                            }
+                        ]
+                    },
+                )
+            ).data
+            assert reply["changed_fields"] == {"E1": ["associated_fields.1"]}
+            assert reply["entities"]["E1"]["value"]["associated_fields"] == ["A", "C"]
+
+    asyncio.run(check())
+
+
+def test_a_21_entity_write_succeeds_without_clipping(sources):
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    from rsc.extract.tools import make_server
+
+    work = Workspace(sources, "test", empty_registry(), Assignment("test", "global"))
+    entities = [party(sources, f"Role {index}") for index in range(21)]
+
+    async def check():
+        async with Client(make_server(lambda: work)) as client:
+            added = (await client.call_tool("add_entities", {"entities": entities})).data
+            assert len(added["entities"]) == 21
+            assert len(added["changed_fields"]) == 21
+            updates = [
+                {
+                    "id": f"E{index}",
+                    "patch": {"description": f"Role {index} endpoint"},
+                }
+                for index in range(1, 22)
+            ]
+            updated = (await client.call_tool("update_entities", {"entities": updates})).data
+            assert len(updated["entities"]) == 21
+            assert all(
+                paths == ["description"] for paths in updated["changed_fields"].values()
+            )
 
     asyncio.run(check())
 
@@ -2857,13 +3105,13 @@ def test_validate_entities_pages_groups_and_issues(sources):
     async def check():
         async with Client(make_server(lambda: work)) as client:
             catalog = (
-                await client.call_tool(
-                    "validate_entities", {"view": "groups", "max_tokens": 200}
-                )
+                await client.call_tool("validate_entities", {"view": "groups"})
             ).data
             assert catalog["group_count"] == 15
-            assert catalog["next_offset"] is not None
-            assert len(catalog["groups"]) < 15
+            assert catalog["next_offset"] is None
+            assert len(catalog["groups"]) == 15
+            for key in ("page_tokens", "page_limit"):
+                assert key not in catalog
             group_id = catalog["groups"][0]["group_id"]
             one = (
                 await client.call_tool(
@@ -2909,7 +3157,6 @@ def test_probe_runs_list_entities_on_an_empty_workspace(monkeypatch):
             return ModelResponse(parts=[ToolCallPart("list_entities", {})])
         assert isinstance(latest, ToolReturnPart) and latest.tool_name == "list_entities"
         assert latest.content["rows"] == []
-        assert latest.content["snapshot"] == 0
         return ModelResponse(parts=[TextPart("OK")])
 
     model = FunctionModel(respond)
@@ -2957,7 +3204,7 @@ def test_review_instructions_cover_all_categories_and_nesting():
         "on_receive",
         "message_bytes",
         "field_relations",
-        "evidence",
+        "source",
     ):
         assert term in INSTRUCTIONS
     assert "FTP" not in INSTRUCTIONS and "TLS" not in INSTRUCTIONS
@@ -3764,9 +4011,25 @@ def test_list_entities_batch_filter_returns_full_definitions(sources):
     from rsc.extract.tools import make_server
 
     batch_id = next(iter(sources.batches))
+    batch = sources.batches[batch_id]
     work = Workspace(sources, "test", empty_registry(), Assignment(batch_id, "gap"))
     add = TypeAdapter(list[EntityAddition]).validate_python
-    work.add_entities(add([party(sources, "Client")]))
+    work.add_entities(
+        add(
+            [
+                {
+                    **party(sources, "Client"),
+                    "mentions": [
+                        {
+                            "document_id": batch["doc_id"],
+                            "block_id": batch["segments"][0]["block_id"],
+                        }
+                    ],
+                },
+                party(sources, "Unlinked"),
+            ]
+        )
+    )
 
     async def check():
         async with Client(make_server(lambda: work)) as client:
@@ -3775,9 +4038,7 @@ def test_list_entities_batch_filter_returns_full_definitions(sources):
             )
             row = result.data["rows"][0]
             assert row["value"]["description"] == "Protocol endpoint"
-            assert row["evidence"][0]["block_id"]
-            assert "text" not in row["evidence"][0]
-            assert result.data["snapshot"] == work.snapshot
+            assert [item["id"] for item in result.data["rows"]] == ["E1"]
             assert result.data["related_step_count"] == 0
 
     asyncio.run(check())
@@ -3919,11 +4180,27 @@ def test_list_entities_returns_related_step_scenarios(sources):
     seed.add_entities(
         add(
             [
-                fixture["messages"],
-                fixture["steps"],
+                {
+                    **fixture["messages"],
+                    "mentions": [
+                        {
+                            "document_id": sources.batches[first]["doc_id"],
+                            "block_id": sources.batches[first]["segments"][0]["block_id"],
+                        }
+                    ],
+                },
                 {
                     **fixture["steps"],
-                    "evidence": [
+                    "mentions": [
+                        {
+                            "document_id": sources.batches[first]["doc_id"],
+                            "block_id": sources.batches[first]["segments"][0]["block_id"],
+                        }
+                    ],
+                },
+                {
+                    **fixture["steps"],
+                    "mentions": [
                         {
                             "document_id": sources.batches[second]["doc_id"],
                             "block_id": sources.batches[second]["segments"][0]["block_id"],
@@ -3979,7 +4256,6 @@ def check_row(sources, target, kind="channel_requires_connect"):
         "records": [target],
         "path": [],
         "description": f"{target} needs a {kind.rsplit('_', 1)[-1]}",
-        "evidence": [citation(sources)],
     }
 
 
@@ -3998,7 +4274,7 @@ def unresolved_item(sources, item_id, targets, **updates):
         "description": "The source leaves the transport lifecycle to the layers above.",
         "missing_information": "Transport operations for this channel.",
         "entity_ids": list(targets),
-        "evidence": [citation(sources)],
+        "evidence": [block_number(sources)],
         "check_refs": [f"{kind}:{target}" for target in targets for kind in kinds],
     }
     item.update(updates)
@@ -4015,8 +4291,7 @@ def fix_group(rows, unresolved=()):
 def test_blocked_signature_ignores_order_but_tracks_content(sources):
     from rsc.extract.groups import blocked_signature
 
-    first, second = [{"document_id": doc, "block_id": block} for doc, block in
-                     list(sources.blocks)[:2]]
+    first, second = [sources.block_number(*key) for key in list(sources.blocks)[:2]]
     rows = [
         check_row(sources, "E1", "channel_requires_connect"),
         check_row(sources, "E1", "channel_requires_listen"),
@@ -4026,19 +4301,19 @@ def test_blocked_signature_ignores_order_but_tracks_content(sources):
     group = fix_group(rows, [item])
     signature = blocked_signature(group, [item], sources)
     assert signature
-    # Reordering the checks or the cited evidence changes nothing.
+    # Reordering the checks or the cited blocks changes nothing.
     reordered = deepcopy(item)
     reordered["evidence"] = [second, first]
     shuffled = [deepcopy(rows[1]), deepcopy(rows[0])]
     assert blocked_signature(fix_group(shuffled, [reordered]), [reordered], sources) == signature
-    # A note, an extra check or a location that no longer resolves does change it.
+    # Another set of blocks, an extra check or a block outside the table changes it.
     noted = deepcopy(item)
-    noted["evidence"] = [{**first, "note": "different reading"}, second]
+    noted["evidence"] = [second]
     assert blocked_signature(group, [noted], sources) != signature
     extra = [*rows, check_row(sources, "E1", "channel_requires_close")]
     assert blocked_signature(fix_group(extra, [item]), [item], sources) != signature
     gone = deepcopy(item)
-    gone["evidence"] = [{"document_id": "rfc5246", "block_id": "blk-999999"}]
+    gone["evidence"] = [len(sources.block_ids) + 5]
     assert blocked_signature(group, [gone], sources) == ""
 
 
@@ -4126,8 +4401,7 @@ def test_deferral_clears_when_the_signature_changes(sources, case):
         check_row(sources, "E1", "channel_requires_listen"),
         check_row(sources, "E2", "channel_requires_connect"),
     ]
-    first, second = [{"document_id": doc, "block_id": block} for doc, block in
-                     list(sources.blocks)[:2]]
+    first, second = [sources.block_number(*key) for key in list(sources.blocks)[:2]]
     item = unresolved_item(sources, "U1", ["E1"])
     item["evidence"] = [first]
     items = [item]
@@ -4330,23 +4604,22 @@ def test_category_fix_keeps_the_group_when_its_signature_moved(
     runner, prompts = deferrable_runner(
         sources, tmp_path, monkeypatch, lambda prompt, latest, calls: None, max_repair_rounds=1
     )
-    cites = [{"document_id": doc, "block_id": block} for doc, block in list(sources.blocks)[:2]]
+    numbers = [sources.block_number(*key) for key in list(sources.blocks)[:2]]
     calls = []
 
     def alternating(work):
-        # Every read sees a different citation for the same checks, so the blocked
+        # Every read anchors the same checks on a different block, so the blocked
         # signature an attempt started with never survives to the end of it.
-        cites_turn = cites[len(calls) % 2]
+        number = numbers[len(calls) % 2]
         calls.append(1)
+        for item in work.data["unresolved"].values():
+            item["evidence"] = [number]
         return [
-            {**row, "evidence": [cites_turn]}
-            for row in [
-                check_row(sources, "E1", "channel_requires_connect"),
-                check_row(sources, "E1", "channel_requires_listen"),
-                check_row(sources, "E2", "channel_requires_connect"),
-                check_row(sources, "E2", "channel_requires_listen"),
-                check_row(sources, "E2", "channel_requires_close"),
-            ]
+            check_row(sources, "E1", "channel_requires_connect"),
+            check_row(sources, "E1", "channel_requires_listen"),
+            check_row(sources, "E2", "channel_requires_connect"),
+            check_row(sources, "E2", "channel_requires_listen"),
+            check_row(sources, "E2", "channel_requires_close"),
         ]
 
     async def check():
@@ -4526,7 +4799,6 @@ def test_complete_batch_refuses_a_blocked_basics_batch(sources):
             assert reply["accepted"] is False
             assert reply["checked"] is True
             # The reply is the summary view of the state that refused the seal.
-            assert reply["snapshot"] == summary["snapshot"]
             assert reply["error_count"] == summary["error_count"] == 1
             assert reply["advisory_count"] == summary["advisory_count"] == 0
             assert reply["unresolved_count"] == summary["unresolved_count"] == 0
@@ -4589,7 +4861,7 @@ def test_complete_batch_seals_a_clean_basics_batch_with_open_items(sources):
         Unresolved(
             description="The batch does not say which side closes",
             entity_ids=["E1"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
             missing_information="which side closes",
         )
     )
@@ -4621,7 +4893,7 @@ def test_complete_batch_does_not_let_an_open_item_explain_a_check_away(sources):
         Unresolved(
             description="The channel is still to be written",
             entity_ids=["E1"],
-            evidence=[citation(sources)],
+            evidence=[block_number(sources)],
             check_refs=[check_ref],
         )
     )
@@ -4918,10 +5190,6 @@ def compact_projection(rows):
             "id": row["id"],
             "check_ref": row["check_ref"],
             "group_id": row["group_id"],
-            "evidence": [
-                {"document_id": cite["document_id"], "block_id": cite["block_id"]}
-                for cite in row["evidence"][:1]
-            ],
         }
         for row in rows
     ]
@@ -4941,7 +5209,6 @@ def test_compact_rejection_keeps_the_queryable_page(sources):
         for key in (
             "checked",
             "assignment",
-            "snapshot",
             "error_count",
             "advisory_count",
             "unresolved_count",
@@ -4949,7 +5216,7 @@ def test_compact_rejection_keeps_the_queryable_page(sources):
             "next_offset",
         ):
             assert compact[key] == full[key], key
-        # Every row keeps its id, handle, group and one locator, in the same order.
+        # Every row keeps its id, handle and group, in the same order.
         assert compact["rows"] == compact_projection(full["rows"])
         assert [row["id"] for row in compact["rows"]] == [row["id"] for row in full["rows"]]
         # What moved to the detail read is gone from the first page.
@@ -4962,28 +5229,6 @@ def test_compact_rejection_keeps_the_queryable_page(sources):
         # A refusal still changes nothing.
         assert work.completion is None
         assert json.loads(dumps(work.data)) == before
-
-    asyncio.run(check())
-
-
-def test_compact_rejection_keeps_one_locator_or_none(sources, monkeypatch):
-    pytest.importorskip("fastmcp")
-
-    with_locator = {**check_row(sources, "E1"), "check_ref": "channel_requires_connect:E1"}
-    without = dict(with_locator, evidence=[])
-    work, _ = basics_batch(sources)
-    monkeypatch.setattr(Workspace, "issues", lambda self: [dict(with_locator), dict(without)])
-
-    async def check():
-        full, compact = await refused_reply(work)
-        assert compact["error_count"] == full["error_count"] == 2
-        assert [len(row["evidence"]) for row in compact["rows"]] == [1, 0]
-        assert compact["rows"][0]["evidence"] == [
-            {
-                "document_id": full["rows"][0]["evidence"][0]["document_id"],
-                "block_id": full["rows"][0]["evidence"][0]["block_id"],
-            }
-        ]
 
     asyncio.run(check())
 
@@ -5004,7 +5249,7 @@ def test_compact_rejection_keeps_duplicate_row_suffixes(sources, monkeypatch):
     asyncio.run(check())
 
 
-def test_compact_rejection_pages_with_the_same_cursor(sources, monkeypatch):
+def test_compact_rejection_returns_every_row_without_a_cursor(sources, monkeypatch):
     pytest.importorskip("fastmcp")
 
     rows = [check_row(sources, f"E{index}") for index in range(1, 201)]
@@ -5014,8 +5259,9 @@ def test_compact_rejection_pages_with_the_same_cursor(sources, monkeypatch):
     async def check():
         full, compact = await refused_reply(work)
         assert full["error_count"] == compact["error_count"] == 200
-        assert compact["next_offset"] == full["next_offset"] > 0
-        assert len(compact["rows"]) == len(full["rows"])
+        # Neither reply is page-limited any more, so there is no cursor to continue.
+        assert compact["next_offset"] is None and full["next_offset"] is None
+        assert len(compact["rows"]) == len(full["rows"]) == 200
         assert compact["rows"] == compact_projection(full["rows"])
 
     asyncio.run(check())
@@ -5074,7 +5320,6 @@ def test_compact_rejection_detail_reads_still_answer(sources, monkeypatch):
 
     async def check():
         _, compact = await refused_reply(work)
-        assert compact["next_offset"] > 0
         issue_id = compact["rows"][0]["id"]
         async with Client(compact_rejection_server(work)) as client:
             detail = (
@@ -5083,13 +5328,8 @@ def test_compact_rejection_detail_reads_still_answer(sources, monkeypatch):
             issue = detail["issue"]
             assert issue["id"] == issue_id
             assert issue["description"] == rows[0]["description"]
-            assert issue["evidence"]
-            rest = (
-                await client.call_tool(
-                    "validate_entities", {"view": "issues", "offset": compact["next_offset"]}
-                )
-            ).data
-            assert rest["issues"]
+            rest = (await client.call_tool("validate_entities", {"view": "issues"})).data
+            assert len(rest["issues"]) == 200
             open_items = (await client.call_tool("validate_entities", {"view": "unresolved"})).data
             assert open_items["unresolved_rows"] == []
             full_page = (await client.call_tool("validate_entities", {})).data
@@ -5192,20 +5432,15 @@ def steps_recheck_case(sources, *, history=True, cite=None, unresolved=None):
     """A steps workspace whose own basics pass left one open item on its text."""
     batch_id = next(iter(sources.batches))
     batch = sources.batches[batch_id]
-    block = batch["segments"][0]
+    segment = batch["segments"][0]
     row = unresolved or {
         "id": "U1",
         "description": "The overview describes the exchange this batch shows",
         "entity_ids": [],
         "evidence": [
             cite
-            or {
-                "document_id": batch["doc_id"],
-                "block_id": block["block_id"],
-                "start": block["start"],
-                "end": block["end"],
-                "section_path": block["section_path"],
-            }
+            if cite is not None
+            else sources.block_number(batch["doc_id"], segment["block_id"])
         ],
         "check_refs": [],
         "assignment": batch_id,
@@ -5239,17 +5474,20 @@ def test_steps_recheck_names_the_open_items_of_this_batch(sources):
     work, batch_id = steps_recheck_case(sources)
     rows = work.steps_recheck()
     assert [row["id"] for row in rows] == ["U1"]
-    assert rows[0]["document_id"] == sources.batches[batch_id]["doc_id"]
-    # Asking is a read: no mutation, no snapshot movement, nothing recorded.
+    batch = sources.batches[batch_id]
+    expected = sources.block_number(batch["doc_id"], batch["segments"][0]["block_id"])
+    assert rows[0]["block"] == expected
+    # Asking is a read: no mutation, nothing recorded.
     assert work.mutations == []
-    assert work.snapshot == 0
     assert work.completion is None
 
 
 def test_steps_recheck_ignores_a_written_step(sources):
     add = TypeAdapter(list[EntityAddition]).validate_python
     work, _ = steps_recheck_case(sources)
-    work.add_entities(add([interaction_fixtures(sources)["steps"]]))
+    steps = interaction_fixtures(sources)["steps"]
+    steps["mentions"] = [citation(sources)]
+    work.add_entities(add([steps]))
     assert work.mutations
     assert work.steps_recheck() is None
 
@@ -5260,7 +5498,9 @@ def test_steps_recheck_ignores_a_covered_block(sources):
     earlier = Workspace(
         sources, "test", empty_registry(), Assignment(batch_id, "scan", "steps")
     )
-    earlier.add_entities(add([interaction_fixtures(sources)["steps"]]))
+    steps = interaction_fixtures(sources)["steps"]
+    steps["mentions"] = [citation(sources)]
+    earlier.add_entities(add([steps]))
     # The step already exists, but this workspace wrote nothing: only the citation
     # stops the reminder, and the model is expected to cite that step.
     reuse = Workspace(
@@ -5277,7 +5517,7 @@ def test_steps_recheck_ignores_a_covered_block(sources):
 def test_steps_recheck_needs_this_batchs_own_record(sources):
     other = steps_recheck_case(sources, history=False)
     assert other[0].steps_recheck() is None
-    # A basics record of another batch, or of another kind, is not this batch's evidence.
+    # A basics record of another batch, or of another kind, is not this batch's record.
     work, batch_id = steps_recheck_case(sources)
     work.history = [
         {
@@ -5296,13 +5536,19 @@ def test_steps_recheck_ignores_resolved_items_and_other_documents(sources):
     resolved, _ = steps_recheck_case(sources)
     resolved.data["unresolved"]["U1"]["resolved"] = "done"
     assert resolved.steps_recheck() is None
-    # Same block number, other document: that block is not part of this batch.
-    other_doc, _ = steps_recheck_case(sources)
-    other_doc.data["unresolved"]["U1"]["evidence"][0]["document_id"] = "rfc9999"
+    # A block of another document is not part of this batch.
+    other_doc, batch_id = steps_recheck_case(sources)
+    batch_doc = sources.batches[batch_id]["doc_id"]
+    other_number = next(
+        number
+        for (document, _), number in sources.block_numbers.items()
+        if document != batch_doc
+    )
+    other_doc.data["unresolved"]["U1"]["evidence"] = [other_number]
     assert other_doc.steps_recheck() is None
-    # A block of this document that the batch does not carry is no evidence either.
+    # An unknown block ID is no evidence either.
     other_block, _ = steps_recheck_case(sources)
-    other_block.data["unresolved"]["U1"]["evidence"][0]["block_id"] = "blk-999999"
+    other_block.data["unresolved"]["U1"]["evidence"] = [len(sources.block_ids) + 5]
     assert other_block.steps_recheck() is None
 
 
@@ -5310,9 +5556,20 @@ def test_steps_recheck_only_trusts_a_unique_fragment(sources):
     class Fragments:
         blocks = {("doc", "blk-000001"): {"text": "0123456789", "block_id": "blk-000001"}}
         originals = {"doc": "xx0123456789yy", "doc2": "a0123456789b0123456789c"}
+        block_ids = [("doc", "blk-000001")]
+
+        def block_locator(self, number):
+            return {
+                "document_id": "doc",
+                "block_id": "blk-000001",
+                "start": 0,
+                "end": 10,
+                "section_path": [],
+            }
 
     work, _ = steps_recheck_case(sources)
     work.sources = Fragments()
+    work.data["unresolved"]["U1"]["evidence"] = [0]
     batch = {
         "doc_id": "doc",
         "segments": [{"block_id": "blk-000001", "start": 0, "end": 4, "text": "0123"}],
@@ -5352,7 +5609,7 @@ def test_complete_batch_reminds_once_on_an_empty_steps_batch(sources):
                 await client.call_tool("complete_batch", {"summary": "Nothing to model"})
             ).data
             assert reminded["accepted"] is False
-            assert reminded["review"] == "steps-evidence"
+            assert reminded["review"] == "steps-recheck"
             assert reminded["assignment"] == batch_id
             assert reminded["kind"] == "steps"
             assert [row["id"] for row in reminded["open_items"]] == ["U1"]
@@ -5360,7 +5617,6 @@ def test_complete_batch_reminds_once_on_an_empty_steps_batch(sources):
             # A reminder is not a validation and leaves no trace in the registry.
             assert "checked" not in reminded
             assert work.completion is None
-            assert work.snapshot == 0
             assert work.mutations == []
             sealed = (
                 await client.call_tool("complete_batch", {"summary": "Nothing to model"})
@@ -5390,7 +5646,7 @@ def test_complete_batch_reminder_is_not_a_checked_rejection(sources):
             reminded = (
                 await client.call_tool("complete_batch", {"summary": "Nothing to model"})
             ).data
-            assert "checked" not in reminded and reminded["review"] == "steps-evidence"
+            assert "checked" not in reminded and reminded["review"] == "steps-recheck"
             # The checked entry stays a basics-only tool: steps never becomes a check.
             with pytest.raises(ToolError):
                 await client.call_tool(
@@ -5446,7 +5702,7 @@ def test_complete_batch_reminder_then_concurrent_resubmits_seal_once(sources):
             reminded = (
                 await client.call_tool("complete_batch", {"summary": "Nothing to model"})
             ).data
-            assert reminded["review"] == "steps-evidence"
+            assert reminded["review"] == "steps-recheck"
             # Two submissions of the same summary race after the reminder: the batch
             # seals once and the second one gets the idempotent receipt.
             first, second = await asyncio.gather(
