@@ -7,4 +7,4 @@ try:
 
     __version__ = _package_version("rsc")
 except Exception:  # pragma: no cover - source checkout without installation
-    __version__ = "0.2.0"
+    __version__ = "0.3.0"
