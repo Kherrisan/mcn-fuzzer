@@ -194,6 +194,14 @@ pub fn run(campaign: &Campaign, iterations: Option<u64>) -> Result<(), Error> {
         synthesis.initialize()?;
     }
     if campaign.coverage.analysis_enabled {
+        if campaign.generator_synthesis.enabled {
+            // Both agents share ~/.codex.  Codex migrates that SQLite state on
+            // first use, and a second Codex opening the database mid-migration
+            // exits with "its local database appears to be damaged", which the
+            // synthesis worker reports as "Codex composer unavailable".  Let
+            // the first agent finish its migration before the second starts.
+            std::thread::sleep(Duration::from_secs(3));
+        }
         analysis.initialize()?;
     }
     let event_root = campaign.output_root.clone().unwrap_or_else(|| {
